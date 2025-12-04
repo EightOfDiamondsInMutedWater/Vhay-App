@@ -1,0 +1,1 @@
+This is SuperHeavy-XRPL escrow PO generator. Local: ~/Desktop/mvp/superheavy. GitHub: EightOfDiamondsInMutedWater/SC.PO_MVP_11.25.25. We've got: form + escrow lock. Goal: add claim button (vendor unlocks 1 hour), mint NFT PO token, swap faucet seed for real wallet. Test on altnet.
