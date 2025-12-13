@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import * as xrpl from 'xrpl';
-import type { EscrowCreate, NFTokenMint, EscrowFinish, NFTokenCreateOffer } from 'xrpl';
+import type { EscrowCreate, NFTokenMint, EscrowFinish, NFTokenCreateOffer, NFTokenAcceptOffer } from 'xrpl';
 import { Buffer } from 'buffer';
 
 interface POData {
@@ -33,6 +33,11 @@ export default function App() {
   const [claimOfferSequence, setClaimOfferSequence] = useState('');
   const [claimResult, setClaimResult] = useState('');
 
+  // Vendor Accept NFT states
+  const [vendorAcceptSeed, setVendorAcceptSeed] = useState('');
+  const [offerIndex, setOfferIndex] = useState('');
+  const [acceptResult, setAcceptResult] = useState('');
+
   const generateConditionFulfillment = async () => {
     const preimageData = new Uint8Array(32);
     window.crypto.getRandomValues(preimageData);
@@ -44,7 +49,7 @@ export default function App() {
       Buffer.from('8101', 'hex'),
       Buffer.from([preimageData.length])
     ]);
-    const conditionHex = conditionBin.toString('hex');
+    const conditionHex = conditionBin.toString('hex').toUpperCase();
     const fulfillmentBase64 = Buffer.from(preimageData).toString('base64');
     setCondition(conditionHex);
     setFulfillment(fulfillmentBase64);
@@ -90,7 +95,6 @@ export default function App() {
       const client = new xrpl.Client('wss://s.altnet.rippletest.net:51233');
       await client.connect();
       const wallet = xrpl.Wallet.fromSeed(seed);
-      // Account check
       await client.request({
         command: 'account_info',
         account: wallet.classicAddress,
@@ -98,6 +102,7 @@ export default function App() {
       });
       const ledgerResponse = await client.request({ command: 'ledger_current' });
       const currentLedger = ledgerResponse.result.ledger_current_index;
+
       // ESCROW CREATE
       const escrow: EscrowCreate = {
         TransactionType: 'EscrowCreate',
@@ -106,24 +111,18 @@ export default function App() {
         Amount: drops,
         Condition: condition,
         CancelAfter: Math.floor(Date.now() / 1000) + 86400 * 7,
-        Memos: [{
-          Memo: {
-            MemoData: xrpl.convertStringToHex(JSON.stringify(poData))
-          }
-        }]
+        Memos: [{ Memo: { MemoData: xrpl.convertStringToHex(JSON.stringify(poData)) } }]
       };
       const preparedEscrow = await client.autofill(escrow);
       preparedEscrow.LastLedgerSequence = currentLedger + 20;
       const signedEscrow = wallet.sign(preparedEscrow);
       const escrowResult = await client.submitAndWait(signedEscrow.tx_blob);
-      if (
-        typeof escrowResult.result.meta !== 'object' ||
-        escrowResult.result.meta.TransactionResult !== 'tesSUCCESS'
-      ) {
+      if (typeof escrowResult.result.meta !== 'object' || escrowResult.result.meta.TransactionResult !== 'tesSUCCESS') {
         client.disconnect();
         throw new Error('Escrow failed');
       }
       const escrowSequence = escrowResult.result.tx_json.Sequence;
+
       // NFT MINT
       const nft: NFTokenMint = {
         TransactionType: 'NFTokenMint',
@@ -131,61 +130,68 @@ export default function App() {
         URI: xrpl.convertStringToHex(ipfsUri),
         Flags: 8,
         NFTokenTaxon: 0,
-        Memos: [{
-          Memo: { MemoData: xrpl.convertStringToHex(`Escrow Sequence: ${escrowSequence}`) }
-        }]
+        Memos: [{ Memo: { MemoData: xrpl.convertStringToHex(`Escrow Sequence: ${escrowSequence}`) } }]
       };
       const preparedNFT = await client.autofill(nft);
       preparedNFT.LastLedgerSequence = currentLedger + 20;
       const signedNFT = wallet.sign(preparedNFT);
       const nftResult = await client.submitAndWait(signedNFT.tx_blob);
-      if (
-        typeof nftResult.result.meta !== 'object' ||
-        nftResult.result.meta.TransactionResult !== 'tesSUCCESS'
-      ) {
+      if (typeof nftResult.result.meta !== 'object' || nftResult.result.meta.TransactionResult !== 'tesSUCCESS') {
         client.disconnect();
         setResult('NFT Mint failed');
         return;
       }
 
-      // GET JUST-MINTED NFT ID FROM META (more reliable)
-      const mintedNode = (nftResult.result.meta as any).AffectedNodes
-        .find((node: any) => node.CreatedNode && node.CreatedNode.LedgerEntryType === 'NFTokenPage');
-      let justMintedNFT = '';
-      if (mintedNode && mintedNode.CreatedNode && mintedNode.CreatedNode.NewFields) {
-        const pageTokens = mintedNode.CreatedNode.NewFields.NFTokens || [];
-        justMintedNFT = pageTokens[pageTokens.length - 1]?.NFToken?.NFTokenID || '';
+      // Get minted NFT ID
+      let justMintedNFT = 'unknown';
+      const mintedNode = (nftResult.result.meta as any).AffectedNodes.find((node: any) => node.CreatedNode?.LedgerEntryType === 'NFTokenPage');
+      if (mintedNode) {
+        const tokens = mintedNode.CreatedNode.NewFields.NFTokens || [];
+        justMintedNFT = tokens[tokens.length - 1]?.NFToken?.NFTokenID || 'unknown';
       }
-
-      if (!justMintedNFT) {
-        // Fallback: query account_nfts
-        const nftsResp = await client.request({
-          command: 'account_nfts',
-          account: wallet.classicAddress
-        });
+      if (justMintedNFT === 'unknown') {
+        const nftsResp = await client.request({ command: 'account_nfts', account: wallet.classicAddress });
         justMintedNFT = nftsResp.result.account_nfts[nftsResp.result.account_nfts.length - 1]?.NFTokenID || 'unknown';
       }
 
-      // CREATE 0 XRP SELL OFFER TO VENDOR
+      // 0 XRP SELL OFFER
       const offerTx: NFTokenCreateOffer = {
         TransactionType: 'NFTokenCreateOffer',
         Account: wallet.classicAddress,
         NFTokenID: justMintedNFT,
         Amount: '0',
-        Flags: 1, // Sell
-        Destination: vendor // only vendor can accept
+        Flags: 1,
+        Destination: vendor
       };
       const preparedOffer = await client.autofill(offerTx);
       preparedOffer.LastLedgerSequence = currentLedger + 20;
       const signedOffer = wallet.sign(preparedOffer);
       const offerResult = await client.submitAndWait(signedOffer.tx_blob);
 
+      // Primary: from metadata (correct field name)
       let offerIndex = 'unknown';
       if (typeof offerResult.result.meta === 'object' && offerResult.result.meta.TransactionResult === 'tesSUCCESS') {
         const created = (offerResult.result.meta as any).AffectedNodes
           .find((node: any) => node.CreatedNode && node.CreatedNode.LedgerEntryType === 'NFTokenOffer');
-        if (created && created.CreatedNode && created.CreatedNode.NewFields) {
-          offerIndex = created.CreatedNode.NewFields.NFTokenOfferIndex || 'unknown';
+        if (created?.CreatedNode?.NewFields?.nft_offer_index) {
+          offerIndex = created.CreatedNode.NewFields.nft_offer_index;
+        }
+      }
+
+      // Permanent fix: query nft_sell_offers (most reliable on Testnet)
+      if (offerIndex === 'unknown') {
+        try {
+          const offersResp = await client.request({
+            command: 'nft_sell_offers',
+            nft_id: justMintedNFT
+          });
+          const offers = offersResp.result.offers || [];
+          const ourOffer = offers.find((o: any) => o.owner === wallet.classicAddress && o.amount === '0');
+          if (ourOffer && ourOffer.nft_offer_index) {
+            offerIndex = ourOffer.nft_offer_index;
+          }
+        } catch (e) {
+          console.warn('nft_sell_offers fallback failed', e);
         }
       }
 
@@ -195,11 +201,11 @@ export default function App() {
         `NFT Tx Hash: ${nftResult.result.hash}\n` +
         `Escrow Tx Hash: ${escrowResult.result.hash}\n` +
         `Escrow Sequence: ${escrowSequence}\n` +
-        `Condition: ${condition.toUpperCase()}\n` +
-        `Fulfillment (give to vendor): ${fulfillment}\n` +
+        `Condition: ${condition}\n` +
+        `Fulfillment (base64 - give to vendor): ${fulfillment}\n` +
         `IPFS URI: ${ipfsUri}\n` +
-        `0 XRP Sell Offer Created! OfferIndex: ${offerIndex}\n` +
-        `Vendor can accept this offer to own the SC.PO NFT token.`
+        `0 XRP OfferIndex (give to vendor): ${offerIndex}\n` +
+        `Vendor can paste OfferIndex below to accept the NFT.`
       );
 
       client.disconnect();
@@ -215,7 +221,6 @@ export default function App() {
     if (!claimCondition) return alert('Condition required');
     if (!claimOwner) return alert('Owner address required');
     if (!claimOfferSequence || isNaN(Number(claimOfferSequence))) return alert('Escrow sequence must be a number');
-
     try {
       const fulfillmentStr = claimFulfillment.trim();
       const conditionStr = claimCondition.trim().toUpperCase();
@@ -224,7 +229,6 @@ export default function App() {
       const wallet = xrpl.Wallet.fromSeed(claimSeed);
       const ledgerResponse = await client.request({ command: 'ledger_current' });
       const currentLedger = ledgerResponse.result.ledger_current_index;
-
       const fulfillmentHex = Buffer.from(fulfillmentStr, 'base64').toString('hex');
       const escrowFinish: EscrowFinish = {
         TransactionType: 'EscrowFinish',
@@ -245,26 +249,57 @@ export default function App() {
     }
   };
 
+  const acceptNFT = async () => {
+    if (!vendorAcceptSeed) return alert('Vendor wallet seed required');
+    if (!offerIndex) return alert('Paste the OfferIndex from buyer result');
+
+    try {
+      const client = new xrpl.Client('wss://s.altnet.rippletest.net:51233');
+      await client.connect();
+      const wallet = xrpl.Wallet.fromSeed(vendorAcceptSeed);
+      const ledgerResponse = await client.request({ command: 'ledger_current' });
+      const currentLedger = ledgerResponse.result.ledger_current_index;
+
+      const acceptTx: NFTokenAcceptOffer = {
+        TransactionType: 'NFTokenAcceptOffer',
+        Account: wallet.classicAddress,
+        NFTokenSellOffer: offerIndex.trim(),
+      };
+      const prepared = await client.autofill(acceptTx);
+      prepared.LastLedgerSequence = currentLedger + 20;
+      const signed = wallet.sign(prepared);
+      const acceptResultTx = await client.submitAndWait(signed.tx_blob);
+      client.disconnect();
+
+      const meta = typeof acceptResultTx.result.meta === 'object' ? acceptResultTx.result.meta : null;
+      if (meta && meta.TransactionResult === 'tesSUCCESS') {
+        setAcceptResult(`NFT Accepted! Vendor now owns the SC.PO token.\nTx Hash: ${acceptResultTx.result.hash}`);
+      } else {
+        setAcceptResult(`Accept failed: ${meta?.TransactionResult || 'unknown error'}`);
+      }
+    } catch (err: any) {
+      alert('Accept failed: ' + err.message);
+      setAcceptResult('Error: ' + err.message);
+    }
+  };
+
   return (
     <div style={{ padding: '30px', fontFamily: 'Helvetica', maxWidth: '800px', margin: 'auto' }}>
       <h1 style={{ color: '#D4AF37' }}>SC.PO Generator</h1>
-      
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
         <div>
           <h3>Buyer Wallet Seed</h3>
           <input style={{ width: '100%' }} placeholder="Your Wallet Seed (secret!)" value={seed} onChange={(e) => setSeed(e.target.value)} />
-          
           <h3>PO Details</h3>
           <input placeholder="Department" value={department} onChange={(e) => setDepartment(e.target.value)} />
           <input placeholder="Payment Terms" value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} />
           <input placeholder="Delivery Terms" value={deliveryTerms} onChange={(e) => setDeliveryTerms(e.target.value)} />
           <textarea placeholder="Description / Goods" value={desc} onChange={(e) => setDesc(e.target.value)} />
         </div>
-        
         <div>
           <h3>Vendor XRPL Address</h3>
           <input style={{ width: '100%' }} placeholder="Vendor Address" value={vendor} onChange={(e) => setVendor(e.target.value)} />
-          
           <h3>Amount & Items</h3>
           <input placeholder="Amount (XRP to escrow)" value={amount} onChange={(e) => setAmount(e.target.value)} />
           <input placeholder="Item #" value={itemNum} onChange={(e) => setItemNum(e.target.value)} />
@@ -272,16 +307,16 @@ export default function App() {
           <input placeholder="Total ($)" value={total} onChange={(e) => setTotal(e.target.value)} />
         </div>
       </div>
-      
+
       <button onClick={createSCPO} style={{ background: '#D4AF37', color: 'white', padding: '15px', marginTop: '20px', width: '100%', fontSize: '18px' }}>
         Make SC.PO Token
       </button>
-      
+
       {result && <pre style={{ background: '#f0f0f0', padding: '15px', marginTop: '20px', whiteSpace: 'pre-wrap' }}>{result}</pre>}
-      
-      <h2>Claim Escrow</h2>
+
+      <h2 style={{ marginTop: '40px' }}>Claim Escrow</h2>
       <input placeholder="Claim Wallet Seed" value={claimSeed} onChange={(e) => setClaimSeed(e.target.value)} />
-      <input placeholder="Fulfillment Code" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} />
+      <input placeholder="Fulfillment Code (base64)" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} />
       <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} />
       <input placeholder="Owner Address" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} />
       <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} />
@@ -289,6 +324,15 @@ export default function App() {
         Claim Escrow
       </button>
       {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px' }}>{claimResult}</pre>}
+
+      <h2 style={{ marginTop: '40px', color: '#D4AF37' }}>Vendor: Accept SC.PO NFT Token</h2>
+      <p>Vendor accepts the free NFT offer to own the PO token.</p>
+      <input placeholder="Vendor Wallet Seed (secret!)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} />
+      <input placeholder="OfferIndex (from buyer result)" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} />
+      <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', marginTop: '10px' }}>
+        Accept SC.PO NFT
+      </button>
+      {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '10px' }}>{acceptResult}</pre>}
     </div>
   );
 }
