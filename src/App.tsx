@@ -1,28 +1,33 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import * as xrpl from 'xrpl';
 import type { EscrowCreate, NFTokenMint, EscrowFinish, NFTokenCreateOffer, NFTokenAcceptOffer } from 'xrpl';
 import { Buffer } from 'buffer';
+
+interface Item {
+  num: string;
+  qty: string;
+  total: string;
+}
 
 interface POData {
   description: string;
   department: string;
   paymentTerms: string;
   deliveryTerms: string;
-  item: { num: string; qty: string; total: string };
+  items: Item[];
   escrowCondition: string;
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<'create' | 'view'>('create');
+
+  // Create Tab States
   const [seed, setSeed] = useState('');
   const [vendor, setVendor] = useState('');
-  const [amount, setAmount] = useState('');
   const [desc, setDesc] = useState('');
   const [department, setDepartment] = useState('1');
   const [paymentTerms, setPaymentTerms] = useState('30 Days');
   const [deliveryTerms, setDeliveryTerms] = useState('FOB');
-  const [itemNum, setItemNum] = useState('T345');
-  const [qty, setQty] = useState('4');
-  const [total, setTotal] = useState('400');
   const [result, setResult] = useState('');
   const [fulfillment, setFulfillment] = useState('');
   const [condition, setCondition] = useState('');
@@ -37,6 +42,52 @@ export default function App() {
   const [vendorAcceptSeed, setVendorAcceptSeed] = useState('');
   const [offerIndex, setOfferIndex] = useState('');
   const [acceptResult, setAcceptResult] = useState('');
+
+  // Multi-line items
+  const [items, setItems] = useState<Item[]>([{ num: 'T345', qty: '4', total: '400' }]);
+  const [newItemNum, setNewItemNum] = useState('');
+  const [newQty, setNewQty] = useState('');
+  const [newTotal, setNewTotal] = useState('');
+
+  // Auto-calculate total escrow amount
+  const [totalEscrowAmount, setTotalEscrowAmount] = useState('400');
+  useEffect(() => {
+    const total = items.reduce((sum, item) => sum + parseFloat(item.total || '0'), 0);
+    setTotalEscrowAmount(total.toString());
+  }, [items]);
+
+  const addItem = () => {
+    if (newItemNum && newQty && newTotal) {
+      setItems([...items, { num: newItemNum, qty: newQty, total: newTotal }]);
+      setNewItemNum('');
+      setNewQty('');
+      setNewTotal('');
+    }
+  };
+
+  const removeItem = (index: number) => {
+    setItems(items.filter((_, i) => i !== index));
+  };
+
+  // View Tab States
+  const [ipfsUri, setIpfsUri] = useState('');
+  const [viewedPO, setViewedPO] = useState<POData | null>(null);
+  const [viewError, setViewError] = useState('');
+
+  const viewPO = async () => {
+    if (!ipfsUri) return alert('Paste an IPFS URI');
+    setViewError('');
+    setViewedPO(null);
+    try {
+      const hash = ipfsUri.replace('ipfs://', '');
+      const response = await fetch(`https://ipfs.io/ipfs/${hash}`);
+      if (!response.ok) throw new Error('Failed to fetch from IPFS');
+      const data = await response.json();
+      setViewedPO(data as POData);
+    } catch (err: any) {
+      setViewError('Error loading PO: ' + err.message);
+    }
+  };
 
   const generateConditionFulfillment = async () => {
     const preimageData = new Uint8Array(32);
@@ -78,16 +129,17 @@ export default function App() {
   const createSCPO = async () => {
     if (!seed) return alert('Wallet seed required');
     if (!vendor) return alert('Vendor address required');
-    const parsedAmount = parseFloat(amount);
-    if (!amount || isNaN(parsedAmount)) return alert('Amount must be a number');
-    const drops = xrpl.xrpToDrops(parsedAmount.toString());
+    if (items.length === 0) return alert('Add at least one item');
+    if (parseFloat(totalEscrowAmount) <= 0) return alert('Total amount must be greater than 0');
+
+    const drops = xrpl.xrpToDrops(totalEscrowAmount);
     const { condition, fulfillment } = await generateConditionFulfillment();
     const poData: POData = {
       description: desc,
       department,
       paymentTerms,
       deliveryTerms,
-      item: { num: itemNum, qty, total },
+      items,
       escrowCondition: condition,
     };
     try {
@@ -168,7 +220,7 @@ export default function App() {
       const signedOffer = wallet.sign(preparedOffer);
       const offerResult = await client.submitAndWait(signedOffer.tx_blob);
 
-      // Primary: from metadata (correct field name)
+      // Reliable OfferIndex
       let offerIndex = 'unknown';
       if (typeof offerResult.result.meta === 'object' && offerResult.result.meta.TransactionResult === 'tesSUCCESS') {
         const created = (offerResult.result.meta as any).AffectedNodes
@@ -177,26 +229,20 @@ export default function App() {
           offerIndex = created.CreatedNode.NewFields.nft_offer_index;
         }
       }
-
-      // Permanent fix: query nft_sell_offers (most reliable on Testnet)
       if (offerIndex === 'unknown') {
         try {
-          const offersResp = await client.request({
-            command: 'nft_sell_offers',
-            nft_id: justMintedNFT
-          });
+          const offersResp = await client.request({ command: 'nft_sell_offers', nft_id: justMintedNFT });
           const offers = offersResp.result.offers || [];
           const ourOffer = offers.find((o: any) => o.owner === wallet.classicAddress && o.amount === '0');
           if (ourOffer && ourOffer.nft_offer_index) {
             offerIndex = ourOffer.nft_offer_index;
           }
-        } catch (e) {
-          console.warn('nft_sell_offers fallback failed', e);
-        }
+        } catch (e) { /* ignore */ }
       }
 
       setResult(
         `SC.PO Created Successfully!\n` +
+        `Total Escrow Amount: $${totalEscrowAmount}\n` +
         `NFT ID: ${justMintedNFT}\n` +
         `NFT Tx Hash: ${nftResult.result.hash}\n` +
         `Escrow Tx Hash: ${escrowResult.result.hash}\n` +
@@ -205,7 +251,7 @@ export default function App() {
         `Fulfillment (base64 - give to vendor): ${fulfillment}\n` +
         `IPFS URI: ${ipfsUri}\n` +
         `0 XRP OfferIndex (give to vendor): ${offerIndex}\n` +
-        `Vendor can paste OfferIndex below to accept the NFT.`
+        `Switch to "View SC.PO" tab and paste the IPFS URI to see the formatted PO.`
       );
 
       client.disconnect();
@@ -284,55 +330,138 @@ export default function App() {
   };
 
   return (
-    <div style={{ padding: '30px', fontFamily: 'Helvetica', maxWidth: '800px', margin: 'auto' }}>
-      <h1 style={{ color: '#D4AF37' }}>SC.PO Generator</h1>
+    <div style={{ padding: '30px', fontFamily: 'Helvetica', maxWidth: '900px', margin: 'auto' }}>
+      <h1 style={{ color: '#D4AF37', textAlign: 'center' }}>SC.PO Generator</h1>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-        <div>
-          <h3>Buyer Wallet Seed</h3>
-          <input style={{ width: '100%' }} placeholder="Your Wallet Seed (secret!)" value={seed} onChange={(e) => setSeed(e.target.value)} />
-          <h3>PO Details</h3>
-          <input placeholder="Department" value={department} onChange={(e) => setDepartment(e.target.value)} />
-          <input placeholder="Payment Terms" value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} />
-          <input placeholder="Delivery Terms" value={deliveryTerms} onChange={(e) => setDeliveryTerms(e.target.value)} />
-          <textarea placeholder="Description / Goods" value={desc} onChange={(e) => setDesc(e.target.value)} />
-        </div>
-        <div>
-          <h3>Vendor XRPL Address</h3>
-          <input style={{ width: '100%' }} placeholder="Vendor Address" value={vendor} onChange={(e) => setVendor(e.target.value)} />
-          <h3>Amount & Items</h3>
-          <input placeholder="Amount (XRP to escrow)" value={amount} onChange={(e) => setAmount(e.target.value)} />
-          <input placeholder="Item #" value={itemNum} onChange={(e) => setItemNum(e.target.value)} />
-          <input placeholder="Quantity" value={qty} onChange={(e) => setQty(e.target.value)} />
-          <input placeholder="Total ($)" value={total} onChange={(e) => setTotal(e.target.value)} />
-        </div>
+      {/* Tabs */}
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
+        <button onClick={() => setActiveTab('create')} style={{ padding: '10px 20px', background: activeTab === 'create' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer' }}>
+          Create SC.PO
+        </button>
+        <button onClick={() => setActiveTab('view')} style={{ padding: '10px 20px', background: activeTab === 'view' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer', marginLeft: '10px' }}>
+          View SC.PO
+        </button>
       </div>
 
-      <button onClick={createSCPO} style={{ background: '#D4AF37', color: 'white', padding: '15px', marginTop: '20px', width: '100%', fontSize: '18px' }}>
-        Make SC.PO Token
-      </button>
+      {activeTab === 'create' ? (
+        <div>
+          {/* Full Create SC.PO Section */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
+            <div>
+              <h3>Buyer Wallet Seed</h3>
+              <input style={{ width: '100%' }} placeholder="Your Wallet Seed (secret!)" value={seed} onChange={(e) => setSeed(e.target.value)} />
+              <h3>PO Details</h3>
+              <input placeholder="Department" value={department} onChange={(e) => setDepartment(e.target.value)} />
+              <input placeholder="Payment Terms" value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} />
+              <input placeholder="Delivery Terms" value={deliveryTerms} onChange={(e) => setDeliveryTerms(e.target.value)} />
+              <textarea placeholder="Description / Goods" value={desc} onChange={(e) => setDesc(e.target.value)} />
+            </div>
+            <div>
+              <h3>Vendor XRPL Address</h3>
+              <input style={{ width: '100%' }} placeholder="Vendor Address" value={vendor} onChange={(e) => setVendor(e.target.value)} />
+              <h3>Total Escrow Amount (auto-calculated)</h3>
+              <input style={{ width: '100%', background: '#f0f0f0' }} value={`$${totalEscrowAmount}`} disabled />
+            </div>
+          </div>
 
-      {result && <pre style={{ background: '#f0f0f0', padding: '15px', marginTop: '20px', whiteSpace: 'pre-wrap' }}>{result}</pre>}
+          <h3 style={{ marginTop: '20px' }}>Items</h3>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: '#f0f0f0' }}>
+                <th style={{ padding: '8px', border: '1px solid #ddd' }}>Item #</th>
+                <th style={{ padding: '8px', border: '1px solid #ddd' }}>Qty</th>
+                <th style={{ padding: '8px', border: '1px solid #ddd' }}>Total $</th>
+                <th style={{ padding: '8px', border: '1px solid #ddd' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item, index) => (
+                <tr key={index}>
+                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.num}</td>
+                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.qty}</td>
+                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>${item.total}</td>
+                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>
+                    <button onClick={() => removeItem(index)} style={{ background: 'red', color: 'white', padding: '5px 10px' }}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
 
-      <h2 style={{ marginTop: '40px' }}>Claim Escrow</h2>
-      <input placeholder="Claim Wallet Seed" value={claimSeed} onChange={(e) => setClaimSeed(e.target.value)} />
-      <input placeholder="Fulfillment Code (base64)" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} />
-      <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} />
-      <input placeholder="Owner Address" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} />
-      <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} />
-      <button onClick={claimEscrow} style={{ background: 'green', padding: '15px', color: 'white', marginTop: '10px' }}>
-        Claim Escrow
-      </button>
-      {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px' }}>{claimResult}</pre>}
+          <h4 style={{ marginTop: '10px' }}>Add New Item</h4>
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
+            <input placeholder="Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} />
+            <input placeholder="Quantity" value={newQty} onChange={(e) => setNewQty(e.target.value)} />
+            <input placeholder="Total $" value={newTotal} onChange={(e) => setNewTotal(e.target.value)} />
+            <button onClick={addItem} style={{ background: '#D4AF37', color: 'white', padding: '10px' }}>Add Item</button>
+          </div>
 
-      <h2 style={{ marginTop: '40px', color: '#D4AF37' }}>Vendor: Accept SC.PO NFT Token</h2>
-      <p>Vendor accepts the free NFT offer to own the PO token.</p>
-      <input placeholder="Vendor Wallet Seed (secret!)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} />
-      <input placeholder="OfferIndex (from buyer result)" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} />
-      <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', marginTop: '10px' }}>
-        Accept SC.PO NFT
-      </button>
-      {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '10px' }}>{acceptResult}</pre>}
+          <button onClick={createSCPO} style={{ background: '#D4AF37', color: 'white', padding: '15px', marginTop: '20px', width: '100%', fontSize: '18px' }}>
+            Make SC.PO Token
+          </button>
+
+          {result && <pre style={{ background: '#f0f0f0', padding: '15px', marginTop: '20px', whiteSpace: 'pre-wrap' }}>{result}</pre>}
+
+          <h2 style={{ marginTop: '40px' }}>Claim Escrow</h2>
+          <input placeholder="Claim Wallet Seed" value={claimSeed} onChange={(e) => setClaimSeed(e.target.value)} />
+          <input placeholder="Fulfillment Code (base64)" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} />
+          <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} />
+          <input placeholder="Owner Address" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} />
+          <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} />
+          <button onClick={claimEscrow} style={{ background: 'green', padding: '15px', color: 'white', marginTop: '10px' }}>
+            Claim Escrow
+          </button>
+          {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px' }}>{claimResult}</pre>}
+
+          <h2 style={{ marginTop: '40px', color: '#D4AF37' }}>Vendor: Accept SC.PO NFT Token</h2>
+          <p>Vendor accepts the free NFT offer to own the PO token.</p>
+          <input placeholder="Vendor Wallet Seed (secret!)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} />
+          <input placeholder="OfferIndex (from buyer result)" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} />
+          <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', marginTop: '10px' }}>
+            Accept SC.PO NFT
+          </button>
+          {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '10px' }}>{acceptResult}</pre>}
+        </div>
+      ) : (
+        <div>
+          {/* View SC.PO Tab */}
+          <h2 style={{ color: '#D4AF37' }}>View Any SC.PO from IPFS</h2>
+          <p>Paste the IPFS URI from a created SC.PO to view the details.</p>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            <input style={{ flex: 1 }} placeholder="ipfs://..." value={ipfsUri} onChange={(e) => setIpfsUri(e.target.value)} />
+            <button onClick={viewPO} style={{ background: '#228B22', color: 'white', padding: '10px' }}>View PO</button>
+          </div>
+          {viewError && <p style={{ color: 'red' }}>{viewError}</p>}
+          {viewedPO && (
+            <div style={{ marginTop: '20px', border: '1px solid #ddd', padding: '15px', background: '#f9f9f9' }}>
+              <h3>Purchase Order Details</h3>
+              <p><strong>Description:</strong> {viewedPO.description || 'N/A'}</p>
+              <p><strong>Department:</strong> {viewedPO.department}</p>
+              <p><strong>Payment Terms:</strong> {viewedPO.paymentTerms}</p>
+              <p><strong>Delivery Terms:</strong> {viewedPO.deliveryTerms}</p>
+              <h4>Items</h4>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#e0e0e0' }}>
+                    <th style={{ padding: '8px', border: '1px solid #ddd' }}>Item #</th>
+                    <th style={{ padding: '8px', border: '1px solid #ddd' }}>Qty</th>
+                    <th style={{ padding: '8px', border: '1px solid #ddd' }}>Total $</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {viewedPO.items.map((item, i) => (
+                    <tr key={i}>
+                      <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.num}</td>
+                      <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.qty}</td>
+                      <td style={{ padding: '8px', border: '1px solid #ddd' }}>${item.total}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
