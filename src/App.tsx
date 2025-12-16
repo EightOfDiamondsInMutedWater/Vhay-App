@@ -19,7 +19,7 @@ interface POData {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'create' | 'view'>('create');
+  const [activeTab, setActiveTab] = useState<'create' | 'view' | 'vendor'>('create');
 
   // Create Tab States
   const [seed, setSeed] = useState('');
@@ -31,17 +31,6 @@ export default function App() {
   const [result, setResult] = useState('');
   const [fulfillment, setFulfillment] = useState('');
   const [condition, setCondition] = useState('');
-  const [claimSeed, setClaimSeed] = useState('');
-  const [claimFulfillment, setClaimFulfillment] = useState('');
-  const [claimCondition, setClaimCondition] = useState('');
-  const [claimOwner, setClaimOwner] = useState('');
-  const [claimOfferSequence, setClaimOfferSequence] = useState('');
-  const [claimResult, setClaimResult] = useState('');
-
-  // Vendor Accept NFT states
-  const [vendorAcceptSeed, setVendorAcceptSeed] = useState('');
-  const [offerIndex, setOfferIndex] = useState('');
-  const [acceptResult, setAcceptResult] = useState('');
 
   // Multi-line items
   const [items, setItems] = useState<Item[]>([{ num: 'T345', qty: '4', total: '400' }]);
@@ -68,6 +57,18 @@ export default function App() {
   const removeItem = (index: number) => {
     setItems(items.filter((_, i) => i !== index));
   };
+
+  // Vendor Tab States
+  const [claimSeed, setClaimSeed] = useState('');
+  const [claimFulfillment, setClaimFulfillment] = useState('');
+  const [claimCondition, setClaimCondition] = useState('');
+  const [claimOwner, setClaimOwner] = useState('');
+  const [claimOfferSequence, setClaimOfferSequence] = useState('');
+  const [claimResult, setClaimResult] = useState('');
+
+  const [vendorAcceptSeed, setVendorAcceptSeed] = useState('');
+  const [offerIndex, setOfferIndex] = useState('');
+  const [acceptResult, setAcceptResult] = useState('');
 
   // View Tab States
   const [ipfsUri, setIpfsUri] = useState('');
@@ -251,7 +252,7 @@ export default function App() {
         `Fulfillment (base64 - give to vendor): ${fulfillment}\n` +
         `IPFS URI: ${ipfsUri}\n` +
         `0 XRP OfferIndex (give to vendor): ${offerIndex}\n` +
-        `Switch to "View SC.PO" tab and paste the IPFS URI to see the formatted PO.`
+        `Switch to Vendor tab to claim escrow or accept NFT.`
       );
 
       client.disconnect();
@@ -329,6 +330,33 @@ export default function App() {
     }
   };
 
+  // Copy to clipboard function
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    alert(`${label} copied to clipboard!`);
+  };
+
+  // Extract values from result text for copy buttons
+  const getFulfillmentFromResult = () => {
+    const match = result.match(/Fulfillment \(base64 - give to vendor\): (.*)/);
+    return match ? match[1] : '';
+  };
+
+  const getOfferIndexFromResult = () => {
+    const match = result.match(/0 XRP OfferIndex \(give to vendor\): (.*)/);
+    return match ? match[1].trim() : '';
+  };
+
+  const getConditionFromResult = () => {
+    const match = result.match(/Condition: (.*)/);
+    return match ? match[1] : '';
+  };
+
+  const getEscrowSequenceFromResult = () => {
+    const match = result.match(/Escrow Sequence: (.*)/);
+    return match ? match[1] : '';
+  };
+
   return (
     <div style={{ padding: '30px', fontFamily: 'Helvetica', maxWidth: '900px', margin: 'auto' }}>
       <h1 style={{ color: '#D4AF37', textAlign: 'center' }}>SC.PO Generator</h1>
@@ -340,6 +368,9 @@ export default function App() {
         </button>
         <button onClick={() => setActiveTab('view')} style={{ padding: '10px 20px', background: activeTab === 'view' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer', marginLeft: '10px' }}>
           View SC.PO
+        </button>
+        <button onClick={() => setActiveTab('vendor')} style={{ padding: '10px 20px', background: activeTab === 'vendor' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer', marginLeft: '10px' }}>
+          Vendor
         </button>
       </div>
 
@@ -400,31 +431,31 @@ export default function App() {
             Make SC.PO Token
           </button>
 
-          {result && <pre style={{ background: '#f0f0f0', padding: '15px', marginTop: '20px', whiteSpace: 'pre-wrap' }}>{result}</pre>}
+          {result && (
+            <div style={{ marginTop: '30px' }}>
+              <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', border: '1px solid #ddd' }}>
+                {result}
+              </pre>
 
-          <h2 style={{ marginTop: '40px' }}>Claim Escrow</h2>
-          <input placeholder="Claim Wallet Seed" value={claimSeed} onChange={(e) => setClaimSeed(e.target.value)} />
-          <input placeholder="Fulfillment Code (base64)" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} />
-          <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} />
-          <input placeholder="Owner Address" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} />
-          <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} />
-          <button onClick={claimEscrow} style={{ background: 'green', padding: '15px', color: 'white', marginTop: '10px' }}>
-            Claim Escrow
-          </button>
-          {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px' }}>{claimResult}</pre>}
-
-          <h2 style={{ marginTop: '40px', color: '#D4AF37' }}>Vendor: Accept SC.PO NFT Token</h2>
-          <p>Vendor accepts the free NFT offer to own the PO token.</p>
-          <input placeholder="Vendor Wallet Seed (secret!)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} />
-          <input placeholder="OfferIndex (from buyer result)" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} />
-          <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', marginTop: '10px' }}>
-            Accept SC.PO NFT
-          </button>
-          {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '10px' }}>{acceptResult}</pre>}
+              <div style={{ marginTop: '20px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+                <button onClick={() => copyToClipboard(getFulfillmentFromResult(), 'Fulfillment')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                  📋 Copy Fulfillment Code
+                </button>
+                <button onClick={() => copyToClipboard(getOfferIndexFromResult(), 'OfferIndex')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                  📋 Copy OfferIndex
+                </button>
+                <button onClick={() => copyToClipboard(getConditionFromResult(), 'Condition')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                  📋 Copy Condition
+                </button>
+                <button onClick={() => copyToClipboard(getEscrowSequenceFromResult(), 'Escrow Sequence')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
+                  📋 Copy Escrow Sequence
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      ) : (
+      ) : activeTab === 'view' ? (
         <div>
-          {/* View SC.PO Tab */}
           <h2 style={{ color: '#D4AF37' }}>View Any SC.PO from IPFS</h2>
           <p>Paste the IPFS URI from a created SC.PO to view the details.</p>
           <div style={{ display: 'flex', gap: '10px' }}>
@@ -460,6 +491,30 @@ export default function App() {
               </table>
             </div>
           )}
+        </div>
+      ) : (
+        <div>
+          <h2 style={{ color: '#D4AF37' }}>Vendor Actions</h2>
+
+          <h3 style={{ marginTop: '30px' }}>Claim Escrow</h3>
+          <input placeholder="Claim Wallet Seed" value={claimSeed} onChange={(e) => setClaimSeed(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
+          <input placeholder="Fulfillment Code (base64)" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
+          <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
+          <input placeholder="Owner Address" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
+          <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
+          <button onClick={claimEscrow} style={{ background: 'green', color: 'white', padding: '15px', width: '100%' }}>
+            Claim Escrow
+          </button>
+          {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{claimResult}</pre>}
+
+          <h3 style={{ marginTop: '40px' }}>Accept SC.PO NFT Token</h3>
+          <p>Vendor accepts the free NFT offer to own the PO token.</p>
+          <input placeholder="Vendor Wallet Seed (secret!)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
+          <input placeholder="OfferIndex (from buyer result)" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
+          <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', width: '100%' }}>
+            Accept SC.PO NFT
+          </button>
+          {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{acceptResult}</pre>}
         </div>
       )}
     </div>
