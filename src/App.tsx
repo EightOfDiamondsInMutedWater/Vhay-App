@@ -57,16 +57,13 @@ export default function App() {
   const [paymentTerms, setPaymentTerms] = useState('30 Days');
   const [deliveryTerms, setDeliveryTerms] = useState('FOB');
   const [result, setResult] = useState('');
-  const [fulfillment, setFulfillment] = useState('');
-  const [condition, setCondition] = useState('');
 
-  // Multi-line items
+  // Items
   const [items, setItems] = useState<Item[]>([{ num: 'T345', qty: '4', total: '400' }]);
   const [newItemNum, setNewItemNum] = useState('');
   const [newQty, setNewQty] = useState('');
   const [newTotal, setNewTotal] = useState('');
 
-  // Auto-calculate total escrow amount
   const [totalEscrowAmount, setTotalEscrowAmount] = useState('400');
   useEffect(() => {
     const total = items.reduce((sum, item) => sum + parseFloat(item.total || '0'), 0);
@@ -82,9 +79,7 @@ export default function App() {
     }
   };
 
-  const removeItem = (index: number) => {
-    setItems(items.filter((_, i) => i !== index));
-  };
+  const removeItem = (index: number) => setItems(items.filter((_, i) => i !== index));
 
   // Vendor Tab States
   const [claimSeed, setClaimSeed] = useState('');
@@ -98,18 +93,15 @@ export default function App() {
   const [offerIndex, setOfferIndex] = useState('');
   const [acceptResult, setAcceptResult] = useState('');
 
-  // Selected POs
   const [selectedOpenPO, setSelectedOpenPO] = useState<SavedPO | null>(null);
   const [selectedAcceptedPO, setSelectedAcceptedPO] = useState<SavedPO | null>(null);
 
   // View Tab States
   const [ipfsUri, setIpfsUri] = useState('');
   const [viewedPO, setViewedPO] = useState<POData | null>(null);
-  const [viewError, setViewError] = useState('');
 
   // Saved POs
   const [savedPOs, setSavedPOs] = useState<SavedPO[]>([]);
-
   useEffect(() => {
     const saved = localStorage.getItem('savedPOs');
     if (saved) setSavedPOs(JSON.parse(saved));
@@ -129,7 +121,6 @@ export default function App() {
 
   const viewPOFromUri = async (uri: string) => {
     setIpfsUri(uri);
-    setViewError('');
     setViewedPO(null);
     try {
       const hash = uri.replace('ipfs://', '');
@@ -138,11 +129,11 @@ export default function App() {
       const data = await response.json();
       setViewedPO(data as POData);
     } catch (err: any) {
-      setViewError('Error loading PO: ' + err.message);
+      alert('Error loading PO: ' + err.message);
     }
   };
 
-  // Profile States
+  // Profiles
   const [customerProfile, setCustomerProfile] = useState<Profile>({
     company: '',
     name: '',
@@ -207,8 +198,6 @@ export default function App() {
     ]);
     const conditionHex = conditionBin.toString('hex').toUpperCase();
     const fulfillmentBase64 = Buffer.from(preimageData).toString('base64');
-    setCondition(conditionHex);
-    setFulfillment(fulfillmentBase64);
     return { condition: conditionHex, fulfillment: fulfillmentBase64 };
   };
 
@@ -342,7 +331,6 @@ export default function App() {
         } catch (e) { /* ignore */ }
       }
 
-      // Save to localStorage
       const newPO: SavedPO = {
         id: Date.now().toString(),
         poName,
@@ -377,33 +365,6 @@ export default function App() {
     }
   };
 
-  const claimEscrow = async () => {
-    if (!selectedAcceptedPO) return alert('Select an Accepted PO first');
-    if (!claimSeed) return alert('Claim seed required');
-    try {
-      const client = new xrpl.Client('wss://s.altnet.rippletest.net:51233');
-      await client.connect();
-      const wallet = xrpl.Wallet.fromSeed(claimSeed);
-      const escrowFinish: EscrowFinish = {
-        TransactionType: 'EscrowFinish',
-        Account: wallet.classicAddress,
-        Owner: claimOwner,
-        OfferSequence: selectedAcceptedPO.escrowSequence,
-        Condition: selectedAcceptedPO.condition,
-        Fulfillment: Buffer.from(selectedAcceptedPO.fulfillment, 'base64').toString('hex'),
-      };
-      const prepared = await client.autofill(escrowFinish);
-      prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
-      const signed = wallet.sign(prepared);
-      const result = await client.submitAndWait(signed.tx_blob);
-      client.disconnect();
-      setClaimResult(`Escrow claimed! Tx Hash: ${result.result.hash}`);
-      updatePOStatus(selectedAcceptedPO.id, 'Closed');
-    } catch (err: any) {
-      alert('Claim failed: ' + err.message);
-    }
-  };
-
   const acceptNFT = async () => {
     if (!selectedOpenPO) return alert('Select an Open PO first');
     if (!vendorAcceptSeed) return alert('Vendor wallet seed required');
@@ -435,323 +396,410 @@ export default function App() {
     }
   };
 
+  const claimEscrow = async () => {
+    if (!selectedAcceptedPO) return alert('Select an Accepted PO first');
+    if (!claimSeed) return alert('Claim seed required');
+    try {
+      const client = new xrpl.Client('wss://s.altnet.rippletest.net:51233');
+      await client.connect();
+      const wallet = xrpl.Wallet.fromSeed(claimSeed);
+      const escrowFinish: EscrowFinish = {
+        TransactionType: 'EscrowFinish',
+        Account: wallet.classicAddress,
+        Owner: claimOwner,
+        OfferSequence: selectedAcceptedPO.escrowSequence,
+        Condition: selectedAcceptedPO.condition,
+        Fulfillment: Buffer.from(selectedAcceptedPO.fulfillment, 'base64').toString('hex'),
+      };
+      const prepared = await client.autofill(escrowFinish);
+      prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signed = wallet.sign(prepared);
+      const result = await client.submitAndWait(signed.tx_blob);
+      client.disconnect();
+      setClaimResult(`Escrow claimed! Tx Hash: ${result.result.hash}`);
+      updatePOStatus(selectedAcceptedPO.id, 'Closed');
+    } catch (err: any) {
+      alert('Claim failed: ' + err.message);
+    }
+  };
+
   const copyToClipboard = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     alert(`${label} copied to clipboard!`);
   };
 
-  const getFulfillmentFromResult = () => result.match(/Fulfillment \(base64 - give to vendor\): (.*)/)?.[1] || '';
-  const getOfferIndexFromResult = () => result.match(/0 XRP OfferIndex \(give to vendor\): (.*)/)?.[1].trim() || '';
+  const getFulfillmentFromResult = () => result.match(/Fulfillment: (.*)/)?.[1] || '';
+  const getOfferIndexFromResult = () => result.match(/OfferIndex: (.*)/)?.[1] || '';
   const getConditionFromResult = () => result.match(/Condition: (.*)/)?.[1] || '';
   const getEscrowSequenceFromResult = () => result.match(/Escrow Sequence: (.*)/)?.[1] || '';
 
   return (
-    <div style={{ padding: '30px', fontFamily: 'Helvetica', maxWidth: '900px', margin: 'auto' }}>
-      <h1 style={{ color: '#D4AF37', textAlign: 'center' }}>SC.PO Generator</h1>
-
-      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
-        <button onClick={() => setActiveTab('create')} style={{ padding: '10px 20px', background: activeTab === 'create' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer' }}>
-          Create SC.PO
-        </button>
-        <button onClick={() => setActiveTab('view')} style={{ padding: '10px 20px', background: activeTab === 'view' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer', marginLeft: '10px' }}>
-          View SC.PO
-        </button>
-        <button onClick={() => setActiveTab('vendor')} style={{ padding: '10px 20px', background: activeTab === 'vendor' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer', marginLeft: '10px' }}>
-          Vendor
-        </button>
-        <button onClick={() => setActiveTab('customerProfile')} style={{ padding: '10px 20px', background: activeTab === 'customerProfile' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer', marginLeft: '10px' }}>
-          Customer Profile
-        </button>
-        <button onClick={() => setActiveTab('vendorProfile')} style={{ padding: '10px 20px', background: activeTab === 'vendorProfile' ? '#D4AF37' : '#ccc', color: 'white', border: 'none', cursor: 'pointer', marginLeft: '10px' }}>
-          Vendor Profile
-        </button>
+    <div style={{ display: 'flex', minHeight: '100vh', background: '#f5f5f5', fontFamily: 'Helvetica, Arial, sans-serif' }}>
+      {/* Left Sidebar */}
+      <div style={{ width: '250px', background: 'linear-gradient(to bottom, #FFD700, #DAA520)', padding: '20px', borderRadius: '0 20px 20px 0', boxShadow: '5px 0 15px rgba(0,0,0,0.1)' }}>
+        <h2 style={{ color: 'white', textAlign: 'center', marginBottom: '40px' }}>Customer</h2>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          <button onClick={() => setActiveTab('customerProfile')} style={{ padding: '15px', background: activeTab === 'customerProfile' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+            Customer Profile
+          </button>
+          <button onClick={() => setActiveTab('vendorProfile')} style={{ padding: '15px', background: activeTab === 'vendorProfile' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+            Vendor Profile
+          </button>
+          <button onClick={() => setActiveTab('create')} style={{ padding: '15px', background: activeTab === 'create' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+            Create SC.PO
+          </button>
+          <button onClick={() => setActiveTab('view')} style={{ padding: '15px', background: activeTab === 'view' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+            View SC.PO
+          </button>
+          <button onClick={() => setActiveTab('vendor')} style={{ padding: '15px', background: activeTab === 'vendor' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+            Vendor
+          </button>
+        </div>
       </div>
 
-      {activeTab === 'create' ? (
-        <div>
-          <h3>PO Name (for tracking)</h3>
-          <input style={{ width: '100%' }} placeholder="e.g. Widget Order Dec 2025" value={poName} onChange={(e) => setPoName(e.target.value)} />
+      {/* Main Content */}
+      <div style={{ flex: 1, padding: '40px', background: 'white', borderRadius: '20px', margin: '20px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }}>
+        <h1 style={{ color: '#D4AF37', textAlign: 'center', fontSize: '36px', marginBottom: '30px' }}>SC.PO Generator</h1>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-            <div>
-              <h3>Buyer Wallet Seed</h3>
-              <input style={{ width: '100%' }} placeholder="Your Wallet Seed (secret!)" value={seed} onChange={(e) => setSeed(e.target.value)} />
-              <h3>PO Details</h3>
-              <input placeholder="Department" value={department} onChange={(e) => setDepartment(e.target.value)} />
-              <input placeholder="Payment Terms" value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} />
-              <input placeholder="Delivery Terms" value={deliveryTerms} onChange={(e) => setDeliveryTerms(e.target.value)} />
-              <textarea placeholder="Description / Goods" value={desc} onChange={(e) => setDesc(e.target.value)} />
-            </div>
-            <div>
-              <h3>Vendor XRPL Address</h3>
-              <input style={{ width: '100%' }} placeholder="Vendor Address" value={vendor} onChange={(e) => setVendor(e.target.value)} />
-              <h3>Total Escrow Amount (auto-calculated)</h3>
-              <input style={{ width: '100%', background: '#f0f0f0' }} value={`$${totalEscrowAmount}`} disabled />
-            </div>
-          </div>
+        {activeTab === 'create' ? (
+          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
+            <h2 style={{ color: '#D4AF37', textAlign: 'center', marginBottom: '30px' }}>Create SC.PO</h2>
 
-          <h3 style={{ marginTop: '20px' }}>Items</h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#f0f0f0' }}>
-                <th style={{ padding: '8px', border: '1px solid #ddd' }}>Item #</th>
-                <th style={{ padding: '8px', border: '1px solid #ddd' }}>Qty</th>
-                <th style={{ padding: '8px', border: '1px solid #ddd' }}>Total $</th>
-                <th style={{ padding: '8px', border: '1px solid #ddd' }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item, index) => (
-                <tr key={index}>
-                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.num}</td>
-                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.qty}</td>
-                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>${item.total}</td>
-                  <td style={{ padding: '8px', border: '1px solid #ddd' }}>
-                    <button onClick={() => removeItem(index)} style={{ background: 'red', color: 'white', padding: '5px 10px' }}>Remove</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>PO Name (for tracking)</label>
+            <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '30px' }} placeholder="e.g. Widget Order Dec 2025" value={poName} onChange={(e) => setPoName(e.target.value)} />
 
-          <h4 style={{ marginTop: '10px' }}>Add New Item</h4>
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
-            <input placeholder="Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} />
-            <input placeholder="Quantity" value={newQty} onChange={(e) => setNewQty(e.target.value)} />
-            <input placeholder="Total $" value={newTotal} onChange={(e) => setNewTotal(e.target.value)} />
-            <button onClick={addItem} style={{ background: '#D4AF37', color: 'white', padding: '10px' }}>Add Item</button>
-          </div>
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Description</label>
+            <textarea style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '30px', height: '100px', resize: 'vertical' }} placeholder="Enter description (optional)" value={desc} onChange={(e) => setDesc(e.target.value)} />
 
-          <button onClick={createSCPO} style={{ background: '#D4AF37', color: 'white', padding: '15px', marginTop: '20px', width: '100%', fontSize: '18px' }}>
-            Make SC.PO Token
-          </button>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '30px' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Customer Link</label>
+                <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', background: '#f0f0f0' }} value="Linked" readOnly />
 
-          {result && (
-            <div style={{ marginTop: '30px' }}>
-              <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', border: '1px solid #ddd' }}>
-                {result}
-              </pre>
+                <label style={{ display: 'block', margin: '20px 0 10px', color: '#D4AF37', fontWeight: 'bold' }}>Department</label>
+                <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37' }} value={department} onChange={(e) => setDepartment(e.target.value)} />
 
-              <div style={{ marginTop: '20px', display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-                <button onClick={() => copyToClipboard(getFulfillmentFromResult(), 'Fulfillment')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
-                  📋 Copy Fulfillment Code
-                </button>
-                <button onClick={() => copyToClipboard(getOfferIndexFromResult(), 'OfferIndex')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
-                  📋 Copy OfferIndex
-                </button>
-                <button onClick={() => copyToClipboard(getConditionFromResult(), 'Condition')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
-                  📋 Copy Condition
-                </button>
-                <button onClick={() => copyToClipboard(getEscrowSequenceFromResult(), 'Escrow Sequence')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>
-                  📋 Copy Escrow Sequence
-                </button>
+                <label style={{ display: 'block', margin: '20px 0 10px', color: '#D4AF37', fontWeight: 'bold' }}>Vendor Link</label>
+                <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', background: '#f0f0f0' }} value="Linked" readOnly />
+              </div>
+              <div>
+                <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>RFP Link</label>
+                <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', background: '#f0f0f0' }} value="Linked" readOnly />
+
+                <label style={{ display: 'block', margin: '20px 0 10px', color: '#D4AF37', fontWeight: 'bold' }}>Payment Terms</label>
+                <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37' }} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} />
+
+                <label style={{ display: 'block', margin: '20px 0 10px', color: '#D4AF37', fontWeight: 'bold' }}>Delivery Terms</label>
+                <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37' }} value={deliveryTerms} onChange={(e) => setDeliveryTerms(e.target.value)} />
               </div>
             </div>
-          )}
-        </div>
-      ) : activeTab === 'view' ? (
-        <div>
-          <h2 style={{ color: '#D4AF37' }}>SC.PO Status Dashboard</h2>
 
-          <h3 style={{ marginTop: '30px' }}>Open SC.PO</h3>
-          {savedPOs.filter(p => p.status === 'Open').length === 0 ? <p>No open POs</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <h3 style={{ color: '#D4AF37', margin: '40px 0 20px' }}>Request</h3>
+            <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 15px' }}>
               <thead>
-                <tr style={{ background: '#f0f0f0' }}>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>PO Name</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Date Issued</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Total $</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>View Details</th>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0', borderRadius: '30px 0 0 30px' }}>Item #</th>
+                  <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0' }}>Item Link</th>
+                  <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0' }}>Qty</th>
+                  <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0', borderRadius: '0 30px 30px 0' }}>Total $</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
-                {savedPOs.filter(p => p.status === 'Open').map(po => (
-                  <tr key={po.id}>
-                    <td style={{ padding: '10px' }}>{po.poName}</td>
-                    <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                    <td style={{ padding: '10px' }}>${po.total}</td>
-                    <td style={{ padding: '10px' }}>
-                      <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px' }}>View PO</button>
+                {items.map((item, index) => (
+                  <tr key={index}>
+                    <td style={{ padding: '15px', background: 'white', borderRadius: '30px 0 0 30px' }}>{item.num}</td>
+                    <td style={{ padding: '15px', background: 'white' }}>🔗</td>
+                    <td style={{ padding: '15px', background: 'white' }}>{item.qty}</td>
+                    <td style={{ padding: '15px', background: 'white' }}>${item.total}</td>
+                    <td style={{ padding: '15px', background: 'white', borderRadius: '0 30px 30px 0' }}>
+                      <button onClick={() => removeItem(index)} style={{ background: 'red', color: 'white', padding: '5px 10px', borderRadius: '15px' }}>Remove</button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
 
-          <h3 style={{ marginTop: '40px' }}>Accepted SC.PO</h3>
-          {savedPOs.filter(p => p.status === 'Accepted').length === 0 ? <p>No accepted POs</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#f0f0f0' }}>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>PO Name</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Date Issued</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Total $</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>View Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {savedPOs.filter(p => p.status === 'Accepted').map(po => (
-                  <tr key={po.id}>
-                    <td style={{ padding: '10px' }}>{po.poName}</td>
-                    <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                    <td style={{ padding: '10px' }}>${po.total}</td>
-                    <td style={{ padding: '10px' }}>
-                      <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px' }}>View PO</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+            <h4 style={{ color: '#D4AF37', margin: '30px 0 10px' }}>Add New Item</h4>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '30px' }}>
+              <input placeholder="Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', flex: 1 }} />
+              <input placeholder="Qty" value={newQty} onChange={(e) => setNewQty(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', flex: 1 }} />
+              <input placeholder="Total $" value={newTotal} onChange={(e) => setNewTotal(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', flex: 1 }} />
+              <button onClick={addItem} style={{ background: '#D4AF37', color: 'white', padding: '15px 30px', borderRadius: '30px', cursor: 'pointer' }}>Add</button>
+            </div>
 
-          <h3 style={{ marginTop: '40px' }}>Closed SC.PO</h3>
-          {savedPOs.filter(p => p.status === 'Closed').length === 0 ? <p>No closed POs</p> : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#f0f0f0' }}>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>PO Name</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Date Issued</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Total $</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>View Details</th>
-                </tr>
-              </thead>
-              <tbody>
-                {savedPOs.filter(p => p.status === 'Closed').map(po => (
-                  <tr key={po.id}>
-                    <td style={{ padding: '10px' }}>{po.poName}</td>
-                    <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                    <td style={{ padding: '10px' }}>${po.total}</td>
-                    <td style={{ padding: '10px' }}>
-                      <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px' }}>View PO</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '30px' }}>
+              <div style={{ background: '#FFF3E0', padding: '20px 40px', borderRadius: '30px', fontSize: '20px', fontWeight: 'bold', color: '#D4AF37' }}>
+                Sub Total: ${totalEscrowAmount}
+              </div>
+            </div>
 
-          {viewedPO && (
-            <div style={{ marginTop: '40px', border: '1px solid #ddd', padding: '15px', background: '#f9f9f9' }}>
-              <h3>Purchase Order Details</h3>
-              <p><strong>PO Name:</strong> {viewedPO.poName}</p>
-              <p><strong>Description:</strong> {viewedPO.description || 'N/A'}</p>
-              <p><strong>Department:</strong> {viewedPO.department}</p>
-              <p><strong>Payment Terms:</strong> {viewedPO.paymentTerms}</p>
-              <p><strong>Delivery Terms:</strong> {viewedPO.deliveryTerms}</p>
-              <h4>Items</h4>
+            <button onClick={createSCPO} style={{ display: 'block', margin: '40px auto', background: '#D4AF37', color: 'white', padding: '25px 60px', fontSize: '24px', fontWeight: 'bold', border: 'none', borderRadius: '50px', boxShadow: '0 10px 30px rgba(212,175,55,0.4)', cursor: 'pointer' }}>
+              SC.PO
+            </button>
+
+            {result && (
+              <div style={{ marginTop: '40px' }}>
+                <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', border: '1px solid #ddd', borderRadius: '15px' }}>
+                  {result}
+                </pre>
+
+                <div style={{ marginTop: '20px', display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <button onClick={() => copyToClipboard(getFulfillmentFromResult(), 'Fulfillment')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
+                    📋 Copy Fulfillment Code
+                  </button>
+                  <button onClick={() => copyToClipboard(getOfferIndexFromResult(), 'OfferIndex')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
+                    📋 Copy OfferIndex
+                  </button>
+                  <button onClick={() => copyToClipboard(getConditionFromResult(), 'Condition')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
+                    📋 Copy Condition
+                  </button>
+                  <button onClick={() => copyToClipboard(getEscrowSequenceFromResult(), 'Escrow Sequence')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
+                    📋 Copy Escrow Sequence
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : activeTab === 'view' ? (
+          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
+            <h2 style={{ color: '#D4AF37', textAlign: 'center', marginBottom: '30px' }}>SC.PO Status Dashboard</h2>
+
+            <h3 style={{ color: '#D4AF37', marginTop: '30px' }}>Open SC.PO</h3>
+            {savedPOs.filter(p => p.status === 'Open').length === 0 ? <p>No open POs</p> : (
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
-                  <tr style={{ background: '#e0e0e0' }}>
-                    <th style={{ padding: '8px', border: '1px solid #ddd' }}>Item #</th>
-                    <th style={{ padding: '8px', border: '1px solid #ddd' }}>Qty</th>
-                    <th style={{ padding: '8px', border: '1px solid #ddd' }}>Total $</th>
+                  <tr style={{ background: '#FFF3E0' }}>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>PO Name</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>Date Issued</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>Total $</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>View Details</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {viewedPO.items.map((item, i) => (
-                    <tr key={i}>
-                      <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.num}</td>
-                      <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.qty}</td>
-                      <td style={{ padding: '8px', border: '1px solid #ddd' }}>${item.total}</td>
+                  {savedPOs.filter(p => p.status === 'Open').map(po => (
+                    <tr key={po.id}>
+                      <td style={{ padding: '10px' }}>{po.poName}</td>
+                      <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                      <td style={{ padding: '10px' }}>${po.total}</td>
+                      <td style={{ padding: '10px' }}>
+                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px', borderRadius: '20px' }}>View PO</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-            </div>
-          )}
-        </div>
-      ) : activeTab === 'vendor' ? (
-        <div>
-          <h2 style={{ color: '#D4AF37' }}>Vendor Actions</h2>
+            )}
 
-          {/* Dropdown for Open POs */}
-          <h3>Select Open SC.PO for Acceptance</h3>
-          <select onChange={(e) => {
-            const po = savedPOs.find(p => p.id === e.target.value);
-            setSelectedOpenPO(po || null);
-            if (po) {
-              setOfferIndex(po.offerIndex);
-            }
-          }} style={{ width: '100%', padding: '10px', marginBottom: '20px' }}>
-            <option value="">-- Select Open PO --</option>
-            {savedPOs.filter(p => p.status === 'Open').map(po => (
-              <option key={po.id} value={po.id}>{po.poName} ({po.dateIssued} - ${po.total})</option>
-            ))}
-          </select>
+            <h3 style={{ color: '#D4AF37', marginTop: '40px' }}>Accepted SC.PO</h3>
+            {savedPOs.filter(p => p.status === 'Accepted').length === 0 ? <p>No accepted POs</p> : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#FFF3E0' }}>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>PO Name</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>Date Issued</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>Total $</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>View Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {savedPOs.filter(p => p.status === 'Accepted').map(po => (
+                    <tr key={po.id}>
+                      <td style={{ padding: '10px' }}>{po.poName}</td>
+                      <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                      <td style={{ padding: '10px' }}>${po.total}</td>
+                      <td style={{ padding: '10px' }}>
+                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px', borderRadius: '20px' }}>View PO</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
 
-          <h3>Accept SC.PO NFT Token</h3>
-          <p>Vendor accepts the free NFT offer to own the PO token.</p>
-          <input placeholder="Vendor Wallet Seed (auto-filled)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="OfferIndex" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', width: '100%' }}>
-            Accept SC.PO NFT
-          </button>
-          {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{acceptResult}</pre>}
+            <h3 style={{ color: '#D4AF37', marginTop: '40px' }}>Closed SC.PO</h3>
+            {savedPOs.filter(p => p.status === 'Closed').length === 0 ? <p>No closed POs</p> : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#FFF3E0' }}>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>PO Name</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>Date Issued</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>Total $</th>
+                    <th style={{ padding: '10px', textAlign: 'left' }}>View Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {savedPOs.filter(p => p.status === 'Closed').map(po => (
+                    <tr key={po.id}>
+                      <td style={{ padding: '10px' }}>{po.poName}</td>
+                      <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                      <td style={{ padding: '10px' }}>${po.total}</td>
+                      <td style={{ padding: '10px' }}>
+                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px', borderRadius: '20px' }}>View PO</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
 
-          {/* Dropdown for Accepted POs */}
-          <h3 style={{ marginTop: '40px' }}>Select Accepted SC.PO for Claim</h3>
-          <select onChange={(e) => {
-            const po = savedPOs.find(p => p.id === e.target.value);
-            setSelectedAcceptedPO(po || null);
-            if (po) {
-              setClaimFulfillment(po.fulfillment);
-              setClaimCondition(po.condition);
-              setClaimOfferSequence(po.escrowSequence.toString());
-            }
-          }} style={{ width: '100%', padding: '10px', marginBottom: '20px' }}>
-            <option value="">-- Select Accepted PO --</option>
-            {savedPOs.filter(p => p.status === 'Accepted').map(po => (
-              <option key={po.id} value={po.id}>{po.poName} ({po.dateIssued} - ${po.total})</option>
-            ))}
-          </select>
+            {viewedPO && (
+              <div style={{ marginTop: '40px', border: '1px solid #ddd', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
+                <h3>Purchase Order Details</h3>
+                <p><strong>PO Name:</strong> {viewedPO.poName}</p>
+                <p><strong>Description:</strong> {viewedPO.description || 'N/A'}</p>
+                <p><strong>Department:</strong> {viewedPO.department}</p>
+                <p><strong>Payment Terms:</strong> {viewedPO.paymentTerms}</p>
+                <p><strong>Delivery Terms:</strong> {viewedPO.deliveryTerms}</p>
+                <h4>Items</h4>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ background: '#e0e0e0' }}>
+                      <th style={{ padding: '8px', border: '1px solid #ddd' }}>Item #</th>
+                      <th style={{ padding: '8px', border: '1px solid #ddd' }}>Qty</th>
+                      <th style={{ padding: '8px', border: '1px solid #ddd' }}>Total $</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewedPO.items.map((item, i) => (
+                      <tr key={i}>
+                        <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.num}</td>
+                        <td style={{ padding: '8px', border: '1px solid #ddd' }}>{item.qty}</td>
+                        <td style={{ padding: '8px', border: '1px solid #ddd' }}>${item.total}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : activeTab === 'vendor' ? (
+          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
+            <h2 style={{ color: '#D4AF37', textAlign: 'center', marginBottom: '30px' }}>Vendor Actions</h2>
 
-          <h3>Claim Escrow</h3>
-          <input placeholder="Claim Wallet Seed (auto-filled)" value={claimSeed} onChange={(e) => setClaimSeed(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Fulfillment Code (base64)" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Owner Address (auto-filled)" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <button onClick={claimEscrow} style={{ background: 'green', color: 'white', padding: '15px', width: '100%' }}>
-            Claim Escrow
-          </button>
-          {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{claimResult}</pre>}
-        </div>
-      ) : activeTab === 'customerProfile' ? (
-        <div>
-          <h2 style={{ color: '#D4AF37' }}>Customer Profile</h2>
-          <p>Save your company and wallet info — seed will auto-fill when creating POs.</p>
-          <input placeholder="Company Name" value={customerProfile.company} onChange={(e) => setCustomerProfile({ ...customerProfile, company: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Contact Name" value={customerProfile.name} onChange={(e) => setCustomerProfile({ ...customerProfile, name: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Address" value={customerProfile.address} onChange={(e) => setCustomerProfile({ ...customerProfile, address: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="City" value={customerProfile.city} onChange={(e) => setCustomerProfile({ ...customerProfile, city: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="State" value={customerProfile.state} onChange={(e) => setCustomerProfile({ ...customerProfile, state: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="ZIP" value={customerProfile.zip} onChange={(e) => setCustomerProfile({ ...customerProfile, zip: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Country" value={customerProfile.country} onChange={(e) => setCustomerProfile({ ...customerProfile, country: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Wallet Seed (secret!)" value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Wallet Address" value={customerProfile.classicAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, classicAddress: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '20px' }} />
-          <button onClick={saveCustomerProfile} style={{ background: '#D4AF37', color: 'white', padding: '15px', width: '100%' }}>
-            Save Customer Profile
-          </button>
-        </div>
-      ) : (
-        <div>
-          <h2 style={{ color: '#D4AF37' }}>Vendor Profile</h2>
-          <p>Save vendor company and wallet info — address will auto-fill when creating POs.</p>
-          <input placeholder="Company Name" value={vendorProfile.company} onChange={(e) => setVendorProfile({ ...vendorProfile, company: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Contact Name" value={vendorProfile.name} onChange={(e) => setVendorProfile({ ...vendorProfile, name: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Address" value={vendorProfile.address} onChange={(e) => setVendorProfile({ ...vendorProfile, address: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="City" value={vendorProfile.city} onChange={(e) => setVendorProfile({ ...vendorProfile, city: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="State" value={vendorProfile.state} onChange={(e) => setVendorProfile({ ...vendorProfile, state: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="ZIP" value={vendorProfile.zip} onChange={(e) => setVendorProfile({ ...vendorProfile, zip: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Country" value={vendorProfile.country} onChange={(e) => setVendorProfile({ ...vendorProfile, country: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Wallet Seed (secret!)" value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '10px' }} />
-          <input placeholder="Wallet Address" value={vendorProfile.classicAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, classicAddress: e.target.value })} style={{ width: '100%', padding: '10px', marginBottom: '20px' }} />
-          <button onClick={saveVendorProfile} style={{ background: '#D4AF37', color: 'white', padding: '15px', width: '100%' }}>
-            Save Vendor Profile
-          </button>
-        </div>
-      )}
+            <h3>Select Open SC.PO for Acceptance</h3>
+            <select onChange={(e) => {
+              const po = savedPOs.find(p => p.id === e.target.value);
+              setSelectedOpenPO(po || null);
+              if (po) {
+                setOfferIndex(po.offerIndex);
+              }
+            }} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }}>
+              <option value="">-- Select Open PO --</option>
+              {savedPOs.filter(p => p.status === 'Open').map(po => (
+                <option key={po.id} value={po.id}>{po.poName} ({po.dateIssued} - ${po.total})</option>
+              ))}
+            </select>
+
+            <h3>Accept SC.PO NFT Token</h3>
+            <input placeholder="Vendor Wallet Seed (auto-filled)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
+            <input placeholder="OfferIndex" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
+            <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', width: '100%', borderRadius: '30px' }}>
+              Accept SC.PO NFT
+            </button>
+            {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{acceptResult}</pre>}
+
+            <h3 style={{ marginTop: '40px' }}>Select Accepted SC.PO for Claim</h3>
+            <select onChange={(e) => {
+              const po = savedPOs.find(p => p.id === e.target.value);
+              setSelectedAcceptedPO(po || null);
+              if (po) {
+                setClaimFulfillment(po.fulfillment);
+                setClaimCondition(po.condition);
+                setClaimOfferSequence(po.escrowSequence.toString());
+              }
+            }} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }}>
+              <option value="">-- Select Accepted PO --</option>
+              {savedPOs.filter(p => p.status === 'Accepted').map(po => (
+                <option key={po.id} value={po.id}>{po.poName} ({po.dateIssued} - ${po.total})</option>
+              ))}
+            </select>
+
+            <h3>Claim Escrow</h3>
+            <input placeholder="Claim Wallet Seed (auto-filled)" value={claimSeed} onChange={(e) => setClaimSeed(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
+            <input placeholder="Fulfillment Code (base64)" value={claimFulfillment} onChange={(e) => setClaimFulfillment(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
+            <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
+            <input placeholder="Owner Address (auto-filled)" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
+            <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
+            <button onClick={claimEscrow} style={{ background: 'green', color: 'white', padding: '15px', width: '100%', borderRadius: '30px' }}>
+              Claim Escrow
+            </button>
+            {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{claimResult}</pre>}
+          </div>
+        ) : activeTab === 'customerProfile' ? (
+          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
+            <h2 style={{ color: '#D4AF37', textAlign: 'center', marginBottom: '30px' }}>Customer Profile</h2>
+            <p style={{ textAlign: 'center', marginBottom: '30px' }}>Save your company and wallet info — seed will auto-fill when creating POs.</p>
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Company Name</label>
+            <input placeholder="Enter your company name" value={customerProfile.company} onChange={(e) => setCustomerProfile({ ...customerProfile, company: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Contact Name</label>
+            <input placeholder="Your full name" value={customerProfile.name} onChange={(e) => setCustomerProfile({ ...customerProfile, name: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Street Address</label>
+            <input placeholder="Street address" value={customerProfile.address} onChange={(e) => setCustomerProfile({ ...customerProfile, address: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>City</label>
+            <input placeholder="City" value={customerProfile.city} onChange={(e) => setCustomerProfile({ ...customerProfile, city: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>State / Province</label>
+            <input placeholder="State or province" value={customerProfile.state} onChange={(e) => setCustomerProfile({ ...customerProfile, state: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>ZIP / Postal Code</label>
+            <input placeholder="ZIP or postal code" value={customerProfile.zip} onChange={(e) => setCustomerProfile({ ...customerProfile, zip: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Country</label>
+            <input placeholder="Country" value={customerProfile.country} onChange={(e) => setCustomerProfile({ ...customerProfile, country: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Wallet Seed (secret!)</label>
+            <input placeholder="Your XRPL wallet seed (keep secret)" value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Wallet Address</label>
+            <input placeholder="Your XRPL classic address (r...)" value={customerProfile.classicAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, classicAddress: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '40px' }} />
+
+            <button onClick={saveCustomerProfile} style={{ display: 'block', margin: '0 auto', background: '#D4AF37', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', boxShadow: '0 8px 20px rgba(212,175,55,0.3)', cursor: 'pointer' }}>
+              Save Customer Profile
+            </button>
+          </div>
+        ) : (
+          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
+            <h2 style={{ color: '#D4AF37', textAlign: 'center', marginBottom: '30px' }}>Vendor Profile</h2>
+            <p style={{ textAlign: 'center', marginBottom: '30px' }}>Save vendor company and wallet info — address will auto-fill when creating POs.</p>
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Company Name</label>
+            <input placeholder="Vendor company name" value={vendorProfile.company} onChange={(e) => setVendorProfile({ ...vendorProfile, company: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Contact Name</label>
+            <input placeholder="Vendor contact name" value={vendorProfile.name} onChange={(e) => setVendorProfile({ ...vendorProfile, name: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Street Address</label>
+            <input placeholder="Vendor street address" value={vendorProfile.address} onChange={(e) => setVendorProfile({ ...vendorProfile, address: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>City</label>
+            <input placeholder="City" value={vendorProfile.city} onChange={(e) => setVendorProfile({ ...vendorProfile, city: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>State / Province</label>
+            <input placeholder="State or province" value={vendorProfile.state} onChange={(e) => setVendorProfile({ ...vendorProfile, state: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>ZIP / Postal Code</label>
+            <input placeholder="ZIP or postal code" value={vendorProfile.zip} onChange={(e) => setVendorProfile({ ...vendorProfile, zip: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Country</label>
+            <input placeholder="Country" value={vendorProfile.country} onChange={(e) => setVendorProfile({ ...vendorProfile, country: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Wallet Seed (secret!)</label>
+            <input placeholder="Vendor XRPL wallet seed (keep secret)" value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
+
+            <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Wallet Address</label>
+            <input placeholder="Vendor XRPL classic address (r...)" value={vendorProfile.classicAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, classicAddress: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '40px' }} />
+
+            <button onClick={saveVendorProfile} style={{ display: 'block', margin: '0 auto', background: '#D4AF37', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', boxShadow: '0 8px 20px rgba(212,175,55,0.3)', cursor: 'pointer' }}>
+              Save Vendor Profile
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
