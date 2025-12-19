@@ -9,6 +9,11 @@ interface Item {
   total: string;
 }
 
+interface Attachment {
+  name: string;
+  uri: string;
+}
+
 interface POData {
   poName: string;
   description: string;
@@ -17,6 +22,7 @@ interface POData {
   deliveryTerms: string;
   items: Item[];
   escrowCondition: string;
+  attachments?: Attachment[];
 }
 
 interface SavedPO {
@@ -65,6 +71,12 @@ export default function App() {
   const [newTotal, setNewTotal] = useState('');
   const [totalEscrowAmount, setTotalEscrowAmount] = useState('400');
 
+  // Attachments
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+
+  // For SC.PO coin glow on success
+  const [scpoSuccess, setScpoSuccess] = useState(false);
+
   useEffect(() => {
     const total = items.reduce((sum, item) => sum + parseFloat(item.total || '0'), 0);
     setTotalEscrowAmount(total.toString());
@@ -97,6 +109,7 @@ export default function App() {
   // View Tab States
   const [ipfsUri, setIpfsUri] = useState('');
   const [viewedPO, setViewedPO] = useState<POData | null>(null);
+  const [poLoadError, setPoLoadError] = useState<string | null>(null);
 
   // Saved POs
   const [savedPOs, setSavedPOs] = useState<SavedPO[]>([]);
@@ -129,14 +142,17 @@ export default function App() {
   const viewPOFromUri = async (uri: string) => {
     setIpfsUri(uri);
     setViewedPO(null);
+    setPoLoadError(null);
     try {
       const hash = uri.replace('ipfs://', '');
-      const response = await fetch(`https://ipfs.io/ipfs/${hash}`);
-      if (!response.ok) throw new Error('Failed to fetch from IPFS');
+      const response = await fetch(`https://ipfs.io/ipfs/${hash}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}: Failed to fetch from IPFS gateway`);
       const data = await response.json();
       setViewedPO(data as POData);
     } catch (err: any) {
-      alert('Error loading PO: ' + err.message);
+      const errorMsg = err.message || 'Unknown error';
+      setPoLoadError(errorMsg);
+      console.error('IPFS load error:', err);
     }
   };
 
@@ -192,6 +208,26 @@ export default function App() {
     return { condition: conditionHex, fulfillment: fulfillmentBase64 };
   };
 
+  const uploadFileToIPFS = async (file: File): Promise<string> => {
+    const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
+    if (!pinataApiKey) throw new Error('Pinata API key missing');
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${pinataApiKey}`,
+      },
+      body: formData,
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`File upload failed: ${errorText}`);
+    }
+    const result = await response.json();
+    return `ipfs://${result.IpfsHash}`;
+  };
+
   const uploadToIPFS = async (data: POData) => {
     const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
     if (!pinataApiKey) throw new Error('Pinata API key missing – check .env file');
@@ -221,6 +257,21 @@ export default function App() {
     const drops = xrpl.xrpToDrops(totalEscrowAmount);
     const { condition, fulfillment } = await generateConditionFulfillment();
 
+    let attachments: Attachment[] = [];
+    if (selectedFiles && selectedFiles.length > 0) {
+      setResult('Uploading attachments...');
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        try {
+          const uri = await uploadFileToIPFS(file);
+          attachments.push({ name: file.name, uri });
+        } catch (err: any) {
+          alert('Failed to upload attachment: ' + err.message);
+          return;
+        }
+      }
+    }
+
     const poData: POData = {
       poName,
       description: desc,
@@ -229,9 +280,11 @@ export default function App() {
       deliveryTerms,
       items,
       escrowCondition: condition,
+      attachments: attachments.length > 0 ? attachments : undefined,
     };
 
     try {
+      setResult('Uploading PO data to IPFS...');
       const ipfsUri = await uploadToIPFS(poData);
 
       const client = new xrpl.Client('wss://s.altnet.rippletest.net:51233', { connectionTimeout: 20000 });
@@ -353,8 +406,13 @@ export default function App() {
         `Fulfillment: ${fulfillment}\n` +
         `IPFS URI: ${ipfsUri}\n` +
         `OfferIndex: ${offerIndex}\n` +
-        `Check View SC.PO tab for status.`
+        `Check View SC.PO tab for status.` +
+        (attachments.length > 0 ? `\n${attachments.length} attachment(s) uploaded.` : '')
       );
+
+      // Trigger coin glow
+      setScpoSuccess(true);
+      setTimeout(() => setScpoSuccess(false), 3000);
 
       client.disconnect();
     } catch (err: any) {
@@ -430,32 +488,128 @@ export default function App() {
   const getConditionFromResult = () => result.match(/Condition: (.*)/)?.[1] || '';
   const getEscrowSequenceFromResult = () => result.match(/Escrow Sequence: (.*)/)?.[1] || '';
 
+  // Button feedback helpers
+  const handleMouseEnter = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.transform = 'scale(1.05)';
+    e.currentTarget.style.boxShadow = '0 8px 20px rgba(0,0,0,0.2)';
+  };
+
+  const handleMouseLeave = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.transform = 'scale(1)';
+    e.currentTarget.style.boxShadow = e.currentTarget.dataset.originalShadow || '0 4px 10px rgba(0,0,0,0.1)';
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.transform = 'scale(0.98)';
+  };
+
+  const handleMouseUp = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.currentTarget.style.transform = 'scale(1.05)';
+  };
+
+  // Pulse animation for coin glow
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.innerHTML = `
+      @keyframes scpoPulse {
+        0% { box-shadow: 0 0 30px #FFD700, 0 0 60px #FFA500, inset 0 0 20px rgba(255,255,255,0.5); }
+        50% { box-shadow: 0 0 50px #FFD700, 0 0 80px #FFA500, inset 0 0 30px rgba(255,255,255,0.7); }
+        100% { box-shadow: 0 0 30px #FFD700, 0 0 60px #FFA500, inset 0 0 20px rgba(255,255,255,0.5); }
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      if (document.head.contains(style)) document.head.removeChild(style);
+    };
+  }, []);
+
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#f5f5f5', fontFamily: 'Helvetica, Arial, sans-serif' }}>
-      {/* Left Sidebar - NEW ORDER & RENAMED */}
-      <div style={{ width: '250px', background: 'linear-gradient(to bottom, #FFD700, #DAA520)', padding: '20px', borderRadius: '0 20px 20px 0', boxShadow: '5px 0 15px rgba(0,0,0,0.1)' }}>
+      {/* Fixed Left Sidebar */}
+      <div style={{
+        position: 'fixed',
+        left: 0,
+        top: 0,
+        width: '250px',
+        height: '100vh',
+        background: 'linear-gradient(to bottom, #FFD700, #DAA520)',
+        padding: '20px',
+        boxShadow: '5px 0 15px rgba(0,0,0,0.1)',
+        overflowY: 'auto',
+        zIndex: 10
+      }}>
         <h2 style={{ color: 'white', textAlign: 'center', marginBottom: '40px' }}>Customer</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <button onClick={() => setActiveTab('create')} style={{ padding: '15px', background: activeTab === 'create' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+          <button onClick={() => setActiveTab('create')} style={{
+            padding: '15px',
+            background: activeTab === 'create' ? '#FFA500' : 'rgba(255,255,255,0.2)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '30px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
             Create SC.PO
           </button>
-          <button onClick={() => setActiveTab('view')} style={{ padding: '15px', background: activeTab === 'view' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+          <button onClick={() => setActiveTab('view')} style={{
+            padding: '15px',
+            background: activeTab === 'view' ? '#FFA500' : 'rgba(255,255,255,0.2)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '30px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
             View SC.PO
           </button>
-          <button onClick={() => setActiveTab('customerProfile')} style={{ padding: '15px', background: activeTab === 'customerProfile' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+          <button onClick={() => setActiveTab('customerProfile')} style={{
+            padding: '15px',
+            background: activeTab === 'customerProfile' ? '#FFA500' : 'rgba(255,255,255,0.2)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '30px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
             Customer Profile
           </button>
-          <button onClick={() => setActiveTab('vendorProfile')} style={{ padding: '15px', background: activeTab === 'vendorProfile' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+          <button onClick={() => setActiveTab('vendorProfile')} style={{
+            padding: '15px',
+            background: activeTab === 'vendorProfile' ? '#FFA500' : 'rgba(255,255,255,0.2)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '30px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
             Vendor Profile
           </button>
-          <button onClick={() => setActiveTab('vendor')} style={{ padding: '15px', background: activeTab === 'vendor' ? '#FFA500' : 'rgba(255,255,255,0.2)', color: 'white', border: 'none', borderRadius: '30px', fontSize: '16px', cursor: 'pointer' }}>
+          <button onClick={() => setActiveTab('vendor')} style={{
+            padding: '15px',
+            background: activeTab === 'vendor' ? '#FFA500' : 'rgba(255,255,255,0.2)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '30px',
+            fontSize: '18px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+          }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
             Vendor Claim
           </button>
         </div>
       </div>
 
       {/* Main Content */}
-      <div style={{ flex: 1, padding: '40px', background: 'white', borderRadius: '20px', margin: '20px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }}>
+      <div style={{ marginLeft: '250px', flex: 1, padding: '40px', background: 'white', minHeight: '100vh', overflowY: 'auto' }}>
         <h1 style={{ color: '#D4AF37', textAlign: 'center', fontSize: '36px', marginBottom: '30px' }}>SC.PO Generator</h1>
 
         {activeTab === 'create' && (
@@ -502,7 +656,9 @@ export default function App() {
                     <td style={{ padding: '15px', background: 'white' }}>{item.qty}</td>
                     <td style={{ padding: '15px', background: 'white' }}>${item.total}</td>
                     <td style={{ padding: '15px', background: 'white', borderRadius: '0 30px 30px 0' }}>
-                      <button onClick={() => removeItem(index)} style={{ background: 'red', color: 'white', padding: '5px 10px', borderRadius: '15px' }}>Remove</button>
+                      <button onClick={() => removeItem(index)} style={{ background: '#e74c3c', color: 'white', padding: '5px 10px', borderRadius: '15px', border: '2px solid #c0392b', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                        Remove
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -513,33 +669,76 @@ export default function App() {
               <input placeholder="Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', flex: 1 }} />
               <input placeholder="Qty" value={newQty} onChange={(e) => setNewQty(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', flex: 1 }} />
               <input placeholder="Total $" value={newTotal} onChange={(e) => setNewTotal(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', flex: 1 }} />
-              <button onClick={addItem} style={{ background: '#D4AF37', color: 'white', padding: '15px 30px', borderRadius: '30px', cursor: 'pointer' }}>Add</button>
+              <button onClick={addItem} style={{ background: '#D4AF37', color: 'white', padding: '15px 30px', borderRadius: '30px', border: 'none', boxShadow: '0 4px 10px rgba(212,175,55,0.3)', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                Add
+              </button>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '30px' }}>
               <div style={{ background: '#FFF3E0', padding: '20px 40px', borderRadius: '30px', fontSize: '20px', fontWeight: 'bold', color: '#D4AF37' }}>
                 Sub Total: ${totalEscrowAmount}
               </div>
             </div>
-            <button onClick={createSCPO} style={{ display: 'block', margin: '40px auto', background: '#D4AF37', color: 'white', padding: '25px 60px', fontSize: '24px', fontWeight: 'bold', border: 'none', borderRadius: '50px', boxShadow: '0 10px 30px rgba(212,175,55,0.4)', cursor: 'pointer' }}>
+
+            <h3 style={{ color: '#D4AF37', margin: '40px 0 20px' }}>Attachments (optional)</h3>
+            <p style={{ marginBottom: '10px', color: '#666' }}>Add drawings, specs, PDFs, images, etc. (uploaded to IPFS)</p>
+            <input type="file" multiple onChange={(e) => setSelectedFiles(e.target.files)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '30px' }} />
+            {selectedFiles && selectedFiles.length > 0 && (
+              <div style={{ marginBottom: '30px' }}>
+                <strong>Selected files:</strong>
+                <ul>
+                  {Array.from(selectedFiles).map((file, i) => (
+                    <li key={i}>{file.name} ({(file.size / 1024).toFixed(1)} KB)</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {/* Coin-shaped SC.PO button with glow on success */}
+            <button 
+              onClick={createSCPO} 
+              style={{
+                display: 'block',
+                margin: '40px auto',
+                width: '180px',
+                height: '180px',
+                borderRadius: '50%',
+                background: 'linear-gradient(145deg, #f0d878, #b8972e)',
+                color: 'white',
+                fontSize: '28px',
+                fontWeight: 'bold',
+                border: '8px solid #D4AF37',
+                boxShadow: scpoSuccess 
+                  ? '0 0 30px #FFD700, 0 0 60px #FFA500, inset 0 0 20px rgba(255,255,255,0.5)' 
+                  : '0 10px 30px rgba(212,175,55,0.4), inset 0 0 20px rgba(255,255,255,0.3)',
+                cursor: 'pointer',
+                transition: 'all 0.3s ease',
+                animation: scpoSuccess ? 'scpoPulse 2s infinite' : 'none',
+              }}
+              onMouseEnter={handleMouseEnter}
+              onMouseLeave={handleMouseLeave}
+              onMouseDown={handleMouseDown}
+              onMouseUp={handleMouseUp}
+            >
               SC.PO
             </button>
+
             {result && (
               <div style={{ marginTop: '40px' }}>
                 <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', border: '1px solid #ddd', borderRadius: '15px' }}>
                   {result}
                 </pre>
-                <div style={{ marginTop: '20px', display: 'flex', gap: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                  <button onClick={() => copyToClipboard(getFulfillmentFromResult(), 'Fulfillment')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
-                    📋 Copy Fulfillment Code
+                <div style={{ marginTop: '20px', display: 'flex', gap: '10px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <button onClick={() => copyToClipboard(getFulfillmentFromResult(), 'Fulfillment')} style={{ background: '#0066cc', color: 'white', padding: '8px 15px', fontSize: '14px', border: 'none', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                    📋 Fulfillment
                   </button>
-                  <button onClick={() => copyToClipboard(getOfferIndexFromResult(), 'OfferIndex')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
-                    📋 Copy OfferIndex
+                  <button onClick={() => copyToClipboard(getOfferIndexFromResult(), 'OfferIndex')} style={{ background: '#0066cc', color: 'white', padding: '8px 15px', fontSize: '14px', border: 'none', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                    📋 OfferIndex
                   </button>
-                  <button onClick={() => copyToClipboard(getConditionFromResult(), 'Condition')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
-                    📋 Copy Condition
+                  <button onClick={() => copyToClipboard(getConditionFromResult(), 'Condition')} style={{ background: '#0066cc', color: 'white', padding: '8px 15px', fontSize: '14px', border: 'none', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                    📋 Condition
                   </button>
-                  <button onClick={() => copyToClipboard(getEscrowSequenceFromResult(), 'Escrow Sequence')} style={{ background: '#0066cc', color: 'white', padding: '15px 30px', fontSize: '18px', border: 'none', borderRadius: '30px', cursor: 'pointer' }}>
-                    📋 Copy Escrow Sequence
+                  <button onClick={() => copyToClipboard(getEscrowSequenceFromResult(), 'Escrow Sequence')} style={{ background: '#0066cc', color: 'white', padding: '8px 15px', fontSize: '14px', border: 'none', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                    📋 Escrow Sequence
                   </button>
                 </div>
               </div>
@@ -570,10 +769,14 @@ export default function App() {
                       <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                       <td style={{ padding: '10px' }}>${po.total}</td>
                       <td style={{ padding: '10px' }}>
-                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px', borderRadius: '20px' }}>View PO</button>
+                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', border: '2px solid #1e8449', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                          View PO
+                        </button>
                       </td>
                       <td style={{ padding: '10px' }}>
-                        <button onClick={() => deleteOpenPO(po.id)} style={{ background: 'red', color: 'white', padding: '8px', borderRadius: '20px' }}>Delete</button>
+                        <button onClick={() => deleteOpenPO(po.id)} style={{ background: '#e74c3c', color: 'white', padding: '8px', borderRadius: '20px', border: '2px solid #c0392b', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                          Delete
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -599,7 +802,9 @@ export default function App() {
                       <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                       <td style={{ padding: '10px' }}>${po.total}</td>
                       <td style={{ padding: '10px' }}>
-                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px', borderRadius: '20px' }}>View PO</button>
+                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', border: '2px solid #1e8449', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                          View PO
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -625,12 +830,30 @@ export default function App() {
                       <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                       <td style={{ padding: '10px' }}>${po.total}</td>
                       <td style={{ padding: '10px' }}>
-                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#228B22', color: 'white', padding: '8px', borderRadius: '20px' }}>View PO</button>
+                        <button onClick={() => viewPOFromUri(po.ipfsUri)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', border: '2px solid #1e8449', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                          View PO
+                        </button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+            )}
+
+            {poLoadError && (
+              <div style={{ marginTop: '40px', padding: '20px', background: '#ffebee', borderRadius: '15px', textAlign: 'center' }}>
+                <p style={{ color: '#c62828', marginBottom: '15px' }}>
+                  <strong>Could not load PO from IPFS:</strong><br />
+                  {poLoadError}
+                </p>
+                <p style={{ color: '#666', marginBottom: '20px' }}>
+                  IPFS gateways can be slow or temporarily unavailable.<br />
+                  Please try again in a moment.
+                </p>
+                <button onClick={() => viewPOFromUri(ipfsUri)} style={{ background: '#D4AF37', color: 'white', padding: '12px 30px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                  🔄 Retry Loading PO
+                </button>
+              </div>
             )}
 
             {viewedPO && (
@@ -660,6 +883,20 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
+                {viewedPO.attachments && viewedPO.attachments.length > 0 && (
+                  <>
+                    <h4 style={{ marginTop: '20px' }}>Attachments</h4>
+                    <ul>
+                      {viewedPO.attachments.map((att, i) => (
+                        <li key={i}>
+                          <a href={`https://ipfs.io/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#D4AF37' }}>
+                            {att.name}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -684,7 +921,7 @@ export default function App() {
             <h3>Accept SC.PO NFT Token</h3>
             <input placeholder="Vendor Wallet Seed (auto-filled)" value={vendorAcceptSeed} onChange={(e) => setVendorAcceptSeed(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
             <input placeholder="OfferIndex" value={offerIndex} onChange={(e) => setOfferIndex(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
-            <button onClick={acceptNFT} style={{ background: '#228B22', color: 'white', padding: '15px', width: '100%', borderRadius: '30px' }}>
+            <button onClick={acceptNFT} style={{ background: '#27ae60', color: 'white', padding: '15px', width: '100%', borderRadius: '30px', border: '2px solid #1e8449', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
               Accept SC.PO NFT
             </button>
             {acceptResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{acceptResult}</pre>}
@@ -709,7 +946,7 @@ export default function App() {
             <input placeholder="Condition" value={claimCondition} onChange={(e) => setClaimCondition(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
             <input placeholder="Owner Address (auto-filled)" value={claimOwner} onChange={(e) => setClaimOwner(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
             <input placeholder="Escrow Sequence" value={claimOfferSequence} onChange={(e) => setClaimOfferSequence(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '10px' }} />
-            <button onClick={claimEscrow} style={{ background: 'green', color: 'white', padding: '15px', width: '100%', borderRadius: '30px' }}>
+            <button onClick={claimEscrow} style={{ background: '#27ae60', color: 'white', padding: '15px', width: '100%', borderRadius: '30px', border: '2px solid #1e8449', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
               Claim Escrow
             </button>
             {claimResult && <pre style={{ background: '#e0ffe0', padding: '15px', marginTop: '20px' }}>{claimResult}</pre>}
@@ -738,7 +975,7 @@ export default function App() {
             <input placeholder="Your XRPL wallet seed (keep secret)" value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
             <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Wallet Address</label>
             <input placeholder="Your XRPL classic address (r...)" value={customerProfile.classicAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, classicAddress: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '40px' }} />
-            <button onClick={saveCustomerProfile} style={{ display: 'block', margin: '0 auto', background: '#D4AF37', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', boxShadow: '0 8px 20px rgba(212,175,55,0.3)', cursor: 'pointer' }}>
+            <button onClick={saveCustomerProfile} style={{ display: 'block', margin: '0 auto', background: '#D4AF37', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', boxShadow: '0 8px 20px rgba(212,175,55,0.3)', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
               Save Customer Profile
             </button>
           </div>
@@ -766,7 +1003,7 @@ export default function App() {
             <input placeholder="Vendor XRPL wallet seed (keep secret)" value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '20px' }} />
             <label style={{ display: 'block', marginBottom: '10px', color: '#D4AF37', fontWeight: 'bold' }}>Wallet Address</label>
             <input placeholder="Vendor XRPL classic address (r...)" value={vendorProfile.classicAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, classicAddress: e.target.value })} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D4AF37', marginBottom: '40px' }} />
-            <button onClick={saveVendorProfile} style={{ display: 'block', margin: '0 auto', background: '#D4AF37', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', boxShadow: '0 8px 20px rgba(212,175,55,0.3)', cursor: 'pointer' }}>
+            <button onClick={saveVendorProfile} style={{ display: 'block', margin: '0 auto', background: '#D4AF37', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', boxShadow: '0 8px 20px rgba(212,175,55,0.3)', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
               Save Vendor Profile
             </button>
           </div>
