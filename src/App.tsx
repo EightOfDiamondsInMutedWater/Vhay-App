@@ -5,7 +5,6 @@ import { Buffer } from 'buffer';
 import CryptoJS from 'crypto-js';
 import { v4 as uuidv4 } from 'uuid';
 import { QRCodeSVG } from 'qrcode.react';
-
 const getOrGenerateUUID = (key: string): string => {
   let uuid = localStorage.getItem(key);
   if (!uuid) {
@@ -14,7 +13,6 @@ const getOrGenerateUUID = (key: string): string => {
   }
   return uuid;
 };
-
 // Singleton XRPL Client
 let xrplClient: xrpl.Client | null = null;
 let connectingPromise: Promise<xrpl.Client> | null = null;
@@ -34,18 +32,15 @@ const getXRPLClient = async (): Promise<xrpl.Client> => {
   }
   return connectingPromise;
 };
-
 interface Item {
   num: string;
   qty: string;
   total: string;
 }
-
 interface Attachment {
   name: string;
   uri: string;
 }
-
 interface POData {
   poName: string;
   description: string;
@@ -55,7 +50,6 @@ interface POData {
   items: Item[];
   attachments?: Attachment[];
 }
-
 interface SavedPO {
   id: string;
   poName: string;
@@ -71,7 +65,6 @@ interface SavedPO {
   paymentTerms: string; // Added
   vendorUUID?: string; // Added for privacy
 }
-
 interface Profile {
   company: string;
   name: string;
@@ -91,7 +84,6 @@ interface Profile {
   lastOnChainHash?: string;
   ipfsUri?: string;
 }
-
 interface PublicProfile {
   company: string;
   name: string;
@@ -112,14 +104,12 @@ interface PublicProfile {
   walletHistory: string[];
   lastUpdateSource?: { postedBy: string; timestamp: number };
 }
-
 interface FeeEntry {
   date: string;
   poName: string;
   amount: string;
   txHash: string;
 }
-
 interface ProfileLink {
   linkerUUID: string;
   linkeeUUID: string;
@@ -128,7 +118,6 @@ interface ProfileLink {
   txHash: string;
   createdAt: number;
 }
-
 // New interface for inventory items
 interface InventoryItem {
   id: string;
@@ -140,12 +129,12 @@ interface InventoryItem {
   ipfsUri: string;
   dateAdded: string;
 }
-
 export default function App() {
   const [mode, setMode] = useState<'customer' | 'vendor'>('customer');
   const [activeTab, setActiveTab] = useState<'create' | 'view' | 'scpoAction' | 'inventoryCatalog' | 'customerProfile' | 'vendorProfile' | 'admin'>('create');
   const [customerProfileSubTab, setCustomerProfileSubTab] = useState<'profile' | 'links'>('profile');
   const [vendorProfileSubTab, setVendorProfileSubTab] = useState<'profile' | 'links'>('profile');
+  const [overviewSubTab, setOverviewSubTab] = useState<'summary' | 'details'>('summary');
   // Create Tab States
   const [poName, setPoName] = useState('');
   const [seed, setSeed] = useState('');
@@ -1559,11 +1548,11 @@ export default function App() {
   const tabs = mode === 'customer' ? [
     { label: 'Create', key: 'create' },
     { label: 'Action', key: 'scpoAction' },
-    { label: 'View', key: 'view' },
+    { label: 'Overview', key: 'view' },
     { label: 'Profile', key: 'customerProfile' },
     { label: 'Admin', key: 'admin' }
   ] : [
-    { label: 'View', key: 'view' },
+    { label: 'Overview', key: 'view' },
     { label: 'Action', key: 'scpoAction' },
     { label: 'Inventory', key: 'inventoryCatalog' },
     { label: 'Profile', key: 'vendorProfile' },
@@ -1761,7 +1750,10 @@ export default function App() {
         borderTopRightRadius: '28px',
         borderBottomRightRadius: '28px',
         overflow: 'visible',
-        zIndex: 10
+        zIndex: 10,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'flex-start'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: '40px' }}>
           <span style={{ color: '#FFFFFF', fontWeight: 'bold', marginRight: '10px' }}>{mode === 'customer' ? 'Customer' : 'Vendor'}</span>
@@ -1782,7 +1774,7 @@ export default function App() {
             />
           </div>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '26px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '26px', marginBottom: '40px' }}>
           {tabs.map(tab => (
             <button
               key={tab.key}
@@ -1821,6 +1813,14 @@ export default function App() {
               {tab.label}
             </button>
           ))}
+        </div>
+        {/* New: Logo centered horizontally, raised up a bit */}
+        <div style={{ marginTop: 'auto', textAlign: 'center', paddingBottom: '20px' }}>
+          <img 
+            src="/logo.png" 
+            alt="Your Logo" 
+            style={{ width: '100px', height: 'auto' }}  // Adjust size as needed
+          />
         </div>
       </div>
       {/* Main Content */}
@@ -2363,338 +2363,428 @@ export default function App() {
         )}
         {activeTab === 'view' && (
           <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>View SC.PO</h2>
-            {mode === 'customer' && (
-              <div style={{ marginBottom: '40px' }}>
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Funded SC.PO</h3>
-                {getFilteredPOs('Funded').length === 0 ? (
-                  <p>No funded POs</p>
-                ) : (
-                  <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(fundedExpanded ? sortPOsNewestFirst(getFilteredPOs('Funded')) : sortPOsNewestFirst(getFilteredPOs('Funded').slice(0, 2))).map(po => (
-                          <tr key={po.id}>
-                            <td style={{ padding: '10px' }}>{po.poName}</td>
-                            <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                            <td style={{ padding: '10px' }}>${po.total}</td>
-                            <td style={{ padding: '10px' }}>
-                              <button onClick={async () => {
-                                setSelectedFundedPO(po); // Set for inventory
-                                await viewPOFromUri(po.ipfsUri, po, setCustomerViewViewedPO, setCustomerViewPoLoadError);
-                              }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                View PO
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {getFilteredPOs('Funded').length > 2 && (
-                      <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                        <button
-                          onClick={() => setFundedExpanded(!fundedExpanded)}
-                          style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                        >
-                          {fundedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                        </button>
+            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>Overview</h2>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '40px' }}>
+              <button
+                onClick={() => setOverviewSubTab('summary')}
+                style={{
+                  height: '50px',
+                  padding: '0 30px',
+                  background: overviewSubTab === 'summary'
+                    ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)'
+                    : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)',
+                  color: '#FFFFFF',
+                  border: '1.5px solid #D88F2E',
+                  borderRadius: '999px',
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  transition: 'all 0.18s ease-out',
+                  boxShadow: overviewSubTab === 'summary'
+                    ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)'
+                    : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)'
+                }}
+                onMouseEnter={handleMouseEnter}
+                onMouseLeave={handleMouseLeave}
+                onMouseDown={handleMouseDown}
+                onMouseUp={handleMouseUp}
+              >
+                Summary
+              </button>
+              <button
+                onClick={() => setOverviewSubTab('details')}
+                style={{
+                  height: '50px',
+                  padding: '0 30px',
+                  background: overviewSubTab === 'details'
+                    ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)'
+                    : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)',
+                  color: '#FFFFFF',
+                  border: '1.5px solid #D88F2E',
+                  borderRadius: '999px',
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  transition: 'all 0.18s ease-out',
+                  boxShadow: overviewSubTab === 'details'
+                    ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)'
+                    : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)'
+                }}
+                onMouseEnter={handleMouseEnter}
+                onMouseLeave={handleMouseLeave}
+                onMouseDown={handleMouseDown}
+                onMouseUp={handleMouseUp}
+              >
+                Details
+              </button>
+            </div>
+            {overviewSubTab === 'summary' && (
+              <div>
+                <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>
+                  {mode === 'customer' ? 'Customer SC.PO Summary' : 'Vendor SC.PO Summary'}
+                </h2>
+                <div style={{ display: 'flex', justifyContent: 'space-around', gap: '20px' }}>
+                  {['Open', 'Accepted', 'Funded', 'Claimed'].map(status => {
+                    const filteredPOs = savedPOs.filter(po => {
+                      const poStatus = status === 'Claimed' ? 'Closed' : status;  // Map 'Claimed' to 'Closed'
+                      if (mode === 'customer') return po.status === poStatus && po.buyerAddress === customerProfile.classicAddress;
+                      return po.status === poStatus && po.vendorAddress === vendorProfile.classicAddress;
+                    });
+                    const count = filteredPOs.length;
+                    const totalValue = filteredPOs.reduce((sum, po) => sum + parseFloat(po.total || '0'), 0);
+                    const formattedValue = totalValue >= 1000000 ? `$${Math.round(totalValue / 1000000)}M` :
+                                          totalValue >= 1000 ? `$${Math.round(totalValue / 1000)}K` :
+                                          `$${totalValue.toFixed(0)}`;
+                    return (
+                      <div key={status} style={{ textAlign: 'center', flex: 1 }}>
+                        <h4 style={{ color: '#F2B04A', marginBottom: '10px' }}>{status}</h4>
+                        <div style={{ background: 'white', padding: '20px', borderRadius: '10px', border: '2px solid #FFD98F', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', marginBottom: '10px', height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', fontWeight: 'bold' }}>
+                          {count}
+                        </div>
+                        <div style={{ background: 'white', padding: '10px 20px', borderRadius: '999px', border: '2px solid #FFD98F', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', fontSize: '20px', fontWeight: 'bold' }}>
+                          {formattedValue}
+                        </div>
                       </div>
-                    )}
-                  </div>
-                )}
+                    );
+                  })}
+                </div>
               </div>
             )}
-            {mode === 'customer' && (
-              <div style={{ marginBottom: '40px' }}>
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Closed SC.PO</h3>
-                {getFilteredPOs('Closed').length === 0 ? (
-                  <p>No closed POs</p>
-                ) : (
-                  <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(closedExpanded ? sortPOsNewestFirst(getFilteredPOs('Closed')) : sortPOsNewestFirst(getFilteredPOs('Closed').slice(0, 2))).map(po => (
-                          <tr key={po.id}>
-                            <td style={{ padding: '10px' }}>{po.poName}</td>
-                            <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                            <td style={{ padding: '10px' }}>${po.total}</td>
-                            <td style={{ padding: '10px' }}>
-                              <button onClick={async () => {
-                                setSelectedFundedPO(po); // Reuse for closed as well
-                                await viewPOFromUri(po.ipfsUri, po, setCustomerViewViewedPO, setCustomerViewPoLoadError);
-                              }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                View PO
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {getFilteredPOs('Closed').length > 2 && (
-                      <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                        <button
-                          onClick={() => setClosedExpanded(!closedExpanded)}
-                          style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                        >
-                          {closedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            {mode === 'vendor' && (
-              <div style={{ marginBottom: '40px' }}>
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Accepted SC.PO (Not Funded)</h3>
-                {getFilteredPOs('Accepted').filter(p => !p.escrowSequence).length === 0 ? (
-                  <p>No accepted POs</p>
-                ) : (
-                  <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(acceptedExpanded ? sortPOsNewestFirst(getFilteredPOs('Accepted').filter(p => !p.escrowSequence)) : sortPOsNewestFirst(getFilteredPOs('Accepted').filter(p => !p.escrowSequence).slice(0, 2))).map(po => (
-                          <tr key={po.id}>
-                            <td style={{ padding: '10px' }}>{po.poName}</td>
-                            <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                            <td style={{ padding: '10px' }}>${po.total}</td>
-                            <td style={{ padding: '10px' }}>
-                              <button onClick={async () => {
-                                setSelectedOpenPO(po); // Set for inventory
-                                await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError);
-                              }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                View PO
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {getFilteredPOs('Accepted').filter(p => !p.escrowSequence).length > 2 && (
-                      <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                        <button
-                          onClick={() => setAcceptedExpanded(!acceptedExpanded)}
-                          style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                        >
-                          {acceptedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            {mode === 'vendor' && (
-              <div style={{ marginBottom: '40px' }}>
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Funded SC.PO</h3>
-                {getFilteredPOs('Funded').length === 0 ? (
-                  <p>No funded POs</p>
-                ) : (
-                  <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>PO Name</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Date Issued</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Total $</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Time Remaining</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(fundedExpanded ? sortPOsNewestFirst(getFilteredPOs('Funded')) : sortPOsNewestFirst(getFilteredPOs('Funded').slice(0, 2))).map(po => (
-                          <tr key={po.id}>
-                            <td style={{ padding: '10px' }}>{po.poName}</td>
-                            <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                            <td style={{ padding: '10px' }}>${po.total}</td>
-                            <td style={{ padding: '10px' }}>{getTimeRemaining(po)}</td>
-                            <td style={{ padding: '10px' }}>
-                              <button onClick={async () => {
-                                setSelectedFundedPO(po); // Set for inventory
-                                await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError);
-                              }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                View PO
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {getFilteredPOs('Funded').length > 2 && (
-                      <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                        <button
-                          onClick={() => setFundedExpanded(!fundedExpanded)}
-                          style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                        >
-                          {fundedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            {mode === 'vendor' && (
-              <div style={{ marginBottom: '40px' }}>
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Claimed SC.PO</h3>
-                {getFilteredPOs('Closed').length === 0 ? (
-                  <p>No claimed POs</p>
-                ) : (
-                  <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(closedExpanded ? sortPOsNewestFirst(getFilteredPOs('Closed')) : sortPOsNewestFirst(getFilteredPOs('Closed').slice(0, 2))).map(po => (
-                          <tr key={po.id}>
-                            <td style={{ padding: '10px' }}>{po.poName}</td>
-                            <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                            <td style={{ padding: '10px' }}>${po.total}</td>
-                            <td style={{ padding: '10px' }}>
-                              <button onClick={async () => {
-                                setSelectedFundedPO(po); // Reuse for closed
-                                await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError);
-                              }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                View PO
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {getFilteredPOs('Closed').length > 2 && (
-                      <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                        <button
-                          onClick={() => setClosedExpanded(!closedExpanded)}
-                          style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                        >
-                          {closedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            {(mode === 'customer' ? customerViewPoLoadError : vendorViewPoLoadError) && (
-              <div style={{ marginTop: '40px', padding: '20px', background: '#ffebee', borderRadius: '15px', textAlign: 'center' }}>
-                <p style={{ color: '#c62828', marginBottom: '15px' }}>
-                  <strong>Could not load PO from IPFS:</strong><br />
-                  {mode === 'customer' ? customerViewPoLoadError : vendorViewPoLoadError}
-                </p>
-                <p style={{ color: '#666', marginBottom: '20px' }}>
-                  IPFS gateways can be slow or temporarily unavailable.<br />
-                  Please try again in a moment.
-                </p>
-              </div>
-            )}
-            {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO) && (
-              <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
-                <h3 style={{ color: '#F2B04A' }}>Purchase Order Details</h3>
-                <p><strong style={{ color: '#F2B04A' }}>PO Name:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.poName}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.description || 'N/A'}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.department}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.paymentTerms}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.deliveryTerms}</p>
-                <h4 style={{ color: '#F2B04A' }}>Items</h4>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ background: '#e0e0e0' }}>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.items.map((item, i) => (
-                      <tr key={i}>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {(() => {
-                  const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
-                  return currentViewedPO?.attachments && currentViewedPO.attachments.length > 0 && (
-                    <>
-                      <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Attachments</h4>
-                      <ul>
-                        {currentViewedPO.attachments.map((att, i) => (
-                          <li key={i}>
-                            <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                              {att.name}
-                            </a>
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  );
-                })()}
-                <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Inventory Details</h4>
-                {(() => {
-                  const currentPoInventory = mode === 'customer' ? customerViewPoInventory : vendorViewPoInventory;
-                  const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
-                  return currentViewedPO?.items.map((item, i) => {
-                    const inv = currentPoInventory[item.num];
-                    return inv ? (
-                      <div key={i} style={{ marginBottom: '20px', border: '1px solid #D88F2E', padding: '10px', borderRadius: '10px' }}>
-                        <h5 style={{ color: '#F2B04A' }}>Item: {item.num}</h5>
-                        <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {inv.description}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {inv.department}</p>
-                        {inv.attachments.length > 0 && (
-                          <>
-                            <strong style={{ color: '#F2B04A' }}>Inventory Attachments:</strong>
-                            <ul>
-                              {inv.attachments.map((att, j) => (
-                                <li key={j}>
-                                  <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                                    {att.name}
-                                  </a>
-                                </li>
-                              ))}
-                            </ul>
-                          </>
+            {overviewSubTab === 'details' && (
+              <>
+                {mode === 'customer' && (
+                  <div style={{ marginBottom: '40px' }}>
+                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Funded SC.PO</h3>
+                    {getFilteredPOs('Funded').length === 0 ? (
+                      <p>No funded POs</p>
+                    ) : (
+                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                          <thead>
+                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(fundedExpanded ? sortPOsNewestFirst(getFilteredPOs('Funded')) : sortPOsNewestFirst(getFilteredPOs('Funded').slice(0, 2))).map(po => (
+                              <tr key={po.id}>
+                                <td style={{ padding: '10px' }}>{po.poName}</td>
+                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                                <td style={{ padding: '10px' }}>${po.total}</td>
+                                <td style={{ padding: '10px' }}>
+                                  <button onClick={async () => {
+                                    setSelectedFundedPO(po); // Set for inventory
+                                    await viewPOFromUri(po.ipfsUri, po, setCustomerViewViewedPO, setCustomerViewPoLoadError);
+                                  }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                                    View PO
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {getFilteredPOs('Funded').length > 2 && (
+                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
+                            <button
+                              onClick={() => setFundedExpanded(!fundedExpanded)}
+                              style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
+                            >
+                              {fundedExpanded ? 'Show Less ▲' : 'Show More ▼'}
+                            </button>
+                          </div>
                         )}
                       </div>
-                    ) : null;
-                  });
-                })()}
-                <button onClick={() => mode === 'customer' ? setCustomerViewViewedPO(null) : setVendorViewViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', marginTop: '20px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Close
-                </button>
-              </div>
+                    )}
+                  </div>
+                )}
+                {mode === 'customer' && (
+                  <div style={{ marginBottom: '40px' }}>
+                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Closed SC.PO</h3>
+                    {getFilteredPOs('Closed').length === 0 ? (
+                      <p>No closed POs</p>
+                    ) : (
+                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                          <thead>
+                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(closedExpanded ? sortPOsNewestFirst(getFilteredPOs('Closed')) : sortPOsNewestFirst(getFilteredPOs('Closed').slice(0, 2))).map(po => (
+                              <tr key={po.id}>
+                                <td style={{ padding: '10px' }}>{po.poName}</td>
+                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                                <td style={{ padding: '10px' }}>${po.total}</td>
+                                <td style={{ padding: '10px' }}>
+                                  <button onClick={async () => {
+                                    setSelectedFundedPO(po); // Reuse for closed as well
+                                    await viewPOFromUri(po.ipfsUri, po, setCustomerViewViewedPO, setCustomerViewPoLoadError);
+                                  }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                                    View PO
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {getFilteredPOs('Closed').length > 2 && (
+                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
+                            <button
+                              onClick={() => setClosedExpanded(!closedExpanded)}
+                              style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
+                            >
+                              {closedExpanded ? 'Show Less ▲' : 'Show More ▼'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {mode === 'vendor' && (
+                  <div style={{ marginBottom: '40px' }}>
+                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Accepted SC.PO (Not Funded)</h3>
+                    {getFilteredPOs('Accepted').filter(p => !p.escrowSequence).length === 0 ? (
+                      <p>No accepted POs</p>
+                    ) : (
+                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                          <thead>
+                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(acceptedExpanded ? sortPOsNewestFirst(getFilteredPOs('Accepted').filter(p => !p.escrowSequence)) : sortPOsNewestFirst(getFilteredPOs('Accepted').filter(p => !p.escrowSequence).slice(0, 2))).map(po => (
+                              <tr key={po.id}>
+                                <td style={{ padding: '10px' }}>{po.poName}</td>
+                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                                <td style={{ padding: '10px' }}>${po.total}</td>
+                                <td style={{ padding: '10px' }}>
+                                  <button onClick={async () => {
+                                    setSelectedOpenPO(po); // Set for inventory
+                                    await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError);
+                                  }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                                    View PO
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {getFilteredPOs('Accepted').filter(p => !p.escrowSequence).length > 2 && (
+                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
+                            <button
+                              onClick={() => setAcceptedExpanded(!acceptedExpanded)}
+                              style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
+                            >
+                              {acceptedExpanded ? 'Show Less ▲' : 'Show More ▼'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {mode === 'vendor' && (
+                  <div style={{ marginBottom: '40px' }}>
+                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Funded SC.PO</h3>
+                    {getFilteredPOs('Funded').length === 0 ? (
+                      <p>No funded POs</p>
+                    ) : (
+                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                          <thead>
+                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>PO Name</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Date Issued</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Total $</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Time Remaining</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(fundedExpanded ? sortPOsNewestFirst(getFilteredPOs('Funded')) : sortPOsNewestFirst(getFilteredPOs('Funded').slice(0, 2))).map(po => (
+                              <tr key={po.id}>
+                                <td style={{ padding: '10px' }}>{po.poName}</td>
+                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                                <td style={{ padding: '10px' }}>${po.total}</td>
+                                <td style={{ padding: '10px' }}>{getTimeRemaining(po)}</td>
+                                <td style={{ padding: '10px' }}>
+                                  <button onClick={async () => {
+                                    setSelectedFundedPO(po); // Set for inventory
+                                    await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError);
+                                  }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                                    View PO
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {getFilteredPOs('Funded').length > 2 && (
+                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
+                            <button
+                              onClick={() => setFundedExpanded(!fundedExpanded)}
+                              style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
+                            >
+                              {fundedExpanded ? 'Show Less ▲' : 'Show More ▼'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {mode === 'vendor' && (
+                  <div style={{ marginBottom: '40px' }}>
+                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Claimed SC.PO</h3>
+                    {getFilteredPOs('Closed').length === 0 ? (
+                      <p>No claimed POs</p>
+                    ) : (
+                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+                          <thead>
+                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
+                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(closedExpanded ? sortPOsNewestFirst(getFilteredPOs('Closed')) : sortPOsNewestFirst(getFilteredPOs('Closed').slice(0, 2))).map(po => (
+                              <tr key={po.id}>
+                                <td style={{ padding: '10px' }}>{po.poName}</td>
+                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
+                                <td style={{ padding: '10px' }}>${po.total}</td>
+                                <td style={{ padding: '10px' }}>
+                                  <button onClick={async () => {
+                                    setSelectedFundedPO(po); // Reuse for closed
+                                    await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError);
+                                  }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                                    View PO
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {getFilteredPOs('Closed').length > 2 && (
+                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
+                            <button
+                              onClick={() => setClosedExpanded(!closedExpanded)}
+                              style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', fontSize: '14px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
+                            >
+                              {closedExpanded ? 'Show Less ▲' : 'Show More ▼'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {(mode === 'customer' ? customerViewPoLoadError : vendorViewPoLoadError) && (
+                  <div style={{ marginTop: '40px', padding: '20px', background: '#ffebee', borderRadius: '15px', textAlign: 'center' }}>
+                    <p style={{ color: '#c62828', marginBottom: '15px' }}>
+                      <strong>Could not load PO from IPFS:</strong><br />
+                      {mode === 'customer' ? customerViewPoLoadError : vendorViewPoLoadError}
+                    </p>
+                    <p style={{ color: '#666', marginBottom: '20px' }}>
+                      IPFS gateways can be slow or temporarily unavailable.<br />
+                      Please try again in a moment.
+                    </p>
+                  </div>
+                )}
+                {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO) && (
+                  <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
+                    <h3 style={{ color: '#F2B04A' }}>Purchase Order Details</h3>
+                    <p><strong style={{ color: '#F2B04A' }}>PO Name:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.poName}</p>
+                    <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.description || 'N/A'}</p>
+                    <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.department}</p>
+                    <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.paymentTerms}</p>
+                    <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.deliveryTerms}</p>
+                    <h4 style={{ color: '#F2B04A' }}>Items</h4>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ background: '#e0e0e0' }}>
+                          <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
+                          <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
+                          <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.items.map((item, i) => (
+                          <tr key={i}>
+                            <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
+                            <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
+                            <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {(() => {
+                      const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
+                      return currentViewedPO?.attachments && currentViewedPO.attachments.length > 0 && (
+                        <>
+                          <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Attachments</h4>
+                          <ul>
+                            {currentViewedPO.attachments.map((att, i) => (
+                              <li key={i}>
+                                <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
+                                  {att.name}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      );
+                    })()}
+                    <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Inventory Details</h4>
+                    {(() => {
+                      const currentPoInventory = mode === 'customer' ? customerViewPoInventory : vendorViewPoInventory;
+                      const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
+                      return currentViewedPO?.items.map((item, i) => {
+                        const inv = currentPoInventory[item.num];
+                        return inv ? (
+                          <div key={i} style={{ marginBottom: '20px', border: '1px solid #D88F2E', padding: '10px', borderRadius: '10px' }}>
+                            <h5 style={{ color: '#F2B04A' }}>Item: {item.num}</h5>
+                            <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {inv.description}</p>
+                            <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {inv.department}</p>
+                            {inv.attachments.length > 0 && (
+                              <>
+                                <strong style={{ color: '#F2B04A' }}>Inventory Attachments:</strong>
+                                <ul>
+                                  {inv.attachments.map((att, j) => (
+                                    <li key={j}>
+                                      <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
+                                        {att.name}
+                                      </a>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </>
+                            )}
+                          </div>
+                        ) : null;
+                      });
+                    })()}
+                    <button onClick={() => mode === 'customer' ? setCustomerViewViewedPO(null) : setVendorViewViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer', transition: 'all 0.18s ease-out', border: 'none', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', marginTop: '20px' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                      Close
+                    </button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
