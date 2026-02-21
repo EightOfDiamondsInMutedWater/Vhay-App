@@ -4,6 +4,10 @@ import type { EscrowCreate, EscrowFinish, Payment, AccountSet, Transaction, Memo
 import CryptoJS from 'crypto-js';
 import { v4 as uuidv4 } from 'uuid';
 import { QRCodeSVG } from 'qrcode.react';
+import { 
+  getMyMPTs, getMyEscrows, getAccountNFTs, getLatestProfileFromAddress, 
+  getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO 
+} from './utils/xrplHelpers';
 
 console.log('xrpl version loaded:', require('xrpl/package.json').version);
 
@@ -16,23 +20,6 @@ const getOrGenerateUUID = (key: string): string => {
   return uuid;
 };
 
-let xrplClient: xrpl.Client | null = null;
-let connectingPromise: Promise<xrpl.Client> | null = null;
-
-const getXRPLClient = async (): Promise<xrpl.Client> => {
-  if (xrplClient?.isConnected()) return xrplClient;
-  if (!connectingPromise) {
-    connectingPromise = (async () => {
-      const client = new xrpl.Client('wss://s.devnet.rippletest.net:51233', { connectionTimeout: 20000 });
-      await client.connect();
-      xrplClient = client;
-      connectingPromise = null;
-      return client;
-    })();
-  }
-  return connectingPromise;
-};
-
 interface Item { num: string; qty: string; total: string; invNFTId?: string; }
 interface Attachment { name: string; uri: string; }
 interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string; }
@@ -43,21 +30,200 @@ interface FeeEntry { date: string; poName: string; amount: string; txHash: strin
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
 interface InventoryItem { id: string; name: string; department: string; description: string; attachments: Attachment[]; nftId: string; ipfsUri: string; dateAdded: string; }
 
-const buildLedgerMetadata = (poName: string, ipfsUri: string, status: string) => ({
+const buildLedgerMetadata = (poName: string, ipfsUri: string, status: string, buyerAddress?: string, vendorAddress?: string, total?: string, payTerms?: string, parentIssuanceId?: string) => ({
   t: "SCPO",
   n: poName,
-  d: `Purchase Order: ${poName}`,
   ac: "rwa",
   as: "other",
-  in: "SC.PO Generator",
-  i: "https://example.com/scpo-icon.png",
+  in: "SC.PO",
+  i: "https://example.com/scpo.png",
   uri: ipfsUri,
-  s: status
+  ext: JSON.stringify({ s: status, b: buyerAddress || '', v: vendorAddress || '', amt: total || '0', pt: payTerms || '', pid: parentIssuanceId || '' })
 });
-
 const buildPOMetadata = (poName: string, description: string, department: string, paymentTerms: string, deliveryTerms: string, items: Item[], attachments: Attachment[] | undefined, buyerAddress: string, vendorAddress: string, status: string, parentIssuanceId?: string, clawbackEnabled: boolean = true, history: Array<{ts: number; status: string; by: string}> = []) => ({
   poName, description, department, paymentTerms, deliveryTerms, items: items.map(i => ({ ...i })), attachments: attachments || [], buyerAddress, vendorAddress, issued: Date.now(), lastUpdated: Date.now(), status, parentIssuanceId, clawbackEnabled, history: [...history, { ts: Date.now(), status, by: 'buyer' }]
 });
+// This links each escrow to its specific PO on-chain without localStorage
+// TODO: When integrating RLUSD stablecoin escrows via the Token Escrow Amendment,
+// this same Condition/Fulfillment mechanism works identically — only the Amount field changes.
+// Scan account transactions for SCPO_CLAIM memo receipts
+// Returns a Set of issuanceIds that have been claimed
+  const getClaimedPOIds = async (address: string): Promise<Set<string>> => {
+  const claimedIds = new Set<string>();
+  try {
+    const client = await getXRPLClient();
+    const resp = await client.request({
+      command: 'account_tx',
+      account: address,
+      ledger_index_min: -1,
+      ledger_index_max: -1,
+      limit: 400
+    });
+    for (const tx of resp.result.transactions || []) {
+      try {
+        const txObj = (tx as any).tx_json || (tx as any).tx || {};
+        const memos = txObj.Memos || [];
+        for (const m of memos) {
+          const memoType = m.Memo?.MemoType || '';
+          const memoData = m.Memo?.MemoData || '';
+          if (!memoType || !memoData) continue;
+          try {
+            const decodedType = xrpl.convertHexToString(memoType);
+            if (decodedType === 'SCPO_CLAIM') {
+              const decoded = JSON.parse(xrpl.convertHexToString(memoData));
+              if (decoded.mpt) {
+                claimedIds.add(decoded.mpt);
+              }
+            }
+          } catch (e) { /* skip */ }
+        }
+      } catch (e) { /* skip unparseable tx */ }
+    }
+    console.log(`Found ${claimedIds.size} claimed PO receipts for ${address}`);
+  } catch (e) {
+    console.error('Failed to scan claim receipts:', e);
+  }
+return claimedIds;
+};
+const getRecalledPOIds = async (address: string): Promise<Set<string>> => {
+  const recalledIds = new Set<string>();
+  try {
+    const client = await getXRPLClient();
+    const resp = await client.request({
+      command: 'account_tx',
+      account: address,
+      ledger_index_min: -1,
+      ledger_index_max: -1,
+      limit: 400
+    });
+    for (const tx of resp.result.transactions || []) {
+      try {
+        const txObj = (tx as any).tx_json || (tx as any).tx || {};
+        const memos = txObj.Memos || [];
+        for (const m of memos) {
+          const memoType = m.Memo?.MemoType || '';
+          const memoData = m.Memo?.MemoData || '';
+          if (!memoType || !memoData) continue;
+          try {
+            const decodedType = xrpl.convertHexToString(memoType);
+            if (decodedType === 'SCPO_RECALL') {
+              const decoded = JSON.parse(xrpl.convertHexToString(memoData));
+              if (decoded.mpt) {
+                recalledIds.add(decoded.mpt);
+              }
+            }
+          } catch (e) { /* skip */ }
+        }
+      } catch (e) { /* skip */ }
+    }
+    console.log(`Found ${recalledIds.size} recalled PO receipts for ${address}`);
+  } catch (e) {
+    console.error('Failed to scan recall receipts:', e);
+  }
+  return recalledIds;
+};
+
+// PREIMAGE-SHA-256 crypto-condition using MPTokenIssuanceID as preimage  
+const generateEscrowCondition = async (issuanceId: string): Promise<{ condition: string; fulfillment: string }> => {
+  const preimage = new Uint8Array(issuanceId.length);
+  for (let i = 0; i < issuanceId.length; i++) {
+    preimage[i] = issuanceId.charCodeAt(i);
+  }
+// ===== DID HELPERS (Phase 1A) =====
+// Build compact DID document for the DIDDocument field (must be <256 bytes hex-encoded)
+const buildDIDDocument = (publicKey: string, profileUri: string, catalogUri?: string): string => {
+  const doc: any = {
+    svc: [profileUri],
+    vm: publicKey,
+    v: 1
+  };
+  if (catalogUri) doc.svc.push(catalogUri);
+  return JSON.stringify(doc);
+};
+
+// Build DID metadata for the Data field (must be <256 bytes hex-encoded)
+const buildDIDData = (tier: string = 'basic', profileVersion: number = 1, parentUri?: string): string => {
+  const data: any = {
+    tier,
+    pv: profileVersion
+  };
+  if (parentUri) data.parent = parentUri;
+  return JSON.stringify(data);
+};
+
+// Resolve a DID from a wallet address — returns parsed URI, DIDDocument, and Data
+const resolveDID = async (address: string): Promise<{
+  uri: string | null;
+  didDocument: any | null;
+  data: any | null;
+  raw: any | null;
+}> => {
+  try {
+    const client = await getXRPLClient();
+    const response = await client.request({
+      command: 'ledger_entry',
+      did: address,
+      ledger_index: 'validated'
+    });
+    const node = response.result.node as any;
+    if (!node || node.LedgerEntryType !== 'DID') {
+      return { uri: null, didDocument: null, data: null, raw: null };
+    }
+    
+    let uri: string | null = null;
+    let didDocument: any | null = null;
+    let data: any | null = null;
+    
+    if (node.URI) {
+      try { uri = xrpl.convertHexToString(node.URI); } catch (e) { console.error('Failed to decode DID URI:', e); }
+    }
+    if (node.DIDDocument) {
+      try { didDocument = JSON.parse(xrpl.convertHexToString(node.DIDDocument)); } catch (e) { console.error('Failed to decode DID Document:', e); }
+    }
+    if (node.Data) {
+      try { data = JSON.parse(xrpl.convertHexToString(node.Data)); } catch (e) { console.error('Failed to decode DID Data:', e); }
+    }
+    
+    return { uri, didDocument, data, raw: node };
+  } catch (err: any) {
+    if (err?.data?.error === 'entryNotFound') {
+      return { uri: null, didDocument: null, data: null, raw: null };
+    }
+    console.error('DID resolution failed:', err);
+    return { uri: null, didDocument: null, data: null, raw: null };
+  }
+};
+
+// Check if a DID exists for an address (quick check)
+const hasDID = async (address: string): Promise<boolean> => {
+  const result = await resolveDID(address);
+  return result.raw !== null;
+};
+  // Build fulfillment: type prefix (A0) + length + preimage
+  const fulfillmentBytes = new Uint8Array(preimage.length + 2);
+  fulfillmentBytes[0] = 0xA0;
+  fulfillmentBytes[1] = preimage.length;
+  fulfillmentBytes.set(preimage, 2);
+  
+  // Condition = type prefix + compound length + fingerprint tag + hash length + SHA256(fulfillment) + cost tag + cost length + preimage length
+  const hash = await crypto.subtle.digest('SHA-256', fulfillmentBytes);
+  const hashArray = new Uint8Array(hash);
+  
+  // Build condition per PREIMAGE-SHA-256 spec
+  // A0 25 80 20 [32-byte-hash] 81 01 [preimage-length]
+  const conditionBytes = new Uint8Array(39);
+  conditionBytes[0] = 0xA0;  // type: PREIMAGE-SHA-256
+  conditionBytes[1] = 0x25;  // total inner length: 32 + 2 + 1 + 2 = 37
+  conditionBytes[2] = 0x80;  // fingerprint tag
+  conditionBytes[3] = 0x20;  // fingerprint length (32)
+  conditionBytes.set(hashArray, 4);  // 32-byte SHA-256 hash
+  conditionBytes[36] = 0x81; // cost tag
+  conditionBytes[37] = 0x01; // cost length
+  conditionBytes[38] = preimage.length; // max fulfillment length
+  
+  const toHex = (bytes: Uint8Array) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  return { condition: toHex(conditionBytes), fulfillment: toHex(fulfillmentBytes) };
+};
 
 export default function App() {
   const [mode, setMode] = useState<'customer' | 'vendor'>('customer');
@@ -160,8 +326,14 @@ export default function App() {
   const [vendorOverviewViewedPO, setVendorOverviewViewedPO] = useState<POData | null>(null);
   const [vendorOverviewPoLoadError, setVendorOverviewPoLoadError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [historyModalIndex, setHistoryModalIndex] = useState(0);
+  const [historyModalVersions, setHistoryModalVersions] = useState<{po: SavedPO; poData: POData | null; loading: boolean}[]>([]);
+  const [showProfilesModal, setShowProfilesModal] = useState(false);
+  const [profilesModalPO, setProfilesModalPO] = useState<SavedPO | null>(null);
+  const [profilesModalIndex, setProfilesModalIndex] = useState(0);
   const [updateResult, setUpdateResult] = useState('');
-
+  const [isLoadingEditPO, setIsLoadingEditPO] = useState(false);
   const linkedVendors = customerLinkedVendorUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
   const linkedCustomers = vendorLinkedCustomerUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
 
@@ -195,29 +367,305 @@ export default function App() {
 
   const removeItem = (index: number) => setItems(items.filter((_, i) => i !== index));
 
-  useEffect(() => {
-    const saved = localStorage.getItem('savedPOs');
-    if (saved) try { setSavedPOs(JSON.parse(saved)); } catch { setSavedPOs([]); }
-  }, []);
+// Phase 5: Load POs live from XRPL (now a reusable function)
+const loadPOsFromLedger = async () => {
+  // Ensure fresh connection
+  try {
+    const client = await getXRPLClient();
+    if (!client.isConnected()) {
+      await client.connect();
+    }
+  } catch (e) {
+    console.error('Failed to connect to XRPL:', e);
+    return;
+  }
+  const currentMode = mode;
+  if (currentMode === 'customer' && !customerProfile.classicAddress) return;
+  if (currentMode === 'vendor' && !vendorProfile.classicAddress) return;  
+  try {
+    let livePOs: SavedPO[] = [];
+    if (currentMode === 'customer' && customerProfile.classicAddress) {    
+      const buyerMPTs = await getBuyerPOs(customerProfile.classicAddress);
+      // Scan for claimed PO receipts once for all POs
+      const claimedPOIds = await getClaimedPOIds(customerProfile.classicAddress);
+      const recalledPOIds = await getRecalledPOIds(customerProfile.classicAddress);
+      for (const mpt of buyerMPTs as any[]) {
+        let meta: any = {};
+        try {
+          const metadataStr = xrpl.convertHexToString(mpt.MPTokenMetadata || '');
+          if (metadataStr) {
+            meta = JSON.parse(metadataStr);
+            if (meta.ext) {
+              try { const ext = JSON.parse(meta.ext); Object.assign(meta, ext); } catch (e) {}
+            }
+          }
+        } catch (e) {}        
+        const issuanceId = mpt.MPTokenIssuanceID || mpt.mpt_issuance_id || '';
+        let poStatus: SavedPO['status'] = 'open';
+        let customerEscrowSequence: number | undefined = undefined;
+        const vendorAddr = meta.v || '';
+        // Check if vendor has accepted (authorized the MPT)
+        if (vendorAddr && issuanceId) {
+          try {
+            const isHeld = await isMPTHeldByVendor(issuanceId, vendorAddr);
+            if (isHeld) {
+              poStatus = 'accepted';
+              // Match escrow to THIS PO using crypto-condition derived from issuanceId
+              try {
+                const { condition: expectedCondition } = await generateEscrowCondition(issuanceId);
+                const client = await getXRPLClient();
+                const escrowResp = await client.request({
+                  command: 'account_objects',
+                  account: customerProfile.classicAddress,
+                  type: 'escrow',
+                  ledger_index: 'validated'
+                });
+                const matchingEscrow = escrowResp.result.account_objects.find((obj: any) => 
+                  obj.Destination === vendorAddr && obj.Condition === expectedCondition
+                );
+                if (matchingEscrow) {
+                  poStatus = 'funded';
+                  customerEscrowSequence = (matchingEscrow as any).Sequence;
+                }
+              } catch (e) { /* no escrows or lookup failed */ }
+              // Check if this PO was claimed (receipt memo is definitive proof)
+              if (claimedPOIds.has(issuanceId)) {
+                poStatus = 'claimed';
+                customerEscrowSequence = undefined;
+              }
+            }
+          } catch (e) {}
+        }
 
-  const saveNewPO = (po: SavedPO) => {
+        // Skip recalled POs
+        if (recalledPOIds.has(issuanceId)) continue;
+
+        livePOs.push({
+          id: issuanceId || Date.now().toString(),
+          poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
+          dateIssued: new Date().toLocaleDateString(),
+          total: meta.amt || meta.total || meta.amount || '0',
+          ipfsUri: meta.uri || '',
+          status: poStatus,
+          escrowSequence: customerEscrowSequence,
+          issuanceId,
+          txHash: '',
+          buyerAddress: customerProfile.classicAddress,
+          vendorAddress: vendorAddr,
+          vendorUUID: customerLinkedVendorUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === vendorAddr) || '',
+          paymentTerms: meta.pt || '',
+          parentIssuanceId: meta.pid || undefined,
+          metadata: meta
+        });
+      }
+     } else if (currentMode === 'vendor' && vendorProfile.classicAddress) {
+      const vendorPOList: SavedPO[] = [];
+      
+      // Check authorized MPTs the vendor already holds
+      // Scan for claimed PO receipts once for all POs
+      const vendorClaimedPOIds = await getClaimedPOIds(vendorProfile.classicAddress);
+      
+      try {
+        const authorizedMPTs = await getVendorAuthorizedPOs(vendorProfile.classicAddress);
+        for (const mpt of authorizedMPTs as any[]) {
+        let meta: any = {};
+        try {
+          const metadataStr = xrpl.convertHexToString(mpt.MPTokenMetadata || '');
+          if (metadataStr) {
+            meta = JSON.parse(metadataStr);
+            if (meta.ext) {
+              try { const ext = JSON.parse(meta.ext); Object.assign(meta, ext); } catch (e) {}
+            }
+          }
+        } catch (e) {}
+          const issuanceId = mpt.MPTokenIssuanceID || mpt.mpt_issuance_id || '';
+          // If no metadata on the MPToken, look up the issuance object
+          if (!meta.n && issuanceId) {
+            try {
+              const client = await getXRPLClient();
+              const issuanceResp = await client.request({
+                command: 'ledger_entry',
+                mpt_issuance: issuanceId,
+                ledger_index: 'validated'
+              });
+              const issuanceNode = issuanceResp.result.node as any;
+              if (issuanceNode?.MPTokenMetadata) {
+                try {
+                  meta = JSON.parse(xrpl.convertHexToString(issuanceNode.MPTokenMetadata));
+                  if (meta.ext) {
+                    try { const ext = JSON.parse(meta.ext); Object.assign(meta, ext); } catch (e) {}
+                  }
+                } catch (e) {}
+              }
+            } catch (e) { console.log('Could not look up issuance metadata for', issuanceId); }
+          }
+          // Match escrow to THIS PO using crypto-condition derived from issuanceId
+          let vendorPoStatus: SavedPO['status'] = 'accepted';
+          let vendorEscrowSequence: number | undefined = undefined;
+          const posBuyerAddr = meta.b || '';
+          if (posBuyerAddr && issuanceId) {
+            try {
+              const { condition: expectedCondition } = await generateEscrowCondition(issuanceId);
+              const client = await getXRPLClient();
+              const escrowResp = await client.request({
+                command: 'account_objects',
+                account: posBuyerAddr,
+                type: 'escrow',
+                ledger_index: 'validated'
+              });
+              const matchingEscrow = escrowResp.result.account_objects.find((obj: any) => 
+                obj.Destination === vendorProfile.classicAddress && obj.Condition === expectedCondition
+              );
+              if (matchingEscrow) {
+                vendorPoStatus = 'funded';
+                vendorEscrowSequence = (matchingEscrow as any).Sequence;
+              }
+            } catch (e) { /* no escrows or lookup failed */ }
+          }
+          // Check if this PO was claimed (receipt memo is definitive proof)
+          if (issuanceId && vendorClaimedPOIds.has(issuanceId)) {
+            vendorPoStatus = 'claimed';
+            vendorEscrowSequence = undefined;
+          }
+          // Check if this PO was recalled by the buyer
+          if (issuanceId && posBuyerAddr) {
+            try {
+              const buyerRecalls = await getRecalledPOIds(posBuyerAddr);
+              if (buyerRecalls.has(issuanceId)) continue;
+            } catch (e) { /* skip */ }
+          }
+          vendorPOList.push({
+            id: issuanceId || Date.now().toString(),
+            poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
+            dateIssued: new Date().toLocaleDateString(),
+            total: meta.amt || meta.total || meta.amount || '0',
+            ipfsUri: meta.uri || '',
+            status: vendorPoStatus,
+            escrowSequence: vendorEscrowSequence,
+            issuanceId,          
+            txHash: '',
+            buyerAddress: meta.b || '',
+            vendorAddress: vendorProfile.classicAddress,
+            vendorUUID: vendorLinkedCustomerUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === (meta.b || '')) || '',
+            paymentTerms: meta.pt || '',
+            parentIssuanceId: meta.pid || undefined,
+            metadata: meta
+          });
+        }
+      } catch (e) { console.log('No authorized MPTs found'); }
+      // Scan linked customers' issuances addressed to this vendor
+      for (const uuid of vendorLinkedCustomerUUIDs) {
+        await new Promise(r => setTimeout(r, 500)); // throttle to avoid XRPL timeouts      
+        const customerAddr = publicProfiles[uuid]?.classicAddress;
+        if (!customerAddr) continue;
+        try {
+          const buyerRecalledIds = await getRecalledPOIds(customerAddr);
+          const buyerMPTs = await getBuyerPOs(customerAddr);
+          for (const mpt of buyerMPTs as any[]) {
+        let meta: any = {};
+        try {
+          const metadataStr = xrpl.convertHexToString(mpt.MPTokenMetadata || '');
+          if (metadataStr) {
+            meta = JSON.parse(metadataStr);
+            if (meta.ext) {
+              try { const ext = JSON.parse(meta.ext); Object.assign(meta, ext); } catch (e) {}
+            }
+          }
+        } catch (e) {}
+            if (meta.v !== vendorProfile.classicAddress) continue;
+            const issuanceId = mpt.MPTokenIssuanceID || mpt.mpt_issuance_id || '';
+            if (vendorPOList.some(p => p.issuanceId === issuanceId)) continue;
+            if (buyerRecalledIds.has(issuanceId)) continue;
+            vendorPOList.push({
+              id: issuanceId || Date.now().toString(),
+              poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
+              dateIssued: new Date().toLocaleDateString(),
+              total: meta.amt || meta.total || meta.amount || '0',
+              ipfsUri: meta.uri || '',
+              status: 'open',
+              issuanceId,
+              txHash: '',
+              buyerAddress: customerAddr,
+              vendorAddress: vendorProfile.classicAddress,
+              vendorUUID: uuid,
+              paymentTerms: meta.pt || '',
+              parentIssuanceId: meta.pid || undefined,
+              metadata: meta
+            });
+          }
+        } catch (e) { console.log(`Failed to scan buyer ${customerAddr}:`, e); }
+      }
+      
+      livePOs = vendorPOList;
+    }
+    // Mark superseded POs: if any PO has a parentIssuanceId, the parent is superseded
+    const parentIds = new Set<string>();
+    livePOs.forEach(po => {
+      if (po.parentIssuanceId) {
+        parentIds.add(po.parentIssuanceId);
+      }
+    });
+    livePOs = livePOs.map(po => {
+      if (parentIds.has(po.issuanceId) && po.status !== 'claimed') {
+        return { ...po, status: 'superseded' as const };
+      }
+      return po;
+    });
+    // Keep recalled POs in savedPOs for history traversal, but mark them so tables filter them out
+    // getLatestActivePOs already filters by status, so recalled POs won't show in active tables
+    setSavedPOs(livePOs);
+    console.log(`✅ Loaded ${livePOs.length} POs from XRPL ledger (Mode: ${currentMode})`);    
+  } catch (err: any) {
+    console.error('Failed to load POs from XRPL:', err.message);
+  }
+};
+
+// Auto-refresh POs every 30 seconds (ledger is the source of truth)
+useEffect(() => {
+  if (!autoRefreshEnabled) return;
+  const interval = setInterval(() => {
+    loadPOsFromLedger();
+  }, 45000);
+  return () => clearInterval(interval);
+}, [autoRefreshEnabled, mode, customerProfile.classicAddress, vendorProfile.classicAddress]);
+
+// Trigger load on mode/profile change (only when address actually changes)
+const prevCustomerAddr = useRef('');
+const prevVendorAddr = useRef('');
+const prevMode = useRef(mode);
+
+useEffect(() => {
+  const customerChanged = customerProfile.classicAddress !== prevCustomerAddr.current;
+  const vendorChanged = vendorProfile.classicAddress !== prevVendorAddr.current;
+  const modeChanged = mode !== prevMode.current;
+  
+  prevCustomerAddr.current = customerProfile.classicAddress;
+  prevVendorAddr.current = vendorProfile.classicAddress;
+  prevMode.current = mode;
+  
+  if (customerChanged || vendorChanged || modeChanged) {
+    loadPOsFromLedger();
+  }
+}, [mode, customerProfile.classicAddress, vendorProfile.classicAddress]);
+    const saveNewPO = (po: SavedPO) => {
     const updated = [...savedPOs, po];
     setSavedPOs(updated);
-    localStorage.setItem('savedPOs', JSON.stringify(updated));
+    // No localStorage - ledger is the source of truth
   };
-
   const updatePO = (updatedPO: SavedPO) => {
     const updated = savedPOs.map(p => p.id === updatedPO.id ? updatedPO : p);
     setSavedPOs(updated);
-    localStorage.setItem('savedPOs', JSON.stringify(updated));
   };
-
   const updatePOStatus = (id: string, status: SavedPO['status']) => {
     const updated = savedPOs.map(p => p.id === id ? { ...p, status } : p);
     setSavedPOs(updated);
-    localStorage.setItem('savedPOs', JSON.stringify(updated));
   };
-
+  const deleteOpenPO = (id: string) => {
+    if (window.confirm('Delete this Open SC.PO from dashboard? (Local only)')) {
+      const updated = savedPOs.filter(p => p.id !== id);
+      setSavedPOs(updated);
+    }
+  };
   const recallPO = async (po: SavedPO) => {
     if (po.status === 'funded' || po.status === 'claimed') {
       alert('Cannot recall a funded or claimed PO.');
@@ -232,26 +680,80 @@ export default function App() {
       const ledgerResponse = await client.request({ command: 'ledger_current' });
       const currentLedger = ledgerResponse.result.ledger_current_index;
       let newIssuanceId = po.issuanceId;
-      const clawbackTx: any = {
-        TransactionType: 'Clawback',
-        Account: wallet.classicAddress,
-        Amount: {
-          mpt_issuance_id: po.issuanceId,
-          value: '1'
-        },
-        Holder: po.vendorAddress
-      };
-      const preparedClaw = await client.autofill(clawbackTx);
-      preparedClaw.LastLedgerSequence = currentLedger + 20;
-      const signedClaw = wallet.sign(preparedClaw);
-      await client.submitAndWait(signedClaw.tx_blob);
-      console.log('Clawback successful');
+
+      if (po.status === 'open') {
+        // Open PO: destroy the MPT issuance (no holders, so this works)
+        try {
+          const destroyTx: any = {
+            TransactionType: 'MPTokenIssuanceDestroy',
+            Account: wallet.classicAddress,
+            MPTokenIssuanceID: po.issuanceId
+          };
+          const preparedDestroy = await client.autofill(destroyTx);
+          preparedDestroy.LastLedgerSequence = currentLedger + 20;
+          const signedDestroy = wallet.sign(preparedDestroy);
+          await client.submitAndWait(signedDestroy.tx_blob);
+          console.log('MPT issuance destroyed (open PO recall)');
+        } catch (e: any) {
+          console.error('Destroy failed, sending recall receipt instead:', e.message);
+          // Fallback: send recall receipt memo so loadPOsFromLedger filters it out
+          try {
+            const recallDest = po.vendorAddress || process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress;
+            const recallReceipt: Payment = {
+              TransactionType: 'Payment',
+              Account: wallet.classicAddress,
+              Destination: recallDest,
+              Amount: '1',
+              Memos: [{
+                Memo: {
+                  MemoType: xrpl.convertStringToHex('SCPO_RECALL'),
+                  MemoData: xrpl.convertStringToHex(JSON.stringify({
+                    type: 'SCPO_RECALL',
+                    mpt: po.issuanceId,
+                    recalledAt: Date.now()
+                  }))
+                }
+              }]
+            };
+            const preparedRecall = await client.autofill(recallReceipt);
+            preparedRecall.LastLedgerSequence = currentLedger + 20;
+            const signedRecall = wallet.sign(preparedRecall);
+            await client.submitAndWait(signedRecall.tx_blob);
+            console.log('Recall receipt memo sent on-chain (fallback)');
+          } catch (e2) { console.error('Recall receipt also failed:', e2); }
+        }
+        updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
+        alert('PO recalled on-chain.');
+        setTimeout(() => loadPOsFromLedger(), 2000);
+        return;
+      }
+
+      // Accepted PO: clawback first, then create recalled version
+      try {
+        const clawbackTx: any = {
+          TransactionType: 'Clawback',
+          Account: wallet.classicAddress,
+          Amount: {
+            mpt_issuance_id: po.issuanceId,
+            value: '1'
+          },
+          Holder: po.vendorAddress
+        };
+        const preparedClaw = await client.autofill(clawbackTx);
+        preparedClaw.LastLedgerSequence = currentLedger + 20;
+        const signedClaw = wallet.sign(preparedClaw);
+        await client.submitAndWait(signedClaw.tx_blob);
+        console.log('Clawback successful');
+      } catch (e: any) {
+        console.error('Clawback failed:', e.message);
+      }
+
       if (po.status === 'accepted') {
         const password = storedPasswords[po.vendorUUID || ''];
         const poData: POData = { poName: po.poName, description: '', department: '', paymentTerms: '', deliveryTerms: '', items: [] };
         const ipfsUri = await uploadEncryptedToIPFS(poData, password);
         const fullMetadata = buildPOMetadata(po.poName, '', '', '', '', [], [], po.buyerAddress, po.vendorAddress, 'recalled', po.issuanceId, true, po.metadata?.history || []);
-        const ledgerMetadata = buildLedgerMetadata(po.poName, ipfsUri, 'recalled');
+        const ledgerMetadata = buildLedgerMetadata(po.poName, ipfsUri, 'recalled', po.buyerAddress, po.vendorAddress, po.total, po.paymentTerms, po.parentIssuanceId);
         const mptCreate: any = {
           TransactionType: 'MPTokenIssuanceCreate',
           Account: wallet.classicAddress,
@@ -268,19 +770,39 @@ export default function App() {
         const meta = createResult.result.meta as any;
         newIssuanceId = meta.mpt_issuance_id || po.issuanceId;
       }
+
+      // Send recall receipt memo to vendor (permanent on-chain proof)
+      try {
+        const recallDest = po.vendorAddress || process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress;
+        const recallReceipt: Payment = {
+          TransactionType: 'Payment',
+          Account: wallet.classicAddress,
+          Destination: recallDest,
+          Amount: '1',
+          Memos: [{
+            Memo: {
+              MemoType: xrpl.convertStringToHex('SCPO_RECALL'),
+              MemoData: xrpl.convertStringToHex(JSON.stringify({
+                type: 'SCPO_RECALL',
+                mpt: po.issuanceId,
+                recalledAt: Date.now()
+              }))
+            }
+          }]
+        };
+        const preparedRecall = await client.autofill(recallReceipt);
+        preparedRecall.LastLedgerSequence = currentLedger + 20;
+        const signedRecall = wallet.sign(preparedRecall);
+        await client.submitAndWait(signedRecall.tx_blob);
+        console.log('Recall receipt memo sent on-chain');
+      } catch (e) {
+        console.error('Failed to send recall receipt:', e);
+      }
       updatePO({ ...po, status: 'recalled', issuanceId: newIssuanceId, escrowSequence: undefined });
       alert('PO recalled on-chain.');
+      setTimeout(() => loadPOsFromLedger(), 2000);
     } catch (err: any) { alert('Recall failed: ' + err.message); }
   };
-
-  const deleteOpenPO = (id: string) => {
-    if (window.confirm('Delete this Open SC.PO from your dashboard? (Local only)')) {
-      const updated = savedPOs.filter(p => p.id !== id);
-      setSavedPOs(updated);
-      localStorage.setItem('savedPOs', JSON.stringify(updated));
-    }
-  };
-
   const viewPOFromUri = async (uri: string, po: SavedPO | null, setViewedPO: React.Dispatch<React.SetStateAction<POData | null>>, setPoLoadError: React.Dispatch<React.SetStateAction<string | null>>) => {
     setIpfsUri(uri);
     setViewedPO(null);
@@ -307,14 +829,55 @@ export default function App() {
       }
     } catch (err: any) { setPoLoadError('Decryption failed: ' + err.message); }
   };
+   const prefillFromPO = async (po: SavedPO) => {
+    setIsLoadingEditPO(true);
+    // Don't set any form fields yet — wait for IPFS data first
+    let loadedName = po.poName;
+    let loadedDesc = '';
+    let loadedDept = '1';
+    let loadedPayTerms = po.metadata?.pt || po.paymentTerms || '';
+    let loadedDelTerms = 'FOB';
+    let loadedItems: Item[] = [];
 
-  const prefillFromPO = (po: SavedPO) => {
-    setPoName(po.metadata.poName || po.poName);
-    setDesc(po.metadata.description || '');
-    setDepartment(po.metadata.department || '1');
-    setPaymentTerms(po.metadata.paymentTerms || '');
-    setDeliveryTerms(po.metadata.deliveryTerms || 'FOB');
-    setItems(po.metadata.items || []);
+    if (po.ipfsUri) {
+      try {
+        let password;
+        if (mode === 'customer') {
+          password = po.vendorUUID ? storedPasswords[po.vendorUUID] : null;
+        } else {
+          const buyerUUID = vendorLinkedCustomerUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === po.buyerAddress);
+          password = buyerUUID ? storedPasswords[buyerUUID] : null;
+        }
+        if (password) {
+          const hash = po.ipfsUri.replace('ipfs://', '');
+          const response = await fetch(`https://gateway.pinata.cloud/ipfs/${hash}`, { cache: 'no-store' });
+          if (response.ok) {
+            const data = await response.json();
+            const decrypted = CryptoJS.AES.decrypt(data.encryptedData, password).toString(CryptoJS.enc.Utf8);
+            if (decrypted) {
+              const poData: POData = JSON.parse(decrypted);
+              loadedName = poData.poName || po.poName;
+              loadedDesc = poData.description || '';
+              loadedDept = poData.department || '1';
+              loadedPayTerms = poData.paymentTerms || '';
+              loadedDelTerms = poData.deliveryTerms || 'FOB';
+              loadedItems = poData.items || [];
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load PO details from IPFS for edit:', e);
+      }
+    }
+
+    // Set all fields at once — no double refresh
+    setPoName(loadedName);
+    setDesc(loadedDesc);
+    setDepartment(loadedDept);
+    setPaymentTerms(loadedPayTerms);
+    setDeliveryTerms(loadedDelTerms);
+    setItems(loadedItems);
+    setIsLoadingEditPO(false);
   };
 
   const createSCPO = async () => {
@@ -352,7 +915,7 @@ export default function App() {
       if (typeof feeResult.result.meta === 'object' && feeResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fee failed');
       setResult('Creating MPToken Issuance...');
       const fullMetadata = buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, vendor, 'open', undefined, true);
-      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open');
+      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, vendor, totalEscrowAmount, paymentTerms);
       const mptCreate: any = {
         TransactionType: 'MPTokenIssuanceCreate',
         Account: wallet.classicAddress,
@@ -421,13 +984,40 @@ export default function App() {
       
       updatePO({ ...selectedUpdatePO, status: 'superseded', escrowSequence: undefined });
       setSavedPOs([...savedPOs]);
-      
       if (selectedUpdatePO.status === 'accepted') {
         setUpdateResult('Clawing back old PO version...');
-        await recallPO(selectedUpdatePO);
+        try {
+          const clawbackTx: any = {
+            TransactionType: 'Clawback',
+            Account: wallet.classicAddress,
+            Amount: { mpt_issuance_id: selectedUpdatePO.issuanceId, value: '1' },
+            Holder: selectedUpdatePO.vendorAddress
+          };
+          const preparedClaw = await client.autofill(clawbackTx);
+          preparedClaw.LastLedgerSequence = currentLedger + 20;
+          const signedClaw = wallet.sign(preparedClaw);
+          await client.submitAndWait(signedClaw.tx_blob);
+          console.log('Clawback successful for update');
+        } catch (e: any) { console.error('Clawback failed during update:', e.message); }
+        // Send recall receipt so old version is filtered out
+        try {
+          const recallDest = selectedUpdatePO.vendorAddress || wallet.classicAddress;
+          const recallReceipt: Payment = {
+            TransactionType: 'Payment',
+            Account: wallet.classicAddress,
+            Destination: recallDest,
+            Amount: '1',
+            Memos: [{ Memo: { MemoType: xrpl.convertStringToHex('SCPO_RECALL'), MemoData: xrpl.convertStringToHex(JSON.stringify({ type: 'SCPO_RECALL', mpt: selectedUpdatePO.issuanceId, recalledAt: Date.now() })) } }]
+          };
+          const preparedRecall = await client.autofill(recallReceipt);
+          preparedRecall.LastLedgerSequence = currentLedger + 20;
+          const signedRecall = wallet.sign(preparedRecall);
+          await client.submitAndWait(signedRecall.tx_blob);
+          console.log('Recall receipt sent for updated PO');
+        } catch (e) { console.error('Recall receipt failed during update:', e); }
       }
       const fullMetadata = buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, selectedUpdatePO.vendorAddress, 'open', selectedUpdatePO.issuanceId, true, selectedUpdatePO.metadata?.history || []);
-      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open');
+      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, selectedUpdatePO.vendorAddress, totalEscrowAmount, paymentTerms, selectedUpdatePO.issuanceId);
       const mptCreate: any = {
         TransactionType: 'MPTokenIssuanceCreate',
         Account: wallet.classicAddress,
@@ -471,6 +1061,8 @@ export default function App() {
       await client.submitAndWait(signedMemo.tx_blob);
       setUpdateResult(`PO Updated and Sent Successfully! New Issuance: ${issuanceId}\nTx Hash: ${txHash}\n\nVendor notified to re-accept. Old version hidden.`);
       setSelectedUpdatePO(null);
+      // Immediate refresh to update tables
+      setTimeout(() => loadPOsFromLedger(), 2000);
     } catch (err: any) { alert('Update failed: ' + err.message); setUpdateResult('Error: ' + err.message); }
   };
 
@@ -507,12 +1099,17 @@ export default function App() {
     } catch { return false; }
   };
 
-  const fundEscrow = async (po: SavedPO) => {
+const fundEscrow = async (po: SavedPO) => {
     if (po.status === 'superseded') return alert('This PO version is superseded. Use the latest version.');
     const isHeld = await isMPTHeldByVendor(po.issuanceId, po.vendorAddress);
     if (!isHeld) return alert('Vendor has not accepted the MPT yet');
     if (!seed) return alert('Wallet seed required');
-    const drops = xrpl.xrpToDrops(po.total);
+    const totalNum = parseFloat(po.total || '0');
+    if (totalNum <= 0) return alert('PO total must be greater than 0. Current value: ' + po.total);
+    const xrpPriceUsd = await getXrpPriceUsd();
+    const xrpAmount = (totalNum / xrpPriceUsd).toFixed(6);
+    const drops = xrpl.xrpToDrops(xrpAmount);
+    console.log(`Funding escrow: $${totalNum} USD = ${xrpAmount} XRP = ${drops} drops`);
     try {
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(seed);
@@ -520,9 +1117,13 @@ export default function App() {
       const currentLedger = ledgerResponse.result.ledger_current_index;
       const closedLedgerResponse = await client.request({ command: 'ledger', ledger_index: 'closed' });
       const currentRippleTime = closedLedgerResponse.result.ledger.close_time;
-      const days = parseInt(po.paymentTerms.split(' ')[0]);
+      const daysParsed = parseInt(po.paymentTerms?.split(' ')[0]);
+      const days = isNaN(daysParsed) ? 30 : daysParsed;
+      console.log(`Escrow terms: ${days} days, paymentTerms: "${po.paymentTerms}"`);
       const buffer = 60; const finishRipple = currentRippleTime + (days * 86400) + buffer; const cancelRipple = finishRipple + (7 * 86400);
-      const escrow: EscrowCreate = { TransactionType: 'EscrowCreate', Account: wallet.classicAddress, Destination: po.vendorAddress, Amount: drops, FinishAfter: finishRipple, CancelAfter: cancelRipple, Memos: [{ Memo: { MemoData: xrpl.convertStringToHex(`PO: ${po.poName}, MPT: ${po.issuanceId}`) } }] };
+      const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
+      console.log(`Escrow linked to PO via condition. IssuanceID: ${po.issuanceId}`);
+      const escrow: EscrowCreate = { TransactionType: 'EscrowCreate', Account: wallet.classicAddress, Destination: po.vendorAddress, Amount: drops, FinishAfter: finishRipple, CancelAfter: cancelRipple, Condition: condition, Memos: [{ Memo: { MemoData: xrpl.convertStringToHex(`PO: ${po.poName}, MPT: ${po.issuanceId}`) } }] };      
       const preparedEscrow = await client.autofill(escrow); preparedEscrow.LastLedgerSequence = currentLedger + 20;
       const signedEscrow = wallet.sign(preparedEscrow);
       const escrowResult = await client.submitAndWait(signedEscrow.tx_blob);
@@ -558,13 +1159,41 @@ export default function App() {
       if (!isClaimable) { alert('Not yet claimable'); return; }
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
-      const escrowFinish: EscrowFinish = { TransactionType: 'EscrowFinish', Account: wallet.classicAddress, Owner: po.buyerAddress, OfferSequence: po.escrowSequence };
+      const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
+      const escrowFinish: EscrowFinish = { TransactionType: 'EscrowFinish', Account: wallet.classicAddress, Owner: po.buyerAddress, OfferSequence: po.escrowSequence, Condition: condition, Fulfillment: fulfillment };      
       const prepared = await client.autofill(escrowFinish);
       prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
       const result = await client.submitAndWait(signed.tx_blob);
+      // Send 1-drop claim receipt memo (permanent on-chain proof of claim)
+      try {
+        const claimReceipt: Payment = {
+          TransactionType: 'Payment',
+          Account: wallet.classicAddress,
+          Destination: po.buyerAddress,
+          Amount: '1',
+          Memos: [{
+            Memo: {
+              MemoType: xrpl.convertStringToHex('SCPO_CLAIM'),
+              MemoData: xrpl.convertStringToHex(JSON.stringify({
+                type: 'SCPO_CLAIM',
+                mpt: po.issuanceId,
+                escrowTx: result.result.hash,
+                claimedAt: Date.now()
+              }))
+            }
+          }]
+        };
+        const preparedReceipt = await client.autofill(claimReceipt);
+        preparedReceipt.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+        const signedReceipt = wallet.sign(preparedReceipt);
+        await client.submitAndWait(signedReceipt.tx_blob);
+        console.log('Claim receipt memo sent on-chain');
+      } catch (e) {
+        console.error('Failed to send claim receipt memo (escrow was still claimed):', e);
+      }
       alert(`Escrow claimed! Tx: ${result.result.hash}`);
-      updatePOStatus(po.id, 'claimed');
+      updatePOStatus(po.id, 'claimed');      
     } catch (err: any) { alert('Claim failed: ' + err.message); }
   };
 
@@ -608,57 +1237,38 @@ export default function App() {
   const sortFeesNewestFirst = (fees: FeeEntry[]) => fees.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   const filteredFees = sortFeesNewestFirst(feeEntries.filter(entry => entry.poName.toLowerCase().includes(feeSearchTerm.toLowerCase()) || entry.date.toLowerCase().includes(feeSearchTerm.toLowerCase())));
   const isOutdated = (profile: PublicProfile) => profile.expiresAt && Date.now() > profile.expiresAt + (30 * 24 * 60 * 60 * 1000);
-
   const getLatestActivePOs = (status: SavedPO['status']): SavedPO[] => {
-    let candidates = savedPOs.filter(p => p.status !== 'superseded');
-
-    const parentToChildren = new Map<string, SavedPO[]>();
-    candidates.forEach(po => {
-      if (po.parentIssuanceId) {
-        if (!parentToChildren.has(po.parentIssuanceId)) parentToChildren.set(po.parentIssuanceId, []);
-        parentToChildren.get(po.parentIssuanceId)!.push(po);
-      }
-    });
-
-    const chainEnds = new Set<string>();
-    candidates.forEach(startPo => {
-      let current = startPo;
-      const seen = new Set<string>();
-      while (parentToChildren.has(current.issuanceId) && !seen.has(current.issuanceId)) {
-        seen.add(current.issuanceId);
-        const children = parentToChildren.get(current.issuanceId)!;
-        if (children.length === 0) break;
-        current = children.reduce((latest, child) => 
-          (parseInt(child.id) > parseInt(latest.id) || new Date(child.dateIssued) > new Date(latest.dateIssued)) ? child : latest
-        );
-      }
-      chainEnds.add(current.issuanceId);
-    });
-
-    const latest = candidates.filter(po => 
-      chainEnds.has(po.issuanceId) && 
-      po.status === status &&
-      ((mode === 'customer' && po.buyerAddress === customerProfile.classicAddress) ||
-       (mode === 'vendor' && po.vendorAddress === vendorProfile.classicAddress))
-    );
-
-    return sortPOsNewestFirst(latest);
-  };
-
-  const getUpdatablePOs = () => {
-    const open = getLatestActivePOs('open');
-    const accepted = getLatestActivePOs('accepted');
-    return sortPOsNewestFirst([...open, ...accepted]);
-  };
-
+  return sortPOsNewestFirst(savedPOs.filter(po => {
+    if (po.status !== status) return false;
+    // Never show superseded or recalled POs in active tables
+    if (po.status === 'superseded' || po.status === 'recalled') return false;
+    if (mode === 'customer') {
+      return !po.buyerAddress || po.buyerAddress === customerProfile.classicAddress;
+    }
+    if (mode === 'vendor') {
+      return !po.vendorAddress || po.vendorAddress === vendorProfile.classicAddress;
+    }
+    return false;
+  }));
+};
+const getUpdatablePOs = () => {
+  return sortPOsNewestFirst(savedPOs.filter(po => {
+    if (po.status !== 'open' && po.status !== 'accepted') return false;
+    if (mode === 'customer') return po.buyerAddress === customerProfile.classicAddress;
+    if (mode === 'vendor') return po.vendorAddress === vendorProfile.classicAddress;
+    return false;
+  }));
+};
   const getVendorUpdatedPOs = () => {
-    return sortPOsNewestFirst(getLatestActivePOs('open').filter(p => 
-      p.vendorAddress === vendorProfile.classicAddress && p.parentIssuanceId
-    ));
-  };
-
+  return sortPOsNewestFirst(savedPOs.filter(po => 
+    po.vendorAddress === vendorProfile.classicAddress &&
+    po.status === 'open' &&
+    po.parentIssuanceId
+  ));
+};
   const getPOHistory = (po: SavedPO | null): SavedPO[] => {
     if (!po) return [];
+    console.log(`getPOHistory: po=${po.poName}, parentIssuanceId=${po.parentIssuanceId}, savedPOs count=${savedPOs.length}`);
     const history: SavedPO[] = [];
     let current: SavedPO | undefined = po;
     let depth = 0;
@@ -674,6 +1284,69 @@ export default function App() {
       depth++;
     }
     return history.reverse();
+  };
+
+  const openHistoryModal = async (currentPO: SavedPO | null, currentViewedPO: POData | null) => {
+    if (!currentPO) return;
+    const historyPOs = getPOHistory(currentPO);
+    if (historyPOs.length === 0) return;
+    const versions: {po: SavedPO; poData: POData | null; loading: boolean}[] = [];
+    for (const hist of historyPOs) {
+      versions.push({ po: hist, poData: null, loading: true });
+    }
+    versions.push({ po: currentPO, poData: currentViewedPO, loading: false });
+    setHistoryModalVersions(versions);
+    setHistoryModalIndex(versions.length - 1);
+    setShowHistoryModal(true);
+    for (let i = 0; i < historyPOs.length; i++) {
+      const hist = historyPOs[i];
+      if (!hist.ipfsUri) { setHistoryModalVersions(prev => prev.map((v, idx) => idx === i ? { ...v, loading: false } : v)); continue; }
+      try {
+        const hash = hist.ipfsUri.replace('ipfs://', '');
+        const response = await fetch(`https://gateway.pinata.cloud/ipfs/${hash}`, { cache: 'no-store' });
+        if (response.ok) {
+          const data = await response.json();
+          let password: string | null = null;
+          if (mode === 'vendor') {
+            const buyerUUID = vendorLinkedCustomerUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === hist.buyerAddress);
+            password = buyerUUID ? storedPasswords[buyerUUID] : null;
+          } else {
+            password = hist.vendorUUID ? storedPasswords[hist.vendorUUID] : null;
+          }
+          if (password) {
+            const decrypted = CryptoJS.AES.decrypt(data.encryptedData, password).toString(CryptoJS.enc.Utf8);
+            if (decrypted) {
+              const poData: POData = JSON.parse(decrypted);
+              setHistoryModalVersions(prev => prev.map((v, idx) => idx === i ? { ...v, poData, loading: false } : v));
+              continue;
+            }
+          }
+        }
+      } catch (e) { console.error('Failed to load history version:', e); }
+      setHistoryModalVersions(prev => prev.map((v, idx) => idx === i ? { ...v, loading: false } : v));
+    }
+  };
+
+  const openProfilesModal = (po: SavedPO | null) => {
+    if (!po) return;
+    setProfilesModalPO(po);
+    setProfilesModalIndex(0);
+    setShowProfilesModal(true);
+  };
+
+  const getProfileForAddress = (address: string): PublicProfile | null => {
+    if (customerProfile.classicAddress === address) {
+      return { company: customerProfile.company, name: customerProfile.name, email: customerProfile.email, phone: customerProfile.phone, address: customerProfile.address, city: customerProfile.city, state: customerProfile.state, zip: customerProfile.zip, country: customerProfile.country, uniqueID: customerProfile.uniqueID, classicAddress: customerProfile.classicAddress, profileUUID: customerProfile.profileUUID, timestamp: Date.now(), walletHistory: customerProfile.walletHistory };
+    }
+    if (vendorProfile.classicAddress === address) {
+      return { company: vendorProfile.company, name: vendorProfile.name, email: vendorProfile.email, phone: vendorProfile.phone, address: vendorProfile.address, city: vendorProfile.city, state: vendorProfile.state, zip: vendorProfile.zip, country: vendorProfile.country, uniqueID: vendorProfile.uniqueID, classicAddress: vendorProfile.classicAddress, profileUUID: vendorProfile.profileUUID, timestamp: Date.now(), walletHistory: vendorProfile.walletHistory };
+    }
+    const allUUIDs = [...customerLinkedVendorUUIDs, ...vendorLinkedCustomerUUIDs];
+    for (const uuid of allUUIDs) {
+      const p = publicProfiles[uuid];
+      if (p && p.classicAddress === address) return p;
+    }
+    return null;
   };
 
   const getTimeRemaining = (po: SavedPO) => {
@@ -795,10 +1468,31 @@ export default function App() {
     if (savedTab) setActiveTab(savedTab as any);
     const savedItems = localStorage.getItem('createItems');
     if (savedItems) try { setItems(JSON.parse(savedItems)); } catch { setItems([]); }
-    const savedInventoryData = localStorage.getItem('savedInventory');
+        const savedInventoryData = localStorage.getItem('savedInventory');
     if (savedInventoryData) try { setSavedInventory(JSON.parse(savedInventoryData)); } catch { setSavedInventory([]); }
+    
     setHydrated(true);
+
+    // Phase 1 test - remove after we finish all phases
+    const runXRPLTest = async () => {
+      if (customerProfile.classicAddress) {
+        try {
+          console.log('✅ Phase 1 Test: Fetching MPTs from XRPL...');
+          const mpts = await getMyMPTs(customerProfile.classicAddress);
+          console.log('✅ Phase 1 Test: Your MPTs from XRPL:', mpts);
+
+          console.log('✅ Phase 1 Test: Fetching Escrows from XRPL...');
+          const escrows = await getMyEscrows(customerProfile.classicAddress);
+          console.log('✅ Phase 1 Test: Your Escrows from XRPL:', escrows);
+        } catch (err: any) {
+          console.error('❌ Phase 1 Test Error:', err.message);
+        }
+      }
+    };
+
+    runXRPLTest();
   }, []);
+
 
   useEffect(() => {
     if (!hydrated) return;
@@ -829,7 +1523,65 @@ export default function App() {
   useEffect(() => { if (!hydrated) return; localStorage.setItem('vendorSharePassword', vendorSharePassword); }, [vendorSharePassword, hydrated]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('activeTab', activeTab); }, [activeTab, hydrated]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('createItems', JSON.stringify(items)); }, [items, hydrated]);
+  
+  // ===== DID HELPERS (Phase 1A) =====
+  const buildDIDDocument = (publicKey: string, profileUri: string, catalogUri?: string): string => {
+    const doc: any = {
+      svc: [profileUri],
+      vm: publicKey,
+      v: 1
+    };
+    if (catalogUri) doc.svc.push(catalogUri);
+    return JSON.stringify(doc);
+  };
 
+  const buildDIDData = (tier: string = 'basic', profileVersion: number = 1, parentUri?: string): string => {
+    const data: any = {
+      tier,
+      pv: profileVersion
+    };
+    if (parentUri) data.parent = parentUri;
+    return JSON.stringify(data);
+  };
+
+  const resolveDID = async (address: string): Promise<{
+    uri: string | null;
+    didDocument: any | null;
+    data: any | null;
+    raw: any | null;
+  }> => {
+    try {
+      const client = await getXRPLClient();
+      const response = await client.request({
+        command: 'ledger_entry',
+        did: address,
+        ledger_index: 'validated'
+      });
+      const node = response.result.node as any;
+      if (!node || node.LedgerEntryType !== 'DID') {
+        return { uri: null, didDocument: null, data: null, raw: null };
+      }
+      let uri: string | null = null;
+      let didDocument: any | null = null;
+      let data: any | null = null;
+      if (node.URI) {
+        try { uri = xrpl.convertHexToString(node.URI); } catch (e) { console.error('Failed to decode DID URI:', e); }
+      }
+      if (node.DIDDocument) {
+        try { didDocument = JSON.parse(xrpl.convertHexToString(node.DIDDocument)); } catch (e) { console.error('Failed to decode DID Document:', e); }
+      }
+      if (node.Data) {
+        try { data = JSON.parse(xrpl.convertHexToString(node.Data)); } catch (e) { console.error('Failed to decode DID Data:', e); }
+      }
+      return { uri, didDocument, data, raw: node };
+    } catch (err: any) {
+      if (err?.data?.error === 'entryNotFound') {
+        return { uri: null, didDocument: null, data: null, raw: null };
+      }
+      console.error('DID resolution failed:', err);
+      return { uri: null, didDocument: null, data: null, raw: null };
+    }
+  };
   const saveCustomerProfile = async () => {
     try {
       let updatedProfile = { ...customerProfile };
@@ -840,11 +1592,33 @@ export default function App() {
         const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, customerOnChainPassword);
         const client = await getXRPLClient();
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
-        const accountSet: AccountSet = { TransactionType: 'AccountSet', Account: wallet.classicAddress, Domain: xrpl.convertStringToHex(newIpfsUri) };
-        const preparedSet = await client.autofill(accountSet);
+        
+        // Phase 1A: Use DIDSet instead of AccountSet for profile anchoring
+        const previousIpfsUri = updatedProfile.ipfsUri || undefined;
+        const didDocStr = buildDIDDocument(wallet.publicKey, newIpfsUri);
+        const didDataStr = buildDIDData('basic', 1, previousIpfsUri);
+        
+        const didSet: any = {
+          TransactionType: 'DIDSet',
+          Account: wallet.classicAddress,
+          URI: xrpl.convertStringToHex(newIpfsUri),
+          DIDDocument: xrpl.convertStringToHex(didDocStr),
+          Data: xrpl.convertStringToHex(didDataStr)
+        };
+        const preparedSet = await client.autofill(didSet);
         const signedSet = wallet.sign(preparedSet);
         await client.submitAndWait(signedSet.tx_blob);
+        
+        // Also set Domain for backward compatibility during transition
+        try {
+          const accountSet: AccountSet = { TransactionType: 'AccountSet', Account: wallet.classicAddress, Domain: xrpl.convertStringToHex(newIpfsUri) };
+          const preparedAccSet = await client.autofill(accountSet);
+          const signedAccSet = wallet.sign(preparedAccSet);
+          await client.submitAndWait(signedAccSet.tx_blob);
+        } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
+        
         updatedProfile.ipfsUri = newIpfsUri; updatedProfile.lastOnChainHash = contentHash;
+        console.log('✅ Profile saved with DID on-chain! URI:', newIpfsUri);
       }
       setCustomerProfile(updatedProfile); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile));
       console.log('Profile saved' + (postCustomerOnChain ? ' and posted on-chain!' : ' locally!'));
@@ -861,11 +1635,33 @@ export default function App() {
         const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, vendorOnChainPassword);
         const client = await getXRPLClient();
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
-        const accountSet: AccountSet = { TransactionType: 'AccountSet', Account: wallet.classicAddress, Domain: xrpl.convertStringToHex(newIpfsUri) };
-        const preparedSet = await client.autofill(accountSet);
+        
+        // Phase 1A: Use DIDSet instead of AccountSet for profile anchoring
+        const previousIpfsUri = updatedProfile.ipfsUri || undefined;
+        const didDocStr = buildDIDDocument(wallet.publicKey, newIpfsUri);
+        const didDataStr = buildDIDData('basic', 1, previousIpfsUri);
+        
+        const didSet: any = {
+          TransactionType: 'DIDSet',
+          Account: wallet.classicAddress,
+          URI: xrpl.convertStringToHex(newIpfsUri),
+          DIDDocument: xrpl.convertStringToHex(didDocStr),
+          Data: xrpl.convertStringToHex(didDataStr)
+        };
+        const preparedSet = await client.autofill(didSet);
         const signedSet = wallet.sign(preparedSet);
         await client.submitAndWait(signedSet.tx_blob);
+        
+        // Also set Domain for backward compatibility during transition
+        try {
+          const accountSet: AccountSet = { TransactionType: 'AccountSet', Account: wallet.classicAddress, Domain: xrpl.convertStringToHex(newIpfsUri) };
+          const preparedAccSet = await client.autofill(accountSet);
+          const signedAccSet = wallet.sign(preparedAccSet);
+          await client.submitAndWait(signedAccSet.tx_blob);
+        } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
+        
         updatedProfile.ipfsUri = newIpfsUri; updatedProfile.lastOnChainHash = contentHash;
+        console.log('✅ Profile saved with DID on-chain! URI:', newIpfsUri);
       }
       setVendorProfile(updatedProfile); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile));
       console.log('Profile saved' + (postVendorOnChain ? ' and posted on-chain!' : ' locally!'));
@@ -998,7 +1794,18 @@ export default function App() {
     const uniqueWallets = new Set([...(profile.walletHistory || []), profile.classicAddress]);
     const walletsToPoll = Array.from(uniqueWallets).filter(addr => xrpl.isValidAddress(addr));
     for (const walletAddr of walletsToPoll) {
-      const uri = await getLatestProfileHashFromChain(walletAddr);
+      // Phase 1A: Try DID resolution first, fallback to AccountSet Domain
+      let uri: string | null = null;
+      try {
+        const didResult = await resolveDID(walletAddr);
+        if (didResult.uri) {
+          uri = didResult.uri;
+          console.log(`Profile resolved via DID for ${walletAddr}`);
+        }
+      } catch (e) { console.log('DID resolution failed, trying Domain fallback'); }
+      if (!uri) {
+        uri = await getLatestProfileHashFromChain(walletAddr);
+      }
       if (uri && uri !== profile.ipfsUri) {
         try {
           const updated = await fetchAndDecryptProfileFromIPFS(uri, storedPasswords[uuid]);
@@ -1067,6 +1874,62 @@ export default function App() {
 
   const getXrpPriceUsd = async (): Promise<number> => {
     try { const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ripple&vs_currencies=usd'); const data = await response.json(); return data.ripple.usd; } catch { return 0.5; }
+  };
+
+  // DID Status Badge — checks on-chain DID, not just local ipfsUri
+  const DIDStatusBadge = ({ address }: { address: string }) => {
+    const [didStatus, setDidStatus] = React.useState<'checking' | 'active' | 'none'>('checking');
+    const [didHash, setDidHash] = React.useState<string>('');
+
+    React.useEffect(() => {
+      let cancelled = false;
+      const check = async () => {
+        try {
+          const result = await resolveDID(address);
+          if (cancelled) return;
+          if (result.raw) {
+            setDidStatus('active');
+            if (result.uri) setDidHash(result.uri.replace('ipfs://', '').substring(0, 12) + '...');
+          } else {
+            setDidStatus('none');
+          }
+        } catch {
+          if (!cancelled) setDidStatus('none');
+        }
+      };
+      check();
+      return () => { cancelled = true; };
+    }, [address]);
+
+    if (didStatus === 'checking') {
+      return (
+        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+          <span style={{ background: '#888', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold' }}>
+            Checking DID...
+          </span>
+        </div>
+      );
+    }
+    if (didStatus === 'active') {
+      return (
+        <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+          <span style={{ background: '#27ae60', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold' }}>
+            DID Active ✓
+          </span>
+          {didHash && <p style={{ color: '#888', fontSize: '12px', marginTop: '8px' }}>DID Document: {didHash}</p>}
+        </div>
+      );
+    }
+    return (
+      <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+        <span style={{ background: '#ff9800', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold' }}>
+          No DID
+        </span>
+        <p style={{ color: '#888', fontSize: '12px', marginTop: '8px' }}>
+          Post on-chain to create your DID identity
+        </p>
+      </div>
+    );
   };
 
   return (
@@ -1223,13 +2086,13 @@ export default function App() {
                     </thead>
                     <tbody>
                       {getUpdatablePOs().map(po => (
-                        <tr key={po.id}>
+                          <tr key={po.issuanceId || po.id}>
                           <td style={{ padding: '10px' }}>{po.poName}</td>
                           <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                           <td style={{ padding: '10px' }}>${po.total}</td>
                           <td style={{ padding: '10px' }}>{po.status} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                           <td style={{ padding: '10px' }}>
-                            <button onClick={() => { setSelectedUpdatePO(po); prefillFromPO(po); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                            <button onClick={async () => { setSelectedUpdatePO(po); await prefillFromPO(po); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '20px', cursor: 'pointer', border: 'none' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                               Edit
                             </button>
                           </td>
@@ -1241,6 +2104,11 @@ export default function App() {
                 {selectedUpdatePO && (
                   <div style={{ marginTop: '40px', background: '#f9f9f9', padding: '20px', borderRadius: '20px' }}>
                     <h3 style={{ color: '#F2B04A' }}>Update PO Form (New MPT Version)</h3>
+                    {isLoadingEditPO && (
+                      <div style={{ textAlign: 'center', padding: '20px', color: '#F2B04A', fontWeight: 'bold' }}>
+                        Loading PO details from IPFS...
+                      </div>
+                    )}
                     <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>PO Name</label>
                     <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={poName} onChange={(e) => setPoName(e.target.value)} />
                     <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Description</label>
@@ -1338,7 +2206,7 @@ export default function App() {
                     </thead>
                     <tbody>
                       {(openExpanded ? sortPOsNewestFirst(getLatestActivePOs('open')) : sortPOsNewestFirst(getLatestActivePOs('open').slice(0, 2))).map(po => (
-                        <tr key={po.id}>
+                          <tr key={po.issuanceId || po.id}>
                           <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                           <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                           <td style={{ padding: '10px' }}>${po.total}</td>
@@ -1379,7 +2247,7 @@ export default function App() {
                     </thead>
                     <tbody>
                       {(acceptedExpanded ? sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence)) : sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence).slice(0, 2))).map(po => (
-                        <tr key={po.id}>
+                          <tr key={po.issuanceId || po.id}>
                           <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                           <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                           <td style={{ padding: '10px' }}>${po.total}</td>
@@ -1449,29 +2317,16 @@ export default function App() {
                     </ul>
                   </>
                 )}
-                {(() => {
-                  const currentViewedPO = customerScpoActionViewedPO;
-                  const historyPOs = getPOHistory(selectedOpenPO || currentViewedPO as any);
-                  return historyPOs.length > 0 && (
-                    <div style={{ marginTop: '20px' }}>
-                      <h4 style={{ color: '#F2B04A', cursor: 'pointer' }} onClick={() => setShowHistory(!showHistory)}>
-                        View History {showHistory ? '▲' : '▼'}
-                      </h4>
-                      {showHistory && (
-                        <div>
-                          {historyPOs.map(hist => (
-                            <div key={hist.id} style={{ marginBottom: '10px', padding: '10px', border: '1px solid #ddd', borderRadius: '10px' }}>
-                              <strong>Version:</strong> {hist.poName} (Status: {hist.status})
-                              <button onClick={async () => { await viewPOFromUri(hist.ipfsUri, hist, setCustomerScpoActionViewedPO, setCustomerScpoActionPoLoadError); }} style={{ marginLeft: '10px', background: '#F2B04A', color: 'white', padding: '5px 10px', borderRadius: '15px', cursor: 'pointer' }}>
-                                Load This Version
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+                  <button onClick={() => openProfilesModal(selectedOpenPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                    Profiles
+                  </button>
+                  {getPOHistory(selectedOpenPO || customerScpoActionViewedPO as any).length > 0 && (
+                    <button onClick={() => openHistoryModal(selectedOpenPO, customerScpoActionViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                      View History
+                    </button>
+                  )}
+                </div>
                 <button onClick={() => setCustomerScpoActionViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   Close
                 </button>
@@ -1497,7 +2352,7 @@ export default function App() {
                     </thead>
                     <tbody>
                       {(openExpanded ? sortPOsNewestFirst(getLatestActivePOs('open')) : sortPOsNewestFirst(getLatestActivePOs('open').slice(0, 2))).map(po => (
-                        <tr key={po.id}>
+                          <tr key={po.issuanceId || po.id}>
                           <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                           <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                           <td style={{ padding: '10px' }}>${po.total}</td>
@@ -1539,7 +2394,7 @@ export default function App() {
                     </thead>
                     <tbody>
                       {(fundedExpanded ? sortPOsNewestFirst(getLatestActivePOs('funded').filter(isWithin24HoursOfClaimable)) : sortPOsNewestFirst(getLatestActivePOs('funded').filter(isWithin24HoursOfClaimable).slice(0, 2))).map(po => (
-                        <tr key={po.id}>
+                          <tr key={po.issuanceId || po.id}>
                           <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                           <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                           <td style={{ padding: '10px' }}>${po.total}</td>
@@ -1607,29 +2462,16 @@ export default function App() {
                     </ul>
                   </>
                 )}
-                {(() => {
-                  const currentViewedPO = vendorScpoActionViewedPO;
-                  const historyPOs = getPOHistory(selectedOpenPO || currentViewedPO as any);
-                  return historyPOs.length > 0 && (
-                    <div style={{ marginTop: '20px' }}>
-                      <h4 style={{ color: '#F2B04A', cursor: 'pointer' }} onClick={() => setShowHistory(!showHistory)}>
-                        View History {showHistory ? '▲' : '▼'}
-                      </h4>
-                      {showHistory && (
-                        <div>
-                          {historyPOs.map(hist => (
-                            <div key={hist.id} style={{ marginBottom: '10px', padding: '10px', border: '1px solid #ddd', borderRadius: '10px' }}>
-                              <strong>Version:</strong> {hist.poName} (Status: {hist.status})
-                              <button onClick={async () => { await viewPOFromUri(hist.ipfsUri, hist, setVendorScpoActionViewedPO, setVendorScpoActionPoLoadError); }} style={{ marginLeft: '10px', background: '#F2B04A', color: 'white', padding: '5px 10px', borderRadius: '15px', cursor: 'pointer' }}>
-                                Load This Version
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+                  <button onClick={() => openProfilesModal(selectedOpenPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                    Profiles
+                  </button>
+                  {getPOHistory(selectedOpenPO || vendorScpoActionViewedPO as any).length > 0 && (
+                    <button onClick={() => openHistoryModal(selectedOpenPO, vendorScpoActionViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                      View History
+                    </button>
+                  )}
+                </div>
                 <button onClick={() => setVendorScpoActionViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   Close
                 </button>
@@ -1725,6 +2567,7 @@ export default function App() {
             )}
           </div>
         )}
+        
         {activeTab === 'view' && (
           <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
             <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>Overview</h2>
@@ -1735,19 +2578,43 @@ export default function App() {
               <button onClick={() => setOverviewSubTab('details')} style={{ height: '50px', padding: '0 30px', background: overviewSubTab === 'details' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: overviewSubTab === 'details' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                 Details
               </button>
+
+              {/* Phase 2 Refresh Button - ONE CLEAN VERSION */}
+              <button 
+                               onClick={async () => {
+                  setIsRefreshing(true);
+                  console.log('🔄 Refreshing POs from XRPL...');
+                  await loadPOsFromLedger();   // Now calls the top-level function
+                  setIsRefreshing(false);
+                }}                 
+                style={{ 
+                  background: '#F2B04A', 
+                  color: 'white', 
+                  padding: '12px 24px', 
+                  borderRadius: '30px', 
+                  border: 'none', 
+                  cursor: 'pointer', 
+                  fontSize: '16px',
+                  alignSelf: 'center'
+                }}
+                disabled={isRefreshing}
+              >
+                {isRefreshing ? 'Refreshing...' : '🔄 Refresh from XRPL'}
+              </button>
             </div>
 
             {overviewSubTab === 'summary' && (
               <div>
                 <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>{mode === 'customer' ? 'Customer SC.PO Summary' : 'Vendor SC.PO Summary'}</h2>
                 <div style={{ display: 'flex', justifyContent: 'space-around', gap: '20px' }}>
-                  {['Open', 'Accepted', 'Funded', 'Claimed'].map(status => {
-                    const filteredPOs = getLatestActivePOs(status as SavedPO['status']);
+                   {['open', 'accepted', 'funded', 'claimed'].map(statusKey => {
+                    const filteredPOs = getLatestActivePOs(statusKey as SavedPO['status']);
+                    const status = statusKey.charAt(0).toUpperCase() + statusKey.slice(1);
                     const count = filteredPOs.length;
                     const totalValue = filteredPOs.reduce((sum, po) => sum + parseFloat(po.total || '0'), 0);
                     const formattedValue = totalValue >= 1000000 ? `$${Math.round(totalValue / 1000000)}M` : totalValue >= 1000 ? `$${Math.round(totalValue / 1000)}K` : `$${totalValue.toFixed(0)}`;
                     return (
-                      <div key={status} style={{ textAlign: 'center', flex: 1 }}>
+                      <div key={statusKey} style={{ textAlign: 'center', flex: 1 }}>
                         <h4 style={{ color: '#F2B04A', marginBottom: '10px' }}>{status}</h4>
                         <div style={{ background: 'white', padding: '20px', borderRadius: '10px', border: '2px solid #FFD98F', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', marginBottom: '10px', height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', fontWeight: 'bold' }}>{count}</div>
                         <div style={{ background: 'white', padding: '10px 20px', borderRadius: '999px', border: '2px solid #FFD98F', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', fontSize: '20px', fontWeight: 'bold' }}>{formattedValue}</div>
@@ -1769,7 +2636,7 @@ export default function App() {
                       </thead>
                       <tbody>
                         {getVendorUpdatedPOs().map(po => (
-                          <tr key={po.id}>
+                            <tr key={po.issuanceId || po.id}>
                             <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                             <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>Customer</td>
                             <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{po.dateIssued}</td>
@@ -1829,29 +2696,16 @@ export default function App() {
                             </ul>
                           </>
                         )}
-                        {(() => {
-                          const currentViewedPO = vendorOverviewViewedPO;
-                          const historyPOs = getPOHistory(selectedOpenPO || currentViewedPO as any);
-                          return historyPOs.length > 0 && (
-                            <div style={{ marginTop: '20px' }}>
-                              <h4 style={{ color: '#F2B04A', cursor: 'pointer' }} onClick={() => setShowHistory(!showHistory)}>
-                                View History {showHistory ? '▲' : '▼'}
-                              </h4>
-                              {showHistory && (
-                                <div>
-                                  {historyPOs.map(hist => (
-                                    <div key={hist.id} style={{ marginBottom: '10px', padding: '10px', border: '1px solid #ddd', borderRadius: '10px' }}>
-                                      <strong>Version:</strong> {hist.poName} (Status: {hist.status})
-                                      <button onClick={async () => { await viewPOFromUri(hist.ipfsUri, hist, setVendorOverviewViewedPO, setVendorOverviewPoLoadError); }} style={{ marginLeft: '10px', background: '#F2B04A', color: 'white', padding: '5px 10px', borderRadius: '15px', cursor: 'pointer' }}>
-                                        Load This Version
-                                      </button>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })()}
+                        <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+                          <button onClick={() => openProfilesModal(selectedOpenPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                            Profiles
+                          </button>
+                          {getPOHistory(selectedOpenPO || vendorOverviewViewedPO as any).length > 0 && (
+                            <button onClick={() => openHistoryModal(selectedOpenPO, vendorOverviewViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                              View History
+                            </button>
+                          )}
+                        </div>
                         <button onClick={() => setVendorOverviewViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                           Close
                         </button>
@@ -1880,7 +2734,7 @@ export default function App() {
                           </thead>
                           <tbody>
                             {(fundedExpanded ? sortPOsNewestFirst(getLatestActivePOs('funded')) : sortPOsNewestFirst(getLatestActivePOs('funded').slice(0, 2))).map(po => (
-                              <tr key={po.id}>
+                                <tr key={po.issuanceId || po.id}>
                                 <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                                 <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                                 <td style={{ padding: '10px' }}>${po.total}</td>
@@ -1906,8 +2760,8 @@ export default function App() {
                 )}
                 {mode === 'customer' && (
                   <div style={{ marginBottom: '40px' }}>
-                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Closed SC.PO</h3>
-                    {getLatestActivePOs('claimed').length === 0 ? <p>No closed POs</p> : (
+                  <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Claimed SC.PO</h3>
+                  {getLatestActivePOs('claimed').length === 0 ? <p>No claimed POs</p> : (
                       <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
                           <thead>
@@ -1920,7 +2774,7 @@ export default function App() {
                           </thead>
                           <tbody>
                             {(closedExpanded ? sortPOsNewestFirst(getLatestActivePOs('claimed')) : sortPOsNewestFirst(getLatestActivePOs('claimed').slice(0, 2))).map(po => (
-                              <tr key={po.id}>
+                                <tr key={po.issuanceId || po.id}>
                                 <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                                 <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                                 <td style={{ padding: '10px' }}>${po.total}</td>
@@ -1960,7 +2814,7 @@ export default function App() {
                           </thead>
                           <tbody>
                             {(acceptedExpanded ? sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence)) : sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence).slice(0, 2))).map(po => (
-                              <tr key={po.id}>
+                                <tr key={po.issuanceId || po.id}>
                                 <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                                 <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                                 <td style={{ padding: '10px' }}>${po.total}</td>
@@ -2001,7 +2855,7 @@ export default function App() {
                           </thead>
                           <tbody>
                             {(fundedExpanded ? sortPOsNewestFirst(getLatestActivePOs('funded')) : sortPOsNewestFirst(getLatestActivePOs('funded').slice(0, 2))).map(po => (
-                              <tr key={po.id}>
+                                <tr key={po.issuanceId || po.id}>
                                 <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                                 <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                                 <td style={{ padding: '10px' }}>${po.total}</td>
@@ -2042,7 +2896,7 @@ export default function App() {
                           </thead>
                           <tbody>
                             {(closedExpanded ? sortPOsNewestFirst(getLatestActivePOs('claimed')) : sortPOsNewestFirst(getLatestActivePOs('claimed').slice(0, 2))).map(po => (
-                              <tr key={po.id}>
+                                <tr key={po.issuanceId || po.id}>
                                 <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
                                 <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                                 <td style={{ padding: '10px' }}>${po.total}</td>
@@ -2105,23 +2959,16 @@ export default function App() {
                         ))}
                       </tbody>
                     </table>
-                    {(() => {
-                      const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
-                      return currentViewedPO?.attachments && currentViewedPO.attachments.length > 0 && (
-                        <>
-                          <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Attachments</h4>
-                          <ul>
-                            {currentViewedPO.attachments.map((att, i) => (
-                              <li key={i}>
-                                <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                                  {att.name}
-                                </a>
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      );
-                    })()}
+                    <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
+                      <button onClick={() => openProfilesModal(selectedOpenPO || selectedFundedPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                        Profiles
+                      </button>
+                      {getPOHistory(selectedOpenPO || selectedFundedPO || (mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO) as any).length > 0 && (
+                        <button onClick={() => openHistoryModal(selectedOpenPO || selectedFundedPO, mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
+                          View History
+                        </button>
+                      )}
+                    </div>
                     {(() => {
                       const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
                       const historyPOs = getPOHistory(selectedOpenPO || selectedFundedPO || currentViewedPO as any);
@@ -2235,9 +3082,13 @@ export default function App() {
                   <input type="checkbox" checked={postCustomerOnChain} onChange={(e) => setPostCustomerOnChain(e.target.checked)} />
                   Post update on-chain? (Requires password and funded wallet)
                 </label>
-                <button onClick={saveCustomerProfile} style={{ display: 'block', margin: '0 auto 40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                
+                <button onClick={saveCustomerProfile} style={{ display: 'block', margin: '20px auto 40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   Save Profile
                 </button>
+                {customerProfile.classicAddress && (
+                  <DIDStatusBadge address={customerProfile.classicAddress} />
+                )}
                 <label style={{ display: 'block', textAlign: 'center', color: '#666' }}>
                   <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
                   Enable Auto-Refresh
@@ -2389,6 +3240,9 @@ export default function App() {
                 <button onClick={saveVendorProfile} style={{ display: 'block', margin: '0 auto 40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   Save Profile
                 </button>
+                {vendorProfile.classicAddress && (
+                  <DIDStatusBadge address={vendorProfile.classicAddress} />
+                )}
                 <label style={{ display: 'block', textAlign: 'center', color: '#666' }}>
                   <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
                   Enable Auto-Refresh
@@ -2548,6 +3402,142 @@ export default function App() {
             )}
           </div>
         )}
+      {/* ===== HISTORY MODAL ===== */}
+        {showHistoryModal && historyModalVersions.length > 0 && (
+          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowHistoryModal(false)}>
+            <div style={{ background: '#FFF9E6', borderRadius: '20px', padding: '30px', width: '90%', maxWidth: '800px', maxHeight: '85vh', overflowY: 'auto', position: 'relative', boxShadow: '0 10px 40px rgba(0,0,0,0.3)' }} onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => setShowHistoryModal(false)} style={{ position: 'absolute', top: '15px', right: '15px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '50%', width: '35px', height: '35px', fontSize: '18px', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+              <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '5px' }}>PO Version History</h2>
+              <p style={{ textAlign: 'center', color: '#888', marginBottom: '20px' }}>Version {historyModalIndex + 1} of {historyModalVersions.length}</p>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+                <button onClick={() => setHistoryModalIndex(Math.max(0, historyModalIndex - 1))} disabled={historyModalIndex === 0} style={{ background: historyModalIndex === 0 ? '#ccc' : 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', cursor: historyModalIndex === 0 ? 'not-allowed' : 'pointer', fontWeight: 'bold', flexShrink: 0 }}>◀</button>
+                <div style={{ flex: 1, margin: '0 20px' }}>
+                  {(() => {
+                    const version = historyModalVersions[historyModalIndex];
+                    if (!version) return null;
+                    const isLatest = historyModalIndex === historyModalVersions.length - 1;
+                    return (
+                      <div style={{ border: '2px solid #D88F2E', borderRadius: '15px', padding: '20px', background: isLatest ? '#f0fff0' : '#f9f9f9' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                          <h3 style={{ color: '#F2B04A', margin: 0 }}>{version.po.poName}</h3>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            {isLatest && <span style={{ background: '#4CAF50', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>Current</span>}
+                            <span style={{ background: version.po.status === 'superseded' ? '#ff9800' : '#2196F3', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>{version.po.status}</span>
+                          </div>
+                        </div>
+                        <p style={{ color: '#666', fontSize: '13px', margin: '0 0 10px' }}>Issuance: {version.po.issuanceId?.substring(0, 16)}...</p>
+                        <p><strong style={{ color: '#F2B04A' }}>Total:</strong> ${version.po.total}</p>
+                        <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {version.po.paymentTerms || 'N/A'}</p>
+                        {version.loading ? (
+                          <p style={{ color: '#F2B04A', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>Loading PO details from IPFS...</p>
+                        ) : version.poData ? (
+                          <>
+                            <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {version.poData.description || 'N/A'}</p>
+                            <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {version.poData.department}</p>
+                            <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {version.poData.deliveryTerms}</p>
+                            <h4 style={{ color: '#F2B04A', marginTop: '15px' }}>Items</h4>
+                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                              <thead>
+                                <tr style={{ background: '#e0e0e0' }}>
+                                  <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
+                                  <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
+                                  <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {version.poData.items.map((item, i) => (
+                                  <tr key={i}>
+                                    <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
+                                    <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
+                                    <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {version.poData.attachments && version.poData.attachments.length > 0 && (
+                              <>
+                                <h4 style={{ marginTop: '15px', color: '#F2B04A' }}>Attachments</h4>
+                                <ul>
+                                  {version.poData.attachments.map((att, i) => (
+                                    <li key={i}>
+                                      <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
+                                        {att.name}
+                                      </a>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          <p style={{ color: '#999', fontStyle: 'italic' }}>PO details unavailable</p>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+                <button onClick={() => setHistoryModalIndex(Math.min(historyModalVersions.length - 1, historyModalIndex + 1))} disabled={historyModalIndex === historyModalVersions.length - 1} style={{ background: historyModalIndex === historyModalVersions.length - 1 ? '#ccc' : 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', cursor: historyModalIndex === historyModalVersions.length - 1 ? 'not-allowed' : 'pointer', fontWeight: 'bold', flexShrink: 0 }}>▶</button>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '10px' }}>
+                {historyModalVersions.map((_, i) => (
+                  <button key={i} onClick={() => setHistoryModalIndex(i)} style={{ width: i === historyModalIndex ? '24px' : '10px', height: '10px', borderRadius: '5px', border: 'none', background: i === historyModalIndex ? '#F2B04A' : '#ddd', cursor: 'pointer', transition: 'all 0.2s', padding: 0 }} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        {/* ===== PROFILES MODAL (Arrow Navigation) ===== */}
+        {showProfilesModal && profilesModalPO && (() => {
+          const profiles = [
+            { label: 'Customer (Buyer)', address: profilesModalPO.buyerAddress, profile: getProfileForAddress(profilesModalPO.buyerAddress) },
+            { label: 'Vendor', address: profilesModalPO.vendorAddress, profile: getProfileForAddress(profilesModalPO.vendorAddress) }
+          ];
+          const current = profiles[profilesModalIndex] || profiles[0];
+          return (
+            <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowProfilesModal(false)}>
+              <div style={{ background: '#FFF9E6', borderRadius: '20px', padding: '30px', width: '90%', maxWidth: '800px', maxHeight: '85vh', overflowY: 'auto', position: 'relative', boxShadow: '0 10px 40px rgba(0,0,0,0.3)' }} onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => setShowProfilesModal(false)} style={{ position: 'absolute', top: '15px', right: '15px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '50%', width: '35px', height: '35px', fontSize: '18px', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
+                <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '5px' }}>PO Profile Details</h2>
+                <p style={{ textAlign: 'center', color: '#888', marginBottom: '20px' }}>{current.label} — {profilesModalIndex + 1} of {profiles.length}</p>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+                  <button onClick={() => setProfilesModalIndex(Math.max(0, profilesModalIndex - 1))} disabled={profilesModalIndex === 0} style={{ background: profilesModalIndex === 0 ? '#ccc' : 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', cursor: profilesModalIndex === 0 ? 'not-allowed' : 'pointer', fontWeight: 'bold', flexShrink: 0 }}>◀</button>
+                  <div style={{ flex: 1, margin: '0 20px' }}>
+                    <div style={{ border: '2px solid #D88F2E', borderRadius: '15px', padding: '20px', background: profilesModalIndex === 0 ? '#f0fff0' : '#fff0f0' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                        <h3 style={{ color: '#F2B04A', margin: 0 }}>{current.label}</h3>
+                        <span style={{ background: profilesModalIndex === 0 ? '#4CAF50' : '#2196F3', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>{profilesModalIndex === 0 ? 'Buyer' : 'Seller'}</span>
+                      </div>
+                      {current.profile ? (
+                        <>
+                          <p><strong style={{ color: '#F2B04A' }}>Company:</strong> {current.profile.company || 'N/A'}</p>
+                          <p><strong style={{ color: '#F2B04A' }}>Unique ID:</strong> {current.profile.uniqueID || 'N/A'}</p>
+                          <p><strong style={{ color: '#F2B04A' }}>Contact:</strong> {current.profile.name || 'N/A'}</p>
+                          <p><strong style={{ color: '#F2B04A' }}>Email:</strong> {current.profile.email || 'N/A'}</p>
+                          <p><strong style={{ color: '#F2B04A' }}>Phone:</strong> {current.profile.phone || 'N/A'}</p>
+                          <p><strong style={{ color: '#F2B04A' }}>Address:</strong> {current.profile.address || 'N/A'}</p>
+                          <p><strong style={{ color: '#F2B04A' }}>City:</strong> {current.profile.city || 'N/A'}, {current.profile.state || 'N/A'} {current.profile.zip || 'N/A'}</p>
+                          <p><strong style={{ color: '#F2B04A' }}>Country:</strong> {current.profile.country || 'N/A'}</p>
+                          <p style={{ fontSize: '13px', wordBreak: 'break-all', marginTop: '10px' }}><strong style={{ color: '#F2B04A' }}>Wallet:</strong> {current.profile.classicAddress}</p>
+                        </>
+                      ) : (
+                        <>
+                          <p style={{ color: '#999', fontStyle: 'italic' }}>Profile not linked</p>
+                          <p style={{ fontSize: '13px', wordBreak: 'break-all' }}><strong style={{ color: '#F2B04A' }}>Wallet:</strong> {current.address}</p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <button onClick={() => setProfilesModalIndex(Math.min(profiles.length - 1, profilesModalIndex + 1))} disabled={profilesModalIndex === profiles.length - 1} style={{ background: profilesModalIndex === profiles.length - 1 ? '#ccc' : 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', cursor: profilesModalIndex === profiles.length - 1 ? 'not-allowed' : 'pointer', fontWeight: 'bold', flexShrink: 0 }}>▶</button>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '10px' }}>
+                  {profiles.map((_, i) => (
+                    <button key={i} onClick={() => setProfilesModalIndex(i)} style={{ width: i === profilesModalIndex ? '24px' : '10px', height: '10px', borderRadius: '5px', border: 'none', background: i === profilesModalIndex ? '#2196F3' : '#ddd', cursor: 'pointer', transition: 'all 0.2s', padding: 0 }} />
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
