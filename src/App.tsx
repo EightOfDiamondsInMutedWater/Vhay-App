@@ -2,13 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import * as xrpl from 'xrpl';
 import type { EscrowCreate, EscrowFinish, Payment, AccountSet, Transaction, Memo, AccountTxResponse, AccountInfoResponse, AccountNFTsResponse, AccountNFToken } from 'xrpl';
 import CryptoJS from 'crypto-js';
+import { x25519 } from '@noble/curves/ed25519';
+import { edwardsToMontgomeryPub, edwardsToMontgomeryPriv } from '@noble/curves/ed25519';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/curves/abstract/utils';
 import { v4 as uuidv4 } from 'uuid';
 import { QRCodeSVG } from 'qrcode.react';
 import { 
   getMyMPTs, getMyEscrows, getAccountNFTs, getLatestProfileFromAddress, 
-  getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO 
+  getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO,
+  deployPermissionedDomain, issueCredential, acceptCredential,
+  validateCredential, canCreatePO, revokeCredential, checkAndRenewCredential 
 } from './utils/xrplHelpers';
-
 console.log('xrpl version loaded:', require('xrpl/package.json').version);
 
 const getOrGenerateUUID = (key: string): string => {
@@ -24,7 +29,7 @@ interface Item { num: string; qty: string; total: string; invNFTId?: string; }
 interface Attachment { name: string; uri: string; }
 interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string; }
 interface SavedPO { id: string; poName: string; dateIssued: string; total: string; ipfsUri: string; status: 'open' | 'accepted' | 'funded' | 'claimed' | 'updated' | 'recalled' | 'superseded'; issuanceId: string; escrowSequence?: number; txHash: string; buyerAddress: string; vendorAddress: string; paymentTerms: string; vendorUUID?: string; clawbackEnabled?: boolean; parentIssuanceId?: string; metadata: any; }
-interface Profile { company: string; name: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; }
+interface Profile { company: string; name: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
 interface PublicProfile { company: string; name: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
 interface FeeEntry { date: string; poName: string; amount: string; txHash: string; }
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
@@ -129,76 +134,6 @@ const generateEscrowCondition = async (issuanceId: string): Promise<{ condition:
   for (let i = 0; i < issuanceId.length; i++) {
     preimage[i] = issuanceId.charCodeAt(i);
   }
-// ===== DID HELPERS (Phase 1A) =====
-// Build compact DID document for the DIDDocument field (must be <256 bytes hex-encoded)
-const buildDIDDocument = (publicKey: string, profileUri: string, catalogUri?: string): string => {
-  const doc: any = {
-    svc: [profileUri],
-    vm: publicKey,
-    v: 1
-  };
-  if (catalogUri) doc.svc.push(catalogUri);
-  return JSON.stringify(doc);
-};
-
-// Build DID metadata for the Data field (must be <256 bytes hex-encoded)
-const buildDIDData = (tier: string = 'basic', profileVersion: number = 1, parentUri?: string): string => {
-  const data: any = {
-    tier,
-    pv: profileVersion
-  };
-  if (parentUri) data.parent = parentUri;
-  return JSON.stringify(data);
-};
-
-// Resolve a DID from a wallet address — returns parsed URI, DIDDocument, and Data
-const resolveDID = async (address: string): Promise<{
-  uri: string | null;
-  didDocument: any | null;
-  data: any | null;
-  raw: any | null;
-}> => {
-  try {
-    const client = await getXRPLClient();
-    const response = await client.request({
-      command: 'ledger_entry',
-      did: address,
-      ledger_index: 'validated'
-    });
-    const node = response.result.node as any;
-    if (!node || node.LedgerEntryType !== 'DID') {
-      return { uri: null, didDocument: null, data: null, raw: null };
-    }
-    
-    let uri: string | null = null;
-    let didDocument: any | null = null;
-    let data: any | null = null;
-    
-    if (node.URI) {
-      try { uri = xrpl.convertHexToString(node.URI); } catch (e) { console.error('Failed to decode DID URI:', e); }
-    }
-    if (node.DIDDocument) {
-      try { didDocument = JSON.parse(xrpl.convertHexToString(node.DIDDocument)); } catch (e) { console.error('Failed to decode DID Document:', e); }
-    }
-    if (node.Data) {
-      try { data = JSON.parse(xrpl.convertHexToString(node.Data)); } catch (e) { console.error('Failed to decode DID Data:', e); }
-    }
-    
-    return { uri, didDocument, data, raw: node };
-  } catch (err: any) {
-    if (err?.data?.error === 'entryNotFound') {
-      return { uri: null, didDocument: null, data: null, raw: null };
-    }
-    console.error('DID resolution failed:', err);
-    return { uri: null, didDocument: null, data: null, raw: null };
-  }
-};
-
-// Check if a DID exists for an address (quick check)
-const hasDID = async (address: string): Promise<boolean> => {
-  const result = await resolveDID(address);
-  return result.raw !== null;
-};
   // Build fulfillment: type prefix (A0) + length + preimage
   const fulfillmentBytes = new Uint8Array(preimage.length + 2);
   fulfillmentBytes[0] = 0xA0;
@@ -228,6 +163,8 @@ const hasDID = async (address: string): Promise<boolean> => {
 export default function App() {
   const [mode, setMode] = useState<'customer' | 'vendor'>('customer');
   const [activeTab, setActiveTab] = useState<'create' | 'view' | 'scpoAction' | 'inventoryCatalog' | 'customerProfile' | 'vendorProfile' | 'admin'>('create');
+  const [inputVendorWalletAddress, setInputVendorWalletAddress] = useState('');
+  const [inputCustomerWalletAddress, setInputCustomerWalletAddress] = useState('');
   const [customerProfileSubTab, setCustomerProfileSubTab] = useState<'profile' | 'links'>('profile');
   const [vendorProfileSubTab, setVendorProfileSubTab] = useState<'profile' | 'links'>('profile');
   const [overviewSubTab, setOverviewSubTab] = useState<'summary' | 'details'>('summary');
@@ -250,6 +187,13 @@ export default function App() {
   const [scpoSuccess, setScpoSuccess] = useState(false);
   const [selectedUpdatePO, setSelectedUpdatePO] = useState<SavedPO | null>(null);
   const [adminLoggedIn, setAdminLoggedIn] = useState(false);
+  const [domainID, setDomainID] = useState<string | null>(null);
+  const [deploying, setDeploying] = useState(false);
+  const [revokeAddress, setRevokeAddress] = useState('');
+  const [revoking, setRevoking] = useState(false);
+  const [adminSubTab, setAdminSubTab] = useState<'fees' | 'credentials'>('fees');
+  const [customerCredStatus, setCustomerCredStatus] = useState<{ valid: boolean; tier?: string } | null>(null);
+  const [vendorCredStatus, setVendorCredStatus] = useState<{ valid: boolean; tier?: string } | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   const [feeEntries, setFeeEntries] = useState<FeeEntry[]>([]);
   const [feeSearchTerm, setFeeSearchTerm] = useState('');
@@ -277,25 +221,12 @@ export default function App() {
   const [publicProfiles, setPublicProfiles] = useState<{ [uuid: string]: PublicProfile }>({});
   const [customerLinkedVendorUUIDs, setCustomerLinkedVendorUUIDs] = useState<string[]>([]);
   const [vendorLinkedCustomerUUIDs, setVendorLinkedCustomerUUIDs] = useState<string[]>([]);
-  const [customerShareCode, setCustomerShareCode] = useState('');
-  const [vendorShareCode, setVendorShareCode] = useState('');
-  const [inputVendorCode, setInputVendorCode] = useState('');
-  const [inputCustomerCode, setInputCustomerCode] = useState('');
-  const [customerOnChainPassword, setCustomerOnChainPassword] = useState('');
-  const [vendorOnChainPassword, setVendorOnChainPassword] = useState('');
-  const [customerSharePassword, setCustomerSharePassword] = useState('');
-  const [vendorSharePassword, setVendorSharePassword] = useState('');
-  const [decryptVendorPassword, setDecryptVendorPassword] = useState('');
-  const [decryptCustomerPassword, setDecryptCustomerPassword] = useState('');
-  const [storedPasswords, setStoredPasswords] = useState<{ [uuid: string]: string }>({});
   const [selectedLinkedVendor, setSelectedLinkedVendor] = useState<PublicProfile | null>(null);
   const [selectedLinkedCustomer, setSelectedLinkedCustomer] = useState<PublicProfile | null>(null);
   const [vendorsExpanded, setVendorsExpanded] = useState(false);
   const [customersExpanded, setCustomersExpanded] = useState(false);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [postCustomerOnChain, setPostCustomerOnChain] = useState(false);
-  const [postVendorOnChain, setPostVendorOnChain] = useState(false);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [customerScpoActionViewedPO, setCustomerScpoActionViewedPO] = useState<POData | null>(null);
@@ -546,7 +477,7 @@ const loadPOsFromLedger = async () => {
             txHash: '',
             buyerAddress: meta.b || '',
             vendorAddress: vendorProfile.classicAddress,
-            vendorUUID: vendorLinkedCustomerUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === (meta.b || '')) || '',
+            vendorUUID: vendorProfile.profileUUID,
             paymentTerms: meta.pt || '',
             parentIssuanceId: meta.pid || undefined,
             metadata: meta
@@ -587,7 +518,7 @@ const loadPOsFromLedger = async () => {
               txHash: '',
               buyerAddress: customerAddr,
               vendorAddress: vendorProfile.classicAddress,
-              vendorUUID: uuid,
+              vendorUUID: vendorProfile.profileUUID,
               paymentTerms: meta.pt || '',
               parentIssuanceId: meta.pid || undefined,
               metadata: meta
@@ -629,6 +560,20 @@ useEffect(() => {
   return () => clearInterval(interval);
 }, [autoRefreshEnabled, mode, customerProfile.classicAddress, vendorProfile.classicAddress]);
 
+// Auto-refresh linked profiles every 60 seconds via DID resolution
+useEffect(() => {
+  if (!autoRefreshEnabled) return;
+  const interval = setInterval(async () => {
+    const allUUIDs = mode === 'customer' ? customerLinkedVendorUUIDs : vendorLinkedCustomerUUIDs;
+    for (const uuid of allUUIDs) {
+      try {
+        await manualRefreshProfile(uuid);
+      } catch (e) { /* silent fail on auto-refresh */ }
+    }
+  }, 60000);
+  return () => clearInterval(interval);
+}, [autoRefreshEnabled, mode, customerLinkedVendorUUIDs, vendorLinkedCustomerUUIDs]);
+
 // Trigger load on mode/profile change (only when address actually changes)
 const prevCustomerAddr = useRef('');
 const prevVendorAddr = useRef('');
@@ -647,6 +592,25 @@ useEffect(() => {
     loadPOsFromLedger();
   }
 }, [mode, customerProfile.classicAddress, vendorProfile.classicAddress]);
+
+useEffect(() => {
+  const checkCred = async () => {
+    if (customerProfile.classicAddress && process.env.REACT_APP_DOMAIN_ID) {
+      try {
+        const result = await validateCredential(customerProfile.classicAddress, process.env.REACT_APP_DOMAIN_ID);
+        setCustomerCredStatus(result);
+      } catch { setCustomerCredStatus(null); }
+    }
+    if (vendorProfile.classicAddress && process.env.REACT_APP_DOMAIN_ID) {
+      try {
+        const result = await validateCredential(vendorProfile.classicAddress, process.env.REACT_APP_DOMAIN_ID);
+        setVendorCredStatus(result);
+      } catch { setVendorCredStatus(null); }
+    }
+  };
+  checkCred();
+}, [customerProfile.classicAddress, vendorProfile.classicAddress]);
+
     const saveNewPO = (po: SavedPO) => {
     const updated = [...savedPOs, po];
     setSavedPOs(updated);
@@ -749,26 +713,8 @@ useEffect(() => {
       }
 
       if (po.status === 'accepted') {
-        const password = storedPasswords[po.vendorUUID || ''];
-        const poData: POData = { poName: po.poName, description: '', department: '', paymentTerms: '', deliveryTerms: '', items: [] };
-        const ipfsUri = await uploadEncryptedToIPFS(poData, password);
-        const fullMetadata = buildPOMetadata(po.poName, '', '', '', '', [], [], po.buyerAddress, po.vendorAddress, 'recalled', po.issuanceId, true, po.metadata?.history || []);
-        const ledgerMetadata = buildLedgerMetadata(po.poName, ipfsUri, 'recalled', po.buyerAddress, po.vendorAddress, po.total, po.paymentTerms, po.parentIssuanceId);
-        const mptCreate: any = {
-          TransactionType: 'MPTokenIssuanceCreate',
-          Account: wallet.classicAddress,
-          MPTokenMetadata: xrpl.convertStringToHex(JSON.stringify(ledgerMetadata)),
-          MaximumAmount: '1',
-          AssetScale: 0,
-          TransferFee: 0,
-          Flags: xrpl.MPTokenIssuanceCreateFlags.tfMPTCanClawback
-        };
-        const preparedCreate = await client.autofill(mptCreate);
-        preparedCreate.LastLedgerSequence = currentLedger + 20;
-        const signedCreate = wallet.sign(preparedCreate);
-        const createResult = await client.submitAndWait(signedCreate.tx_blob);
-        const meta = createResult.result.meta as any;
-        newIssuanceId = meta.mpt_issuance_id || po.issuanceId;
+        // No new MPT needed — clawback + recall receipt memo is sufficient
+        // loadPOsFromLedger filters by SCPO_RECALL memos
       }
 
       // Send recall receipt memo to vendor (permanent on-chain proof)
@@ -798,7 +744,7 @@ useEffect(() => {
       } catch (e) {
         console.error('Failed to send recall receipt:', e);
       }
-      updatePO({ ...po, status: 'recalled', issuanceId: newIssuanceId, escrowSequence: undefined });
+      updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
       alert('PO recalled on-chain.');
       setTimeout(() => loadPOsFromLedger(), 2000);
     } catch (err: any) { alert('Recall failed: ' + err.message); }
@@ -820,7 +766,8 @@ useEffect(() => {
     try {
       let password;
       if (po) {
-        if (mode === 'vendor') { const buyerUUID = vendorLinkedCustomerUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === po.buyerAddress); password = buyerUUID ? storedPasswords[buyerUUID] : null; } else { password = po.vendorUUID ? storedPasswords[po.vendorUUID] : null; }
+        if (mode === 'vendor') { password = po.vendorUUID ? getPOEncryptionKey(po.vendorUUID) : null; } else { password = po.vendorUUID ? getPOEncryptionKey(po.vendorUUID) : null; }
+        console.log('DEBUG PO decrypt:', { mode, vendorUUID: po.vendorUUID, password: password?.substring(0, 10), vendorProfileUUID: vendorProfile.profileUUID, customerProfileUUID: customerProfile.profileUUID });
         if (!password) throw new Error('No shared password found');
         const decrypted = CryptoJS.AES.decrypt(encryptedData, password).toString(CryptoJS.enc.Utf8);
         if (!decrypted) throw new Error('Decryption failed');
@@ -842,12 +789,7 @@ useEffect(() => {
     if (po.ipfsUri) {
       try {
         let password;
-        if (mode === 'customer') {
-          password = po.vendorUUID ? storedPasswords[po.vendorUUID] : null;
-        } else {
-          const buyerUUID = vendorLinkedCustomerUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === po.buyerAddress);
-          password = buyerUUID ? storedPasswords[buyerUUID] : null;
-        }
+        password = po.vendorUUID ? getPOEncryptionKey(po.vendorUUID) : null;
         if (password) {
           const hash = po.ipfsUri.replace('ipfs://', '');
           const response = await fetch(`https://gateway.pinata.cloud/ipfs/${hash}`, { cache: 'no-store' });
@@ -884,10 +826,18 @@ useEffect(() => {
     if (!poName) return alert('PO Name is required');
     if (!seed) return alert('Wallet seed required');
     if (!vendor) return alert('Vendor address required');
-    if (!selectedVendorUUID || !storedPasswords[selectedVendorUUID]) return alert('Link vendor first');
+    if (!selectedVendorUUID || !getPOEncryptionKey(selectedVendorUUID)) return alert('Link vendor first');
     if (items.length === 0) return alert('Add at least one item');
     if (parseFloat(totalEscrowAmount) <= 0) return alert('Total > 0');
     if (!paymentTerms) return alert('Select Payment Terms');
+
+    // Phase 1B: Verify both buyer and vendor hold valid credentials
+    const wallet = xrpl.Wallet.fromSeed(seed);
+    const credCheck = await canCreatePO(wallet.classicAddress, vendor);
+    if (!credCheck.allowed) {
+      return alert(`Cannot create PO: ${credCheck.reason}\n\nBoth parties must have a valid credential in the SC.PO domain. Save your profile to get one.`);
+    }
+
     const xrpPriceUsd = await getXrpPriceUsd();
     const feeUsd = 0.01; const feeXrp = feeUsd / xrpPriceUsd; const feeDrops = xrpl.xrpToDrops(feeXrp.toFixed(6));
     let attachments: Attachment[] = [];
@@ -901,7 +851,7 @@ useEffect(() => {
     const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, items, attachments: attachments.length > 0 ? attachments : undefined };
     try {
       setResult('Encrypting and uploading PO data to IPFS...');
-      const password = storedPasswords[selectedVendorUUID];
+      const password = getPOEncryptionKey(selectedVendorUUID)!;
       const ipfsUri = await uploadEncryptedToIPFS(poData, password);
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(seed);
@@ -950,6 +900,7 @@ useEffect(() => {
       console.log("Captured Issuance ID:", issuanceId);
       console.log("Issuance ID length:", issuanceId.length);
       const txHash = createResult.result.hash;
+      console.log('DEBUG createSCPO:', { selectedVendorUUID, vendorAddress: vendor, customerUUID: customerProfile.profileUUID, vendorUUID: vendorProfile.profileUUID });
       const newPO: SavedPO = { id: Date.now().toString(), poName, dateIssued: new Date().toLocaleDateString(), total: totalEscrowAmount, ipfsUri, status: 'open', issuanceId, txHash, buyerAddress: wallet.classicAddress, vendorAddress: vendor, paymentTerms, vendorUUID: selectedVendorUUID, clawbackEnabled: true, metadata: fullMetadata };
       saveNewPO(newPO);
       const newFee: FeeEntry = { date: new Date().toLocaleString(), poName, amount: `$${feeUsd.toFixed(2)} USD (${feeXrp.toFixed(6)} XRP)`, txHash: feeResult.result.hash };
@@ -964,7 +915,7 @@ useEffect(() => {
     if (!selectedUpdatePO) return alert('Select a PO to update');
     if (!poName) return alert('PO Name is required');
     if (items.length === 0) return alert('Add at least one item');
-    const password = storedPasswords[selectedUpdatePO.vendorUUID || ''];
+    const password = getPOEncryptionKey(selectedUpdatePO.vendorUUID || '') || '';
     if (!password) return alert('Vendor password missing');
     let attachments: Attachment[] = [];
     if (selectedFiles && selectedFiles.length > 0) {
@@ -1307,12 +1258,7 @@ const getUpdatablePOs = () => {
         if (response.ok) {
           const data = await response.json();
           let password: string | null = null;
-          if (mode === 'vendor') {
-            const buyerUUID = vendorLinkedCustomerUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === hist.buyerAddress);
-            password = buyerUUID ? storedPasswords[buyerUUID] : null;
-          } else {
-            password = hist.vendorUUID ? storedPasswords[hist.vendorUUID] : null;
-          }
+          password = hist.vendorUUID ? getPOEncryptionKey(hist.vendorUUID) : null;
           if (password) {
             const decrypted = CryptoJS.AES.decrypt(data.encryptedData, password).toString(CryptoJS.enc.Utf8);
             if (decrypted) {
@@ -1455,15 +1401,10 @@ const getUpdatablePOs = () => {
     loadProfile('customerProfile', setCustomerProfile);
     loadProfile('vendorProfile', setVendorProfile);
     loadObject('publicProfiles', setPublicProfiles);
-    loadObject('storedPasswords', setStoredPasswords);
     loadArray('customerLinkedVendorUUIDs', setCustomerLinkedVendorUUIDs);
     loadArray('vendorLinkedCustomerUUIDs', setVendorLinkedCustomerUUIDs);
     const savedLinks = localStorage.getItem('profileLinks');
     if (savedLinks) try { setProfileLinks(JSON.parse(savedLinks)); } catch { setProfileLinks([]); }
-    setCustomerOnChainPassword(localStorage.getItem('customerOnChainPassword') || '');
-    setVendorOnChainPassword(localStorage.getItem('vendorOnChainPassword') || '');
-    setCustomerSharePassword(localStorage.getItem('customerSharePassword') || '');
-    setVendorSharePassword(localStorage.getItem('vendorSharePassword') || '');
     const savedTab = localStorage.getItem('activeTab');
     if (savedTab) setActiveTab(savedTab as any);
     const savedItems = localStorage.getItem('createItems');
@@ -1516,14 +1457,64 @@ const getUpdatablePOs = () => {
   useEffect(() => { if (!hydrated) return; localStorage.setItem('customerLinkedVendorUUIDs', JSON.stringify(customerLinkedVendorUUIDs)); }, [customerLinkedVendorUUIDs, hydrated]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('vendorLinkedCustomerUUIDs', JSON.stringify(vendorLinkedCustomerUUIDs)); }, [vendorLinkedCustomerUUIDs, hydrated]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('profileLinks', JSON.stringify(profileLinks)); }, [profileLinks, hydrated]);
-  useEffect(() => { if (!hydrated) return; localStorage.setItem('storedPasswords', JSON.stringify(storedPasswords)); }, [storedPasswords, hydrated]);
-  useEffect(() => { if (!hydrated) return; localStorage.setItem('customerOnChainPassword', customerOnChainPassword); }, [customerOnChainPassword, hydrated]);
-  useEffect(() => { if (!hydrated) return; localStorage.setItem('vendorOnChainPassword', vendorOnChainPassword); }, [vendorOnChainPassword, hydrated]);
-  useEffect(() => { if (!hydrated) return; localStorage.setItem('customerSharePassword', customerSharePassword); }, [customerSharePassword, hydrated]);
-  useEffect(() => { if (!hydrated) return; localStorage.setItem('vendorSharePassword', vendorSharePassword); }, [vendorSharePassword, hydrated]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('activeTab', activeTab); }, [activeTab, hydrated]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('createItems', JSON.stringify(items)); }, [items, hydrated]);
   
+  // ===== ECDH KEY EXCHANGE (Task 1.5) =====
+  // Derives a shared secret between two XRPL Ed25519 wallets using X25519 ECDH.
+  // Both parties independently derive the SAME shared secret — no password exchange needed.
+  //
+  // How it works:
+  // 1. XRPL Ed25519 private key → convert to X25519 private key
+  // 2. Their Ed25519 public key (from DID or wallet) → convert to X25519 public key
+  // 3. X25519 ECDH → 32-byte shared secret
+  // 4. SHA-256 hash → use as CryptoJS AES password string
+  
+  const deriveSharedSecret = (myPrivateKeyHex: string, theirPublicKeyHex: string): string => {
+    // XRPL Ed25519 private keys are prefixed with "00", remove it
+    let privKeyClean = myPrivateKeyHex;
+    if (privKeyClean.length === 66) {
+      privKeyClean = privKeyClean.slice(2);
+    }
+    
+    // XRPL Ed25519 public keys are prefixed with "ED", remove it
+    let pubKeyClean = theirPublicKeyHex;
+    if (pubKeyClean.length === 66) {
+  pubKeyClean = pubKeyClean.slice(2);
+}
+    
+    // Convert Ed25519 keys to X25519 (Curve25519) keys
+    const myX25519Priv = edwardsToMontgomeryPriv(hexToBytes(privKeyClean));
+    const theirX25519Pub = edwardsToMontgomeryPub(hexToBytes(pubKeyClean));
+    
+    // Perform X25519 ECDH key agreement
+    const rawSharedSecret = x25519.getSharedSecret(myX25519Priv, theirX25519Pub);
+    
+    // Hash the shared secret to get a deterministic password string
+    const hashed = sha256(rawSharedSecret);
+    return bytesToHex(hashed);
+  };
+  
+  // Helper: hex string to Uint8Array
+  const hexToBytes = (hex: string): Uint8Array => {
+    const bytes = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+      bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return bytes;
+  };
+
+  // Derive shared secret for encrypting MY OWN profile (self-encryption)
+  // Uses my own private key + my own public key = deterministic self-key
+  const deriveSelfEncryptionKey = (wallet: any): string => {
+    return deriveSharedSecret(wallet.publicKey, wallet.publicKey);
+  };
+
+  // Derive shared secret between my wallet and another wallet's public key
+  // This is the key used when I encrypt data FOR them, or decrypt data FROM them
+  const deriveEncryptionKeyWithPeer = (myWallet: any, theirPublicKeyHex: string): string => {
+    return deriveSharedSecret(myWallet.privateKey, theirPublicKeyHex);
+  };
   // ===== DID HELPERS (Phase 1A) =====
   const buildDIDDocument = (publicKey: string, profileUri: string, catalogUri?: string): string => {
     const doc: any = {
@@ -1586,17 +1577,21 @@ const getUpdatablePOs = () => {
     try {
       let updatedProfile = { ...customerProfile };
       const contentHash = await hashProfileContent(updatedProfile);
-      if (customerProfile.lastOnChainHash && contentHash === customerProfile.lastOnChainHash && !postCustomerOnChain) { console.log('No profile changes'); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile)); return; }
-      if (postCustomerOnChain) {
+      if (customerProfile.lastOnChainHash && contentHash === customerProfile.lastOnChainHash) { console.log('No profile changes'); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile)); return; }
+      if (true) {
         const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
-        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, customerOnChainPassword);
         const client = await getXRPLClient();
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
+        // Phase 1A: Use ECDH-derived key instead of manual password
+        console.log('DEBUG wallet privateKey:', wallet.privateKey.length, wallet.privateKey.substring(0, 6));
+        const ecdhKey = deriveSelfEncryptionKey(wallet);
+        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, ecdhKey);
         
         // Phase 1A: Use DIDSet instead of AccountSet for profile anchoring
         const previousIpfsUri = updatedProfile.ipfsUri || undefined;
+        const newVersion = (updatedProfile.profileVersion || 0) + 1;
         const didDocStr = buildDIDDocument(wallet.publicKey, newIpfsUri);
-        const didDataStr = buildDIDData('basic', 1, previousIpfsUri);
+        const didDataStr = buildDIDData('basic', newVersion, previousIpfsUri);
         
         const didSet: any = {
           TransactionType: 'DIDSet',
@@ -1616,12 +1611,23 @@ const getUpdatablePOs = () => {
           const signedAccSet = wallet.sign(preparedAccSet);
           await client.submitAndWait(signedAccSet.tx_blob);
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
-        
-        updatedProfile.ipfsUri = newIpfsUri; updatedProfile.lastOnChainHash = contentHash;
+
+        // Phase 1B: Issue, renew, or skip credential
+        if (process.env.REACT_APP_DOMAIN_ID) {
+          try {
+            const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
+            const credResult = await checkAndRenewCredential(client, platformWallet, wallet);
+            console.log(`✅ Credential status: ${credResult}`);
+          } catch (credErr: any) {
+            console.log('Credential check skipped (non-critical):', credErr.message);
+          }
+        }
+
+        updatedProfile.ipfsUri = newIpfsUri; updatedProfile.lastOnChainHash = contentHash; updatedProfile.profileVersion = newVersion;
         console.log('✅ Profile saved with DID on-chain! URI:', newIpfsUri);
       }
       setCustomerProfile(updatedProfile); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile));
-      console.log('Profile saved' + (postCustomerOnChain ? ' and posted on-chain!' : ' locally!'));
+      console.log('Profile saved and posted on-chain!');
     } catch (err: any) { alert('Failed to post update on-chain: ' + (err.message || String(err))); }
   };
 
@@ -1629,17 +1635,20 @@ const getUpdatablePOs = () => {
     try {
       let updatedProfile = { ...vendorProfile };
       const contentHash = await hashProfileContent(updatedProfile);
-      if (vendorProfile.lastOnChainHash && contentHash === vendorProfile.lastOnChainHash && !postVendorOnChain) { console.log('No profile changes'); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile)); return; }
-      if (postVendorOnChain) {
+      if (vendorProfile.lastOnChainHash && contentHash === vendorProfile.lastOnChainHash) { console.log('No profile changes'); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile)); return; }
+      if (true) {
         const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
-        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, vendorOnChainPassword);
         const client = await getXRPLClient();
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
+        // Phase 1A: Use ECDH-derived key instead of manual password
+        const ecdhKey = deriveSelfEncryptionKey(wallet);
+        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, ecdhKey);
         
         // Phase 1A: Use DIDSet instead of AccountSet for profile anchoring
         const previousIpfsUri = updatedProfile.ipfsUri || undefined;
+        const newVersion = (updatedProfile.profileVersion || 0) + 1;
         const didDocStr = buildDIDDocument(wallet.publicKey, newIpfsUri);
-        const didDataStr = buildDIDData('basic', 1, previousIpfsUri);
+        const didDataStr = buildDIDData('basic', newVersion, previousIpfsUri);
         
         const didSet: any = {
           TransactionType: 'DIDSet',
@@ -1659,12 +1668,23 @@ const getUpdatablePOs = () => {
           const signedAccSet = wallet.sign(preparedAccSet);
           await client.submitAndWait(signedAccSet.tx_blob);
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
-        
-        updatedProfile.ipfsUri = newIpfsUri; updatedProfile.lastOnChainHash = contentHash;
+
+        // Phase 1B: Issue, renew, or skip credential
+        if (process.env.REACT_APP_DOMAIN_ID) {
+          try {
+            const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
+            const credResult = await checkAndRenewCredential(client, platformWallet, wallet);
+            console.log(`✅ Credential status: ${credResult}`);
+          } catch (credErr: any) {
+            console.log('Credential check skipped (non-critical):', credErr.message);
+          }
+        }
+
+        updatedProfile.ipfsUri = newIpfsUri; updatedProfile.lastOnChainHash = contentHash; updatedProfile.profileVersion = newVersion;
         console.log('✅ Profile saved with DID on-chain! URI:', newIpfsUri);
       }
       setVendorProfile(updatedProfile); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile));
-      console.log('Profile saved' + (postVendorOnChain ? ' and posted on-chain!' : ' locally!'));
+      console.log('Profile saved and posted on-chain!');
     } catch (err: any) { alert('Failed to post update on-chain: ' + (err.message || String(err))); }
   };
 
@@ -1702,58 +1722,71 @@ const getUpdatablePOs = () => {
     return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  const generateCustomerShareCode = async () => {
-    if (!customerSharePassword) return alert('Enter a password for encryption');
-    const publicProfile: PublicProfile = { company: customerProfile.company, name: customerProfile.name, email: customerProfile.email, phone: customerProfile.phone, address: customerProfile.address, city: customerProfile.city, state: customerProfile.state, zip: customerProfile.zip, country: customerProfile.country, uniqueID: customerProfile.uniqueID, classicAddress: customerProfile.classicAddress, profileUUID: customerProfile.profileUUID, timestamp: Date.now(), walletHistory: customerProfile.walletHistory };
+const addLinkedVendorByDID = async () => {
+    if (!inputVendorWalletAddress) return alert('Enter vendor wallet address');
     try {
-      const ipfsUri = await uploadEncryptedProfileToPinata(publicProfile, customerSharePassword);
-      setCustomerShareCode(btoa(ipfsUri));
-      alert('Share code generated!');
-    } catch (err: any) { alert('Failed to generate code: ' + err.message); }
-  };
-
-  const generateVendorShareCode = async () => {
-    if (!vendorSharePassword) return alert('Enter a password for encryption');
-    const publicProfile: PublicProfile = { company: vendorProfile.company, name: vendorProfile.name, email: vendorProfile.email, phone: vendorProfile.phone, address: vendorProfile.address, city: vendorProfile.city, state: vendorProfile.state, zip: vendorProfile.zip, country: vendorProfile.country, uniqueID: vendorProfile.uniqueID, classicAddress: vendorProfile.classicAddress, profileUUID: vendorProfile.profileUUID, timestamp: Date.now(), walletHistory: vendorProfile.walletHistory };
-    try {
-      const ipfsUri = await uploadEncryptedProfileToPinata(publicProfile, vendorSharePassword);
-      setVendorShareCode(btoa(ipfsUri));
-      alert('Share code generated!');
-    } catch (err: any) { alert('Failed to generate code: ' + err.message); }
-  };
-
-  const addLinkedVendor = async () => {
-    if (!decryptVendorPassword) return alert('Enter decryption password');
-    try {
-      const ipfsUri = atob(inputVendorCode);
-      let decoded = await fetchAndDecryptProfileFromIPFS(ipfsUri, decryptVendorPassword);
+      // Step 1: Resolve DID
+      const didResult = await resolveDID(inputVendorWalletAddress);
+      if (!didResult.uri) return alert('No DID found for this wallet address. The vendor must save their profile on-chain first.');
+      if (!didResult.didDocument?.vm) return alert('DID found but no public key in DID document.');
+      
+      // Step 2: Derive decryption key from their public key
+      const theirPubKey = didResult.didDocument.vm;
+      const decryptionKey = deriveSharedSecret(theirPubKey, theirPubKey);
+      
+      // Step 3: Decrypt profile from IPFS
+      const ipfsUri = didResult.uri;
+      let decoded = await fetchAndDecryptProfileFromIPFS(ipfsUri, decryptionKey);
       decoded.ipfsUri = ipfsUri;
+      decoded.classicAddress = inputVendorWalletAddress;
+            
+      // Step 4: Store profile
       const newProfiles = { ...publicProfiles, [decoded.profileUUID]: decoded };
       setPublicProfiles(newProfiles); localStorage.setItem('publicProfiles', JSON.stringify(newProfiles));
-      if (!customerLinkedVendorUUIDs.includes(decoded.profileUUID)) { const updatedUUIDs = [...customerLinkedVendorUUIDs, decoded.profileUUID]; setCustomerLinkedVendorUUIDs(updatedUUIDs); localStorage.setItem('customerLinkedVendorUUIDs', JSON.stringify(updatedUUIDs)); }
-      setStoredPasswords(prev => ({ ...prev, [decoded.profileUUID]: decryptVendorPassword }));
-      setInputVendorCode(''); setDecryptVendorPassword('');
-      alert('Vendor linked/updated! Password stored for auto-refreshes.');
+      if (!customerLinkedVendorUUIDs.includes(decoded.profileUUID)) { 
+        const updatedUUIDs = [...customerLinkedVendorUUIDs, decoded.profileUUID]; 
+        setCustomerLinkedVendorUUIDs(updatedUUIDs); 
+        localStorage.setItem('customerLinkedVendorUUIDs', JSON.stringify(updatedUUIDs)); 
+      }
+      
+      setInputVendorWalletAddress('');
+      alert('Vendor linked via DID! No password needed.');
       await recordLinkOnChain(customerProfile, decoded, true);
-    } catch (err: any) { alert('Invalid code: ' + (err.message || 'Failed to fetch')); }
+    } catch (err: any) { alert('Failed to link vendor: ' + (err.message || 'DID resolution failed')); }
   };
 
-  const addLinkedCustomer = async () => {
-    if (!decryptCustomerPassword) return alert('Enter decryption password');
+  const addLinkedCustomerByDID = async () => {
+    if (!inputCustomerWalletAddress) return alert('Enter customer wallet address');
     try {
-      const ipfsUri = atob(inputCustomerCode);
-      let decoded = await fetchAndDecryptProfileFromIPFS(ipfsUri, decryptCustomerPassword);
+      // Step 1: Resolve DID
+      const didResult = await resolveDID(inputCustomerWalletAddress);
+      if (!didResult.uri) return alert('No DID found for this wallet address. The customer must save their profile on-chain first.');
+      if (!didResult.didDocument?.vm) return alert('DID found but no public key in DID document.');
+      
+      // Step 2: Derive decryption key from their public key
+      const theirPubKey = didResult.didDocument.vm;
+      const decryptionKey = deriveSharedSecret(theirPubKey, theirPubKey);
+      
+      // Step 3: Decrypt profile from IPFS
+      const ipfsUri = didResult.uri;
+      let decoded = await fetchAndDecryptProfileFromIPFS(ipfsUri, decryptionKey);
       decoded.ipfsUri = ipfsUri;
+      decoded.classicAddress = inputCustomerWalletAddress;
+            
+      // Step 4: Store profile
       const newProfiles = { ...publicProfiles, [decoded.profileUUID]: decoded };
       setPublicProfiles(newProfiles); localStorage.setItem('publicProfiles', JSON.stringify(newProfiles));
-      if (!vendorLinkedCustomerUUIDs.includes(decoded.profileUUID)) { const updatedUUIDs = [...vendorLinkedCustomerUUIDs, decoded.profileUUID]; setVendorLinkedCustomerUUIDs(updatedUUIDs); localStorage.setItem('vendorLinkedCustomerUUIDs', JSON.stringify(updatedUUIDs)); }
-      setStoredPasswords(prev => ({ ...prev, [decoded.profileUUID]: decryptCustomerPassword }));
-      setInputCustomerCode(''); setDecryptCustomerPassword('');
-      alert('Customer linked/updated! Password stored for auto-refreshes.');
+      if (!vendorLinkedCustomerUUIDs.includes(decoded.profileUUID)) { 
+        const updatedUUIDs = [...vendorLinkedCustomerUUIDs, decoded.profileUUID]; 
+        setVendorLinkedCustomerUUIDs(updatedUUIDs); 
+        localStorage.setItem('vendorLinkedCustomerUUIDs', JSON.stringify(updatedUUIDs)); 
+      }
+      
+      setInputCustomerWalletAddress('');
+      alert('Customer linked via DID! No password needed.');
       await recordLinkOnChain(vendorProfile, decoded, false);
-    } catch (err: any) { alert('Invalid code: ' + (err.message || 'Failed to fetch')); }
+    } catch (err: any) { alert('Failed to link customer: ' + (err.message || 'DID resolution failed')); }
   };
-
   const recordLinkOnChain = async (linker: Profile, linkee: PublicProfile, isVendor: boolean) => {
     if (!linker.seed) return alert('Wallet seed required');
     try {
@@ -1787,7 +1820,6 @@ const getUpdatablePOs = () => {
 
   const manualRefreshProfile = async (uuid: string) => {
     if (!hydrated || isRefreshing) return; setIsRefreshing(true);
-    if (!storedPasswords[uuid]) { setIsRefreshing(false); return; }
     const profile = publicProfiles[uuid];
     if (!profile) { setIsRefreshing(false); return; }
     let latest: PublicProfile | null = null; let latestUri = ''; let fetchFailed = false;
@@ -1807,10 +1839,38 @@ const getUpdatablePOs = () => {
         uri = await getLatestProfileHashFromChain(walletAddr);
       }
       if (uri && uri !== profile.ipfsUri) {
-        try {
-          const updated = await fetchAndDecryptProfileFromIPFS(uri, storedPasswords[uuid]);
-          if (updated.profileUUID === uuid && (!latest || updated.timestamp > latest.timestamp)) { latest = updated; latestUri = uri; }
-        } catch (err) { console.error('IPFS fetch failed during manual refresh:', err); fetchFailed = true; }
+        let updated: PublicProfile | null = null;
+        
+        // Phase 1A: Try ECDH decryption first
+        const myWallet = customerProfile.seed 
+          ? xrpl.Wallet.fromSeed(customerProfile.seed) 
+          : vendorProfile.seed 
+            ? xrpl.Wallet.fromSeed(vendorProfile.seed) 
+            : null;
+        
+        if (myWallet && !updated) {
+          // Try 1: ECDH with their public key from DID
+          try {
+            const peerDid = await resolveDID(walletAddr);
+            const theirPubKey = peerDid.didDocument?.vm || null;
+            if (theirPubKey) {
+              const ecdhKey = deriveSharedSecret(theirPubKey, theirPubKey);
+              updated = await fetchAndDecryptProfileFromIPFS(uri, ecdhKey);
+              console.log(`✅ Profile decrypted via ECDH for ${walletAddr}`);
+            }
+          } catch (e) { /* ECDH failed, try next method */ }
+          
+          // Try 2: Self-encryption key (if this is our own profile)
+          if (!updated && walletAddr === myWallet.classicAddress) {
+            try {
+              const selfKey = deriveSelfEncryptionKey(myWallet);
+              updated = await fetchAndDecryptProfileFromIPFS(uri, selfKey);
+              console.log(`✅ Own profile decrypted via self-key for ${walletAddr}`);
+            } catch (e) { /* self-key failed, try legacy */ }
+          }
+        }
+        
+        if (updated && updated.profileUUID === uuid && (!latest || updated.timestamp > latest.timestamp)) { latest = updated; latestUri = uri; }
       }
     }
     if (latest !== null) {
@@ -1854,7 +1914,15 @@ const getUpdatablePOs = () => {
     if (!response.ok) { const errorText = await response.text(); throw new Error(`Pinata upload failed: ${errorText}`); }
     const result = await response.json(); return `ipfs://${result.IpfsHash}`;
   };
-
+  const getPOEncryptionKey = (vendorUUID: string): string | null => {
+    // Check linked profiles first
+    const profile = publicProfiles[vendorUUID];
+    if (profile?.classicAddress) return CryptoJS.SHA256(profile.classicAddress).toString();
+    // Check if it's our own profile
+    if (customerProfile.profileUUID === vendorUUID && customerProfile.classicAddress) return CryptoJS.SHA256(customerProfile.classicAddress).toString();
+    if (vendorProfile.profileUUID === vendorUUID && vendorProfile.classicAddress) return CryptoJS.SHA256(vendorProfile.classicAddress).toString();
+    return null;
+  };
   const uploadToIPFS = async (data: any) => {
     const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY; if (!pinataApiKey) throw new Error('Pinata API key missing');
     const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${pinataApiKey}` }, body: JSON.stringify(data) });
@@ -1880,6 +1948,8 @@ const getUpdatablePOs = () => {
   const DIDStatusBadge = ({ address }: { address: string }) => {
     const [didStatus, setDidStatus] = React.useState<'checking' | 'active' | 'none'>('checking');
     const [didHash, setDidHash] = React.useState<string>('');
+    const [didVersion, setDidVersion] = React.useState<number>(0);
+    const [didParent, setDidParent] = React.useState<string>('');
 
     React.useEffect(() => {
       let cancelled = false;
@@ -1889,7 +1959,11 @@ const getUpdatablePOs = () => {
           if (cancelled) return;
           if (result.raw) {
             setDidStatus('active');
-            if (result.uri) setDidHash(result.uri.replace('ipfs://', '').substring(0, 12) + '...');
+            if (result.uri) setDidHash(result.uri.replace('ipfs://', ''));
+            if (result.data) {
+              setDidVersion(result.data.pv || 0);
+              setDidParent(result.data.parent || '');
+            }
           } else {
             setDidStatus('none');
           }
@@ -1916,7 +1990,8 @@ const getUpdatablePOs = () => {
           <span style={{ background: '#27ae60', color: 'white', padding: '6px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold' }}>
             DID Active ✓
           </span>
-          {didHash && <p style={{ color: '#888', fontSize: '12px', marginTop: '8px' }}>DID Document: {didHash}</p>}
+          {didHash && <p style={{ color: '#888', fontSize: '12px', marginTop: '8px', cursor: 'pointer' }} onClick={() => { navigator.clipboard.writeText(didHash); alert('DID hash copied!'); }}>DID Document: {didHash.substring(0, 12)}... 📋</p>}
+          {didVersion > 0 && <p style={{ color: '#888', fontSize: '12px', marginTop: '4px' }}>Profile Version: {didVersion}{didParent ? <span style={{ cursor: 'pointer' }} onClick={() => { navigator.clipboard.writeText(didParent.replace('ipfs://', '')); alert('Previous profile IPFS hash copied!'); }}> · Previous: {didParent.replace('ipfs://', '').substring(0, 12)}... 📋</span> : ' · First version'}</p>}
         </div>
       );
     }
@@ -2060,7 +2135,7 @@ const getUpdatablePOs = () => {
                     <ul>{Array.from(selectedFiles).map((file, i) => <li key={i}>{file.name} ({(file.size / 1024).toFixed(1)} KB)</li>)}</ul>
                   </div>
                 )}
-                <button onClick={createSCPO} disabled={!storedPasswords[selectedVendorUUID]} style={{ display: 'block', margin: '60px auto', width: '180px', height: '180px', borderRadius: '50%', background: 'linear-gradient(145deg, #F2B04A, #FFD98F)', color: 'white', fontSize: '28px', fontWeight: 'bold', border: '1.5px solid #D88F2E', boxShadow: scpoSuccess ? '0 0 30px #FFD700, 0 0 60px #FFA500, inset 0 0 20px rgba(255,255,255,0.5)' : '0 10px 30px rgba(212,175,55,0.4), inset 0 0 20px rgba(255,255,255,0.3)', cursor: 'pointer', transition: 'all 0.3s ease', animation: scpoSuccess ? 'scpoPulse 2s infinite' : 'none', opacity: !storedPasswords[selectedVendorUUID] ? 0.5 : 1 }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                <button onClick={createSCPO} disabled={!selectedVendorUUID} style={{ display: 'block', margin: '60px auto', width: '180px', height: '180px', borderRadius: '50%', background: 'linear-gradient(145deg, #F2B04A, #FFD98F)', color: 'white', fontSize: '28px', fontWeight: 'bold', border: '1.5px solid #D88F2E', boxShadow: scpoSuccess ? '0 0 30px #FFD700, 0 0 60px #FFA500, inset 0 0 20px rgba(255,255,255,0.5)' : '0 10px 30px rgba(212,175,55,0.4), inset 0 0 20px rgba(255,255,255,0.3)', cursor: 'pointer', transition: 'all 0.3s ease', animation: scpoSuccess ? 'scpoPulse 2s infinite' : 'none', opacity: !selectedVendorUUID ? 0.5 : 1 }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   SC.PO
                 </button>
                 {result && (
@@ -3076,18 +3151,19 @@ const getUpdatablePOs = () => {
                 <input placeholder="Your XRPL wallet seed (keep secret)" value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
                 <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Wallet Address</label>
                 <input placeholder="Your XRPL classic address (r...)" value={customerProfile.classicAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, classicAddress: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Encryption Password for On-Chain Post (keep secret)</label>
-                <input type="password" placeholder="Encryption Password for On-Chain Post (keep secret)" value={customerOnChainPassword} onChange={(e) => setCustomerOnChainPassword(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 10px auto', display: 'block' }} />
-                <label style={{ display: 'block', textAlign: 'center', marginBottom: '10px', color: '#666' }}>
-                  <input type="checkbox" checked={postCustomerOnChain} onChange={(e) => setPostCustomerOnChain(e.target.checked)} />
-                  Post update on-chain? (Requires password and funded wallet)
-                </label>
-                
+                                
                 <button onClick={saveCustomerProfile} style={{ display: 'block', margin: '20px auto 40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   Save Profile
                 </button>
                 {customerProfile.classicAddress && (
-                  <DIDStatusBadge address={customerProfile.classicAddress} />
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <DIDStatusBadge address={customerProfile.classicAddress} />
+                    {customerCredStatus && (
+                      <span style={{ padding: '8px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold', background: customerCredStatus.valid ? '#E8F5E9' : '#FFF3E0', color: customerCredStatus.valid ? '#2E7D32' : '#E65100', border: customerCredStatus.valid ? '2px solid #2E7D32' : '2px solid #E65100' }}>
+                        {customerCredStatus.valid ? `${customerCredStatus.tier?.charAt(0).toUpperCase()}${customerCredStatus.tier?.slice(1)} ✓` : 'No Credential'}
+                      </span>
+                    )}
+                  </div>
                 )}
                 <label style={{ display: 'block', textAlign: 'center', color: '#666' }}>
                   <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
@@ -3097,24 +3173,10 @@ const getUpdatablePOs = () => {
             )}
             {customerProfileSubTab === 'links' && (
               <div>
-                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Generate Share Code</h3>
-                <input type="password" placeholder="Encryption Password for Share Code (keep secret, share separately)" value={customerSharePassword} onChange={(e) => setCustomerSharePassword(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <button onClick={generateCustomerShareCode} style={{ display: 'block', margin: '0 auto 20px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Generate Code
-                </button>
-                {customerShareCode && (
-                  <div style={{ textAlign: 'center' }}>
-                    <pre style={{ background: '#f0f0f0', padding: '15px', display: 'inline-block', borderRadius: '15px', maxWidth: '600px', whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>{customerShareCode}</pre>
-                    <button onClick={() => copyToClipboard(customerShareCode, 'Share Code')} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 15px', fontSize: '14px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      📋 Copy
-                    </button>
-                  </div>
-                )}
-                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Add Linked Vendor</h3>
-                <input placeholder="Enter Vendor Share Code" value={inputVendorCode} onChange={(e) => setInputVendorCode(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <input type="password" placeholder="Decryption Password" value={decryptVendorPassword} onChange={(e) => setDecryptVendorPassword(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <button onClick={addLinkedVendor} style={{ display: 'block', margin: '0 auto 40px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Add Vendor
+                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Link Vendor by Wallet Address</h3>
+                <input placeholder="Enter Vendor Wallet Address (r...)" value={inputVendorWalletAddress} onChange={(e) => setInputVendorWalletAddress(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
+                <button onClick={addLinkedVendorByDID} style={{ display: 'block', margin: '0 auto 20px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                  Link Vendor
                 </button>
                 <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Linked Vendors</h3>
                 {linkedVendors.length === 0 ? (
@@ -3231,17 +3293,19 @@ const getUpdatablePOs = () => {
                 <input placeholder="Your XRPL wallet seed (keep secret)" value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
                 <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Wallet Address</label>
                 <input placeholder="Your XRPL classic address (r...)" value={vendorProfile.classicAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, classicAddress: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Encryption Password for On-Chain Post (keep secret)</label>
-                <input type="password" placeholder="Encryption Password for On-Chain Post (keep secret)" value={vendorOnChainPassword} onChange={(e) => setVendorOnChainPassword(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 10px auto', display: 'block' }} />
-                <label style={{ display: 'block', textAlign: 'center', marginBottom: '10px', color: '#666' }}>
-                  <input type="checkbox" checked={postVendorOnChain} onChange={(e) => setPostVendorOnChain(e.target.checked)} />
-                  Post update on-chain? (Requires password and funded wallet)
-                </label>
+                                
                 <button onClick={saveVendorProfile} style={{ display: 'block', margin: '0 auto 40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   Save Profile
                 </button>
                 {vendorProfile.classicAddress && (
-                  <DIDStatusBadge address={vendorProfile.classicAddress} />
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <DIDStatusBadge address={vendorProfile.classicAddress} />
+                    {vendorCredStatus && (
+                      <span style={{ padding: '8px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold', background: vendorCredStatus.valid ? '#E8F5E9' : '#FFF3E0', color: vendorCredStatus.valid ? '#2E7D32' : '#E65100', border: vendorCredStatus.valid ? '2px solid #2E7D32' : '2px solid #E65100' }}>
+                        {vendorCredStatus.valid ? `${vendorCredStatus.tier?.charAt(0).toUpperCase()}${vendorCredStatus.tier?.slice(1)} ✓` : 'No Credential'}
+                      </span>
+                    )}
+                  </div>
                 )}
                 <label style={{ display: 'block', textAlign: 'center', color: '#666' }}>
                   <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
@@ -3251,24 +3315,10 @@ const getUpdatablePOs = () => {
             )}
             {vendorProfileSubTab === 'links' && (
               <div>
-                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Generate Share Code</h3>
-                <input type="password" placeholder="Encryption Password for Share Code (keep secret, share separately)" value={vendorSharePassword} onChange={(e) => setVendorSharePassword(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <button onClick={generateVendorShareCode} style={{ display: 'block', margin: '0 auto 20px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Generate Code
-                </button>
-                {vendorShareCode && (
-                  <div style={{ textAlign: 'center' }}>
-                    <pre style={{ background: '#f0f0f0', padding: '15px', display: 'inline-block', borderRadius: '15px', maxWidth: '600px', whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>{vendorShareCode}</pre>
-                    <button onClick={() => copyToClipboard(vendorShareCode, 'Share Code')} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 15px', fontSize: '14px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      📋 Copy
-                    </button>
-                  </div>
-                )}
-                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Add Linked Customer</h3>
-                <input placeholder="Enter Customer Share Code" value={inputCustomerCode} onChange={(e) => setInputCustomerCode(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <input type="password" placeholder="Decryption Password" value={decryptCustomerPassword} onChange={(e) => setDecryptCustomerPassword(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <button onClick={addLinkedCustomer} style={{ display: 'block', margin: '0 auto 40px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Add Customer
+                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Link Customer by Wallet Address</h3>
+                <input placeholder="Enter Customer Wallet Address (r...)" value={inputCustomerWalletAddress} onChange={(e) => setInputCustomerWalletAddress(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
+                <button onClick={addLinkedCustomerByDID} style={{ display: 'block', margin: '0 auto 20px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                  Link Customer
                 </button>
                 <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Linked Customers</h3>
                 {linkedCustomers.length === 0 ? (
@@ -3341,7 +3391,7 @@ const getUpdatablePOs = () => {
         )}
         {activeTab === 'admin' && (
           <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '40px' }}>Admin - Fee Dashboard</h2>
+            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '20px' }}>Admin</h2>
             {!adminLoggedIn ? (
               <div>
                 <p style={{ textAlign: 'center', marginBottom: '20px', color: '#666' }}>Enter your company seed to access admin features</p>
@@ -3352,51 +3402,149 @@ const getUpdatablePOs = () => {
               </div>
             ) : (
               <div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '20px', marginBottom: '40px' }}>
-                  <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                    <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Total SC.PO Created</h4>
-                    <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{savedPOs.length}</p>
-                  </div>
-                  <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                    <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Total Fees Collected</h4>
-                    <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>${feeEntries.reduce((sum, fee) => sum + parseFloat(fee.amount.split(' ')[0].replace('$', '') || '0'), 0).toFixed(2)}</p>
-                  </div>
-                  <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                    <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Unique Customers</h4>
-                    <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{new Set(savedPOs.map(po => po.buyerAddress)).size}</p>
-                  </div>
-                  <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                    <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Unique Vendors</h4>
-                    <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{new Set(savedPOs.map(po => po.vendorAddress)).size}</p>
-                  </div>
+                {/* Admin Sub-Tabs */}
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', marginBottom: '30px' }}>
+                  <button onClick={() => setAdminSubTab('fees')} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #D88F2E', background: adminSubTab === 'fees' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white', color: adminSubTab === 'fees' ? 'white' : '#D88F2E', cursor: 'pointer', fontWeight: 'bold' }}>
+                    Fee Dashboard
+                  </button>
+                  <button onClick={() => setAdminSubTab('credentials')} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #D88F2E', background: adminSubTab === 'credentials' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white', color: adminSubTab === 'credentials' ? 'white' : '#D88F2E', cursor: 'pointer', fontWeight: 'bold' }}>
+                    Domain & Credentials
+                  </button>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                  <h3 style={{ color: '#F2B04A', margin: 0 }}>Collected Fees</h3>
-                  <input type="text" placeholder="Search by PO Name or Date" value={feeSearchTerm} onChange={(e) => setFeeSearchTerm(e.target.value)} style={{ padding: '10px', borderRadius: '20px', border: '2px solid #D88F2E', width: '300px' }} />
-                </div>
-                {filteredFees.length === 0 ? <p>No fees collected yet</p> : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #D88F2E' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0' }}>
-                        <th style={{ padding: '10px' }}>Date</th>
-                        <th style={{ padding: '10px' }}>PO Name</th>
-                        <th style={{ padding: '10px' }}>Amount</th>
-                        <th style={{ padding: '10px' }}>Tx Hash</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredFees.map((entry, i) => (
-                        <tr key={i}>
-                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.date}</td>
-                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.poName}</td>
-                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.amount}</td>
-                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>
-                            <a href={`https://testnet.xrpl.org/transactions/${entry.txHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>{entry.txHash.substring(0, 10)}...</a>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+
+                {/* Fee Dashboard Sub-Tab */}
+                {adminSubTab === 'fees' && (
+                  <div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '20px', marginBottom: '40px' }}>
+                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
+                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Total SC.PO Created</h4>
+                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{savedPOs.length}</p>
+                      </div>
+                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
+                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Total Fees Collected</h4>
+                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>${feeEntries.reduce((sum, fee) => sum + parseFloat(fee.amount.split(' ')[0].replace('$', '') || '0'), 0).toFixed(2)}</p>
+                      </div>
+                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
+                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Unique Customers</h4>
+                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{new Set(savedPOs.map(po => po.buyerAddress)).size}</p>
+                      </div>
+                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
+                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Unique Vendors</h4>
+                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{new Set(savedPOs.map(po => po.vendorAddress)).size}</p>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                      <h3 style={{ color: '#F2B04A', margin: 0 }}>Collected Fees</h3>
+                      <input type="text" placeholder="Search by PO Name or Date" value={feeSearchTerm} onChange={(e) => setFeeSearchTerm(e.target.value)} style={{ padding: '10px', borderRadius: '20px', border: '2px solid #D88F2E', width: '300px' }} />
+                    </div>
+                    {filteredFees.length === 0 ? <p>No fees collected yet</p> : (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #D88F2E' }}>
+                        <thead>
+                          <tr style={{ background: '#FFF3E0' }}>
+                            <th style={{ padding: '10px' }}>Date</th>
+                            <th style={{ padding: '10px' }}>PO Name</th>
+                            <th style={{ padding: '10px' }}>Amount</th>
+                            <th style={{ padding: '10px' }}>Tx Hash</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredFees.map((entry, i) => (
+                            <tr key={i}>
+                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.date}</td>
+                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.poName}</td>
+                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.amount}</td>
+                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>
+                                <a href={`https://testnet.xrpl.org/transactions/${entry.txHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>{entry.txHash.substring(0, 10)}...</a>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                )}
+
+                {/* Domain & Credentials Sub-Tab */}
+                {adminSubTab === 'credentials' && (
+                  <div>
+                    {/* Permissioned Domain Section */}
+                    <h3 style={{ color: '#F2B04A', marginBottom: '20px' }}>Permissioned Domain</h3>
+                    {process.env.REACT_APP_DOMAIN_ID ? (
+                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', marginBottom: '30px' }}>
+                        <p style={{ margin: '0 0 5px', fontWeight: 'bold', color: '#2E7D32' }}>Domain Active ✓</p>
+                        <p style={{ margin: 0, fontSize: '13px', wordBreak: 'break-all', color: '#666' }}>ID: {process.env.REACT_APP_DOMAIN_ID}</p>
+                      </div>
+                    ) : (
+                      <div style={{ marginBottom: '30px' }}>
+                        <p style={{ color: '#666', marginBottom: '15px' }}>No Permissioned Domain deployed yet. Deploy one to enable credential-based access control.</p>
+                        <button
+                          onClick={async () => {
+                            try {
+                              setDeploying(true);
+                              const client = await getXRPLClient();
+                              const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
+                              const id = await deployPermissionedDomain(client, platformWallet);
+                              setDomainID(id);
+                              alert(`Domain created! Copy this Domain ID to your .env file as REACT_APP_DOMAIN_ID:\n\n${id}`);
+                            } catch (err: any) {
+                              console.error('Deploy failed:', err);
+                              alert(`Error: ${err.message}`);
+                            } finally {
+                              setDeploying(false);
+                            }
+                          }}
+                          disabled={deploying}
+                          style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', borderRadius: '30px', cursor: deploying ? 'not-allowed' : 'pointer', opacity: deploying ? 0.6 : 1 }}
+                        >
+                          {deploying ? 'Deploying...' : 'Deploy Permissioned Domain'}
+                        </button>
+                        {domainID && (
+                          <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', marginTop: '15px' }}>
+                            <p style={{ margin: '0 0 5px', fontWeight: 'bold', color: '#2E7D32' }}>Domain Created ✓</p>
+                            <p style={{ margin: 0, fontSize: '13px', wordBreak: 'break-all', color: '#666' }}>ID: {domainID}</p>
+                            <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#999' }}>Copy the ID above into your .env file as REACT_APP_DOMAIN_ID, then restart the dev server.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Credential Revocation Section */}
+                    <div style={{ borderTop: '2px solid #D88F2E', paddingTop: '30px' }}>
+                      <h3 style={{ color: '#F2B04A', marginBottom: '20px' }}>Credential Management</h3>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '15px' }}>
+                        <input
+                          type="text"
+                          placeholder="Wallet address to revoke (rXXX...)"
+                          value={revokeAddress}
+                          onChange={(e) => setRevokeAddress(e.target.value)}
+                          style={{ flex: 1, padding: '12px', borderRadius: '20px', border: '2px solid #D88F2E' }}
+                        />
+                        <button
+                          onClick={async () => {
+                            if (!revokeAddress) return alert('Enter a wallet address');
+                            if (!window.confirm(`Revoke credential for ${revokeAddress}? This will block them from creating or receiving POs.`)) return;
+                            try {
+                              setRevoking(true);
+                              const client = await getXRPLClient();
+                              const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
+                              await revokeCredential(client, platformWallet, revokeAddress);
+                              alert(`Credential revoked for ${revokeAddress}`);
+                              setRevokeAddress('');
+                            } catch (err: any) {
+                              alert(`Revocation failed: ${err.message}`);
+                            } finally {
+                              setRevoking(false);
+                            }
+                          }}
+                          disabled={revoking}
+                          style={{ background: '#E53935', color: 'white', padding: '12px 30px', borderRadius: '20px', cursor: revoking ? 'not-allowed' : 'pointer', opacity: revoking ? 0.6 : 1, border: 'none' }}
+                        >
+                          {revoking ? 'Revoking...' : 'Revoke Credential'}
+                        </button>
+                      </div>
+                      <p style={{ fontSize: '12px', color: '#999', margin: 0 }}>Revoked wallets will be blocked from issuing or receiving POs. The user can regain access by saving their profile again (which re-issues the credential).</p>
+                    </div>
+                  </div>
                 )}
               </div>
             )}
