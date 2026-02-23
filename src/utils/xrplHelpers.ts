@@ -1,3 +1,5 @@
+import * as xrpl from 'xrpl';
+
 // Constants — Credential tier hex values
 export const SCPO_BASIC_HEX = '5343504F5F4241534943'; // hex("SCPO_BASIC")
 export const SCPO_VERIFIED_HEX = '5343504F5F564552494649'; // hex("SCPO_VERIFIED")
@@ -277,8 +279,6 @@ export const canCreatePO = async (
   };
 };
 
-import * as xrpl from 'xrpl';
-
 let xrplClient: xrpl.Client | null = null;
 let connectingPromise: Promise<xrpl.Client> | null = null;
 
@@ -378,4 +378,159 @@ export const getEscrowsForPO = async (buyerAddress: string, issuanceId: string) 
     const memo = escrow.Memos?.[0]?.Memo?.MemoData || '';
     return memo.includes(issuanceId);
   });
+};
+// ============================================================
+// PHASE 2 — RLUSD Token Escrow Utilities (Tasks 2.2–2.3)
+// Add these functions to the bottom of src/utils/xrplHelpers.ts
+// ============================================================
+
+// Task 2.2: Check if RLUSD is configured for this environment
+export const isRLUSDConfigured = (): boolean => {
+  return !!process.env.REACT_APP_RLUSD_ISSUER;
+};
+
+// Task 2.2: Get the RLUSD currency/issuer pair
+export const getRLUSDCurrency = () => {
+  return {
+    currency: 'USD',
+    issuer: process.env.REACT_APP_RLUSD_ISSUER || ''
+  };
+};
+
+// Task 2.3: Check if a wallet has a trust line to the RLUSD issuer
+export const checkRLUSDTrustLine = async (address: string): Promise<{
+  hasTrustLine: boolean;
+  balance: string;
+  limit: string;
+}> => {
+  if (!isRLUSDConfigured()) {
+    return { hasTrustLine: false, balance: '0', limit: '0' };
+  }
+
+  const client = await getXRPLClient();
+  try {
+    const response = await client.request({
+      command: 'account_lines',
+      account: address,
+      peer: process.env.REACT_APP_RLUSD_ISSUER,
+      ledger_index: 'validated'
+    });
+
+    const rlusdLine = (response.result as any).lines?.find(
+      (line: any) => line.currency === 'USD' && line.account === process.env.REACT_APP_RLUSD_ISSUER
+    );
+
+    if (rlusdLine) {
+      return {
+        hasTrustLine: true,
+        balance: rlusdLine.balance || '0',
+        limit: rlusdLine.limit || '0'
+      };
+    }
+
+    return { hasTrustLine: false, balance: '0', limit: '0' };
+  } catch {
+    return { hasTrustLine: false, balance: '0', limit: '0' };
+  }
+};
+
+// Task 2.3: Get RLUSD balance for a wallet
+export const getRLUSDBalance = async (address: string): Promise<string> => {
+  const result = await checkRLUSDTrustLine(address);
+  return result.balance;
+};
+
+// Task 2.3: Set up a trust line from a wallet to the RLUSD issuer
+export const setupRLUSDTrustLine = async (
+  client: xrpl.Client,
+  userWallet: xrpl.Wallet,
+  limit: string = '1000000'
+): Promise<{ success: boolean; txHash?: string; error?: string }> => {
+  if (!isRLUSDConfigured()) {
+    return { success: false, error: 'RLUSD issuer not configured' };
+  }
+
+  try {
+    // Check if trust line already exists
+    const existing = await checkRLUSDTrustLine(userWallet.classicAddress);
+    if (existing.hasTrustLine) {
+      return { success: true, txHash: 'already_exists' };
+    }
+
+    const trustSetTx = {
+      TransactionType: 'TrustSet',
+      Account: userWallet.classicAddress,
+      LimitAmount: {
+        currency: 'USD',
+        issuer: process.env.REACT_APP_RLUSD_ISSUER!,
+        value: limit
+      }
+    };
+
+    const result = await client.submitAndWait(trustSetTx as any, {
+      autofill: true,
+      wallet: userWallet
+    });
+
+    const meta = result.result.meta as any;
+    if (meta.TransactionResult === 'tesSUCCESS') {
+      return { success: true, txHash: result.result.hash };
+    } else {
+      return { success: false, error: `TrustSet failed: ${meta.TransactionResult}` };
+    }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Trust line setup failed' };
+  }
+};
+
+// Task 2.2: Check if both parties are ready for RLUSD escrow
+export const canUseRLUSDEscrow = async (
+  buyerAddress: string,
+  vendorAddress: string
+): Promise<{
+  ready: boolean;
+  buyerTrustLine: boolean;
+  vendorTrustLine: boolean;
+  buyerBalance: string;
+  reason?: string;
+}> => {
+  if (!isRLUSDConfigured()) {
+    return {
+      ready: false,
+      buyerTrustLine: false,
+      vendorTrustLine: false,
+      buyerBalance: '0',
+      reason: 'RLUSD not configured'
+    };
+  }
+
+  const buyerCheck = await checkRLUSDTrustLine(buyerAddress);
+  const vendorCheck = await checkRLUSDTrustLine(vendorAddress);
+
+  if (!buyerCheck.hasTrustLine) {
+    return {
+      ready: false,
+      buyerTrustLine: false,
+      vendorTrustLine: vendorCheck.hasTrustLine,
+      buyerBalance: '0',
+      reason: 'Buyer needs RLUSD trust line'
+    };
+  }
+
+  if (!vendorCheck.hasTrustLine) {
+    return {
+      ready: false,
+      buyerTrustLine: true,
+      vendorTrustLine: false,
+      buyerBalance: buyerCheck.balance,
+      reason: 'Vendor needs RLUSD trust line'
+    };
+  }
+
+  return {
+    ready: true,
+    buyerTrustLine: true,
+    vendorTrustLine: true,
+    buyerBalance: buyerCheck.balance
+  };
 };

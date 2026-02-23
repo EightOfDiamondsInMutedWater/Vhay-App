@@ -12,7 +12,7 @@ import {
   getMyMPTs, getMyEscrows, getAccountNFTs, getLatestProfileFromAddress, 
   getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO,
   deployPermissionedDomain, issueCredential, acceptCredential,
-  validateCredential, canCreatePO, revokeCredential, checkAndRenewCredential 
+  validateCredential, canCreatePO, revokeCredential, checkAndRenewCredential , isRLUSDConfigured, canUseRLUSDEscrow, setupRLUSDTrustLine, getRLUSDBalance, getRLUSDCurrency,
 } from './utils/xrplHelpers';
 console.log('xrpl version loaded:', require('xrpl/package.json').version);
 
@@ -27,15 +27,15 @@ const getOrGenerateUUID = (key: string): string => {
 
 interface Item { num: string; qty: string; total: string; invNFTId?: string; }
 interface Attachment { name: string; uri: string; }
-interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string; }
-interface SavedPO { id: string; poName: string; dateIssued: string; total: string; ipfsUri: string; status: 'open' | 'accepted' | 'funded' | 'claimed' | 'updated' | 'recalled' | 'superseded'; issuanceId: string; escrowSequence?: number; txHash: string; buyerAddress: string; vendorAddress: string; paymentTerms: string; vendorUUID?: string; clawbackEnabled?: boolean; parentIssuanceId?: string; metadata: any; }
+interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string; }
+interface SavedPO { id: string; poName: string; dateIssued: string; total: string; ipfsUri: string; status: 'open' | 'accepted' | 'funded' | 'claimed' | 'updated' | 'recalled' | 'superseded'; issuanceId: string; escrowSequence?: number; txHash: string; buyerAddress: string; vendorAddress: string; paymentTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; vendorUUID?: string; clawbackEnabled?: boolean; parentIssuanceId?: string; metadata: any; }
 interface Profile { company: string; name: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
 interface PublicProfile { company: string; name: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
 interface FeeEntry { date: string; poName: string; amount: string; txHash: string; }
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
 interface InventoryItem { id: string; name: string; department: string; description: string; attachments: Attachment[]; nftId: string; ipfsUri: string; dateAdded: string; }
 
-const buildLedgerMetadata = (poName: string, ipfsUri: string, status: string, buyerAddress?: string, vendorAddress?: string, total?: string, payTerms?: string, parentIssuanceId?: string) => ({
+const buildLedgerMetadata = (poName: string, ipfsUri: string, status: string, buyerAddress?: string, vendorAddress?: string, total?: string, payTerms?: string, parentIssuanceId?: string, escrowCur?: string) => ({
   t: "SCPO",
   n: poName,
   ac: "rwa",
@@ -43,7 +43,7 @@ const buildLedgerMetadata = (poName: string, ipfsUri: string, status: string, bu
   in: "SC.PO",
   i: "https://example.com/scpo.png",
   uri: ipfsUri,
-  ext: JSON.stringify({ s: status, b: buyerAddress || '', v: vendorAddress || '', amt: total || '0', pt: payTerms || '', pid: parentIssuanceId || '' })
+  ext: JSON.stringify({ s: status, b: buyerAddress || '', v: vendorAddress || '', amt: total || '0', pt: payTerms || '', pid: parentIssuanceId || '', ec: escrowCur || 'XRP' })
 });
 const buildPOMetadata = (poName: string, description: string, department: string, paymentTerms: string, deliveryTerms: string, items: Item[], attachments: Attachment[] | undefined, buyerAddress: string, vendorAddress: string, status: string, parentIssuanceId?: string, clawbackEnabled: boolean = true, history: Array<{ts: number; status: string; by: string}> = []) => ({
   poName, description, department, paymentTerms, deliveryTerms, items: items.map(i => ({ ...i })), attachments: attachments || [], buyerAddress, vendorAddress, issued: Date.now(), lastUpdated: Date.now(), status, parentIssuanceId, clawbackEnabled, history: [...history, { ts: Date.now(), status, by: 'buyer' }]
@@ -265,6 +265,7 @@ export default function App() {
   const [profilesModalIndex, setProfilesModalIndex] = useState(0);
   const [updateResult, setUpdateResult] = useState('');
   const [isLoadingEditPO, setIsLoadingEditPO] = useState(false);
+  const [escrowCurrency, setEscrowCurrency] = useState<'XRP' | 'RLUSD'>(isRLUSDConfigured() ? 'RLUSD' : 'XRP');
   const linkedVendors = customerLinkedVendorUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
   const linkedCustomers = vendorLinkedCustomerUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
 
@@ -385,6 +386,7 @@ const loadPOsFromLedger = async () => {
           vendorAddress: vendorAddr,
           vendorUUID: customerLinkedVendorUUIDs.find(uuid => publicProfiles[uuid]?.classicAddress === vendorAddr) || '',
           paymentTerms: meta.pt || '',
+          escrowCurrency: (meta.ec === 'RLUSD' ? 'RLUSD' : 'XRP') as 'XRP' | 'RLUSD',
           parentIssuanceId: meta.pid || undefined,
           metadata: meta
         });
@@ -479,6 +481,7 @@ const loadPOsFromLedger = async () => {
             vendorAddress: vendorProfile.classicAddress,
             vendorUUID: vendorProfile.profileUUID,
             paymentTerms: meta.pt || '',
+            escrowCurrency: (meta.ec === 'RLUSD' ? 'RLUSD' : 'XRP') as 'XRP' | 'RLUSD',
             parentIssuanceId: meta.pid || undefined,
             metadata: meta
           });
@@ -520,6 +523,7 @@ const loadPOsFromLedger = async () => {
               vendorAddress: vendorProfile.classicAddress,
               vendorUUID: vendorProfile.profileUUID,
               paymentTerms: meta.pt || '',
+              escrowCurrency: (meta.ec === 'RLUSD' ? 'RLUSD' : 'XRP') as 'XRP' | 'RLUSD',
               parentIssuanceId: meta.pid || undefined,
               metadata: meta
             });
@@ -818,6 +822,7 @@ useEffect(() => {
     setDepartment(loadedDept);
     setPaymentTerms(loadedPayTerms);
     setDeliveryTerms(loadedDelTerms);
+    setEscrowCurrency(po.escrowCurrency || (isRLUSDConfigured() ? 'RLUSD' : 'XRP'));
     setItems(loadedItems);
     setIsLoadingEditPO(false);
   };
@@ -838,8 +843,19 @@ useEffect(() => {
       return alert(`Cannot create PO: ${credCheck.reason}\n\nBoth parties must have a valid credential in the SC.PO domain. Save your profile to get one.`);
     }
 
-    const xrpPriceUsd = await getXrpPriceUsd();
-    const feeUsd = 0.01; const feeXrp = feeUsd / xrpPriceUsd; const feeDrops = xrpl.xrpToDrops(feeXrp.toFixed(6));
+    const feeUsd = 0.01;
+    let feeAmount: any;
+    let feeLabel: string;
+    if (escrowCurrency === 'RLUSD' && isRLUSDConfigured()) {
+      const rlusd = getRLUSDCurrency();
+      feeAmount = { currency: rlusd.currency, issuer: rlusd.issuer, value: feeUsd.toString() };
+      feeLabel = `$${feeUsd.toFixed(2)} RLUSD`;
+    } else {
+      const xrpPriceUsd = await getXrpPriceUsd();
+      const feeXrp = feeUsd / xrpPriceUsd;
+      feeAmount = xrpl.xrpToDrops(feeXrp.toFixed(6));
+      feeLabel = `$${feeUsd.toFixed(2)} USD (${feeXrp.toFixed(6)} XRP)`;
+    }
     let attachments: Attachment[] = [];
     if (selectedFiles && selectedFiles.length > 0) {
       setResult('Uploading attachments...');
@@ -848,7 +864,7 @@ useEffect(() => {
         try { const uri = await uploadFileToIPFS(file); attachments.push({ name: file.name, uri }); } catch (err: any) { alert('Failed to upload attachment: ' + err.message); return; }
       }
     }
-    const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, items, attachments: attachments.length > 0 ? attachments : undefined };
+    const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
     try {
       setResult('Encrypting and uploading PO data to IPFS...');
       const password = getPOEncryptionKey(selectedVendorUUID)!;
@@ -858,14 +874,14 @@ useEffect(() => {
       const ledgerResponse = await client.request({ command: 'ledger_current' });
       const currentLedger = ledgerResponse.result.ledger_current_index;
       setResult(`Sending $0.01 creation fee...`);
-      const feePayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: process.env.REACT_APP_COMPANY_WALLET || '', Amount: feeDrops };
+      const feePayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: process.env.REACT_APP_COMPANY_WALLET || '', Amount: feeAmount };
       const preparedFee = await client.autofill(feePayment); preparedFee.LastLedgerSequence = currentLedger + 20;
       const signedFee = wallet.sign(preparedFee);
       const feeResult = await client.submitAndWait(signedFee.tx_blob);
       if (typeof feeResult.result.meta === 'object' && feeResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fee failed');
       setResult('Creating MPToken Issuance...');
       const fullMetadata = buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, vendor, 'open', undefined, true);
-      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, vendor, totalEscrowAmount, paymentTerms);
+      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, vendor, totalEscrowAmount, paymentTerms, undefined, escrowCurrency);
       const mptCreate: any = {
         TransactionType: 'MPTokenIssuanceCreate',
         Account: wallet.classicAddress,
@@ -901,9 +917,9 @@ useEffect(() => {
       console.log("Issuance ID length:", issuanceId.length);
       const txHash = createResult.result.hash;
       console.log('DEBUG createSCPO:', { selectedVendorUUID, vendorAddress: vendor, customerUUID: customerProfile.profileUUID, vendorUUID: vendorProfile.profileUUID });
-      const newPO: SavedPO = { id: Date.now().toString(), poName, dateIssued: new Date().toLocaleDateString(), total: totalEscrowAmount, ipfsUri, status: 'open', issuanceId, txHash, buyerAddress: wallet.classicAddress, vendorAddress: vendor, paymentTerms, vendorUUID: selectedVendorUUID, clawbackEnabled: true, metadata: fullMetadata };
+      const newPO: SavedPO = { id: Date.now().toString(), poName, dateIssued: new Date().toLocaleDateString(), total: totalEscrowAmount, ipfsUri, status: 'open', issuanceId, txHash, buyerAddress: wallet.classicAddress, vendorAddress: vendor, paymentTerms, escrowCurrency, vendorUUID: selectedVendorUUID, clawbackEnabled: true, metadata: fullMetadata };
       saveNewPO(newPO);
-      const newFee: FeeEntry = { date: new Date().toLocaleString(), poName, amount: `$${feeUsd.toFixed(2)} USD (${feeXrp.toFixed(6)} XRP)`, txHash: feeResult.result.hash };
+      const newFee: FeeEntry = { date: new Date().toLocaleString(), poName, amount: feeLabel, txHash: feeResult.result.hash };
       const updatedFees = [...feeEntries, newFee]; setFeeEntries(updatedFees); localStorage.setItem('feeEntries', JSON.stringify(updatedFees));
       setResult(`SC.PO Created Successfully!\nIssuance ID: ${issuanceId}\nTx Hash: ${txHash}\nIPFS URI: ${ipfsUri}\n\nVendor must now ACCEPT to authorize.`);
       setScpoSuccess(true); setTimeout(() => setScpoSuccess(false), 3000);
@@ -924,7 +940,7 @@ useEffect(() => {
         try { const uri = await uploadFileToIPFS(file); attachments.push({ name: file.name, uri }); } catch (err: any) { alert('Failed to upload attachment: ' + err.message); return; }
       }
     }
-    const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, items, attachments: attachments.length > 0 ? attachments : undefined };
+    const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
     try {
       setUpdateResult('Encrypting and uploading updated PO...');
       const ipfsUri = await uploadEncryptedToIPFS(poData, password);
@@ -968,7 +984,7 @@ useEffect(() => {
         } catch (e) { console.error('Recall receipt failed during update:', e); }
       }
       const fullMetadata = buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, selectedUpdatePO.vendorAddress, 'open', selectedUpdatePO.issuanceId, true, selectedUpdatePO.metadata?.history || []);
-      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, selectedUpdatePO.vendorAddress, totalEscrowAmount, paymentTerms, selectedUpdatePO.issuanceId);
+      const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, selectedUpdatePO.vendorAddress, totalEscrowAmount, paymentTerms, selectedUpdatePO.issuanceId, escrowCurrency);
       const mptCreate: any = {
         TransactionType: 'MPTokenIssuanceCreate',
         Account: wallet.classicAddress,
@@ -1003,7 +1019,7 @@ useEffect(() => {
       console.log("Captured Issuance ID:", issuanceId);
       console.log("Issuance ID length:", issuanceId.length);
       const txHash = createResult.result.hash;
-      const newPO: SavedPO = { id: Date.now().toString(), poName, dateIssued: new Date().toLocaleDateString(), total: totalEscrowAmount, ipfsUri, status: 'open', issuanceId, txHash, buyerAddress: wallet.classicAddress, vendorAddress: selectedUpdatePO.vendorAddress, paymentTerms, vendorUUID: selectedUpdatePO.vendorUUID, clawbackEnabled: true, parentIssuanceId: selectedUpdatePO.issuanceId, metadata: fullMetadata };
+      const newPO: SavedPO = { id: Date.now().toString(), poName, dateIssued: new Date().toLocaleDateString(), total: totalEscrowAmount, ipfsUri, status: 'open', issuanceId, txHash, buyerAddress: wallet.classicAddress, vendorAddress: selectedUpdatePO.vendorAddress, paymentTerms, escrowCurrency, vendorUUID: selectedUpdatePO.vendorUUID, clawbackEnabled: true, parentIssuanceId: selectedUpdatePO.issuanceId, metadata: fullMetadata };
       saveNewPO(newPO);
       const memoData = xrpl.convertStringToHex(`PO Updated: ${poName} (v2) - Please re-accept.`);
       const memoPayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: selectedUpdatePO.vendorAddress, Amount: '1', Memos: [{ Memo: { MemoData: memoData, MemoType: xrpl.convertStringToHex('PO_UPDATE') } }] };
@@ -1050,17 +1066,73 @@ useEffect(() => {
     } catch { return false; }
   };
 
-const fundEscrow = async (po: SavedPO) => {
+// ── Task 2.3: Fund Escrow with RLUSD or XRP ──────────────────
+  const fundEscrow = async (po: SavedPO) => {
     if (po.status === 'superseded') return alert('This PO version is superseded. Use the latest version.');
     const isHeld = await isMPTHeldByVendor(po.issuanceId, po.vendorAddress);
     if (!isHeld) return alert('Vendor has not accepted the MPT yet');
     if (!seed) return alert('Wallet seed required');
     const totalNum = parseFloat(po.total || '0');
     if (totalNum <= 0) return alert('PO total must be greater than 0. Current value: ' + po.total);
-    const xrpPriceUsd = await getXrpPriceUsd();
-    const xrpAmount = (totalNum / xrpPriceUsd).toFixed(6);
-    const drops = xrpl.xrpToDrops(xrpAmount);
-    console.log(`Funding escrow: $${totalNum} USD = ${xrpAmount} XRP = ${drops} drops`);
+
+    // Determine currency for this PO
+    const currency = po.escrowCurrency || 'XRP';
+    let escrowAmount: any;
+
+    if (currency === 'RLUSD') {
+      // ── RLUSD path: check trust lines first ──
+      setResult('Checking RLUSD trust lines...');
+      const readiness = await canUseRLUSDEscrow(
+        xrpl.Wallet.fromSeed(seed).classicAddress,
+        po.vendorAddress
+      );
+
+      if (!readiness.ready) {
+        // Offer to set up trust lines
+        const setupMsg = readiness.reason + '\n\nWould you like to set up the missing trust line now?';
+        if (!window.confirm(setupMsg)) return;
+
+        // Set up missing trust lines
+        const client = await getXRPLClient();
+        const wallet = xrpl.Wallet.fromSeed(seed);
+
+        if (!readiness.buyerTrustLine) {
+          setResult('Setting up buyer RLUSD trust line...');
+          const result = await setupRLUSDTrustLine(client, wallet);
+          if (!result.success) return alert('Failed to set up buyer trust line: ' + result.error);
+        }
+
+        if (!readiness.vendorTrustLine) {
+          alert('The vendor also needs a RLUSD trust line before receiving payment. They will need to set this up from their profile. Falling back to XRP escrow.');
+          // Fall back to XRP
+          setEscrowCurrency('XRP');
+          return;
+        }
+      }
+
+      // Check buyer has enough RLUSD
+      const balance = await getRLUSDBalance(xrpl.Wallet.fromSeed(seed).classicAddress);
+      if (parseFloat(balance) < totalNum) {
+        return alert(`Insufficient RLUSD balance. You have $${balance} RLUSD but need $${totalNum}.`);
+      }
+
+      // RLUSD Amount format for token escrow
+      const rlusd = getRLUSDCurrency();
+      escrowAmount = {
+        currency: rlusd.currency,
+        issuer: rlusd.issuer,
+        value: totalNum.toString()
+      };
+      console.log(`Funding escrow: $${totalNum} RLUSD (1:1 USD)`);
+
+    } else {
+      // ── XRP path: existing behavior ──
+      const xrpPriceUsd = await getXrpPriceUsd();
+      const xrpAmount = (totalNum / xrpPriceUsd).toFixed(6);
+      escrowAmount = xrpl.xrpToDrops(xrpAmount);
+      console.log(`Funding escrow: $${totalNum} USD = ${xrpAmount} XRP = ${escrowAmount} drops`);
+    }
+
     try {
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(seed);
@@ -1074,11 +1146,12 @@ const fundEscrow = async (po: SavedPO) => {
       const buffer = 60; const finishRipple = currentRippleTime + (days * 86400) + buffer; const cancelRipple = finishRipple + (7 * 86400);
       const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
       console.log(`Escrow linked to PO via condition. IssuanceID: ${po.issuanceId}`);
-      const escrow: EscrowCreate = { TransactionType: 'EscrowCreate', Account: wallet.classicAddress, Destination: po.vendorAddress, Amount: drops, FinishAfter: finishRipple, CancelAfter: cancelRipple, Condition: condition, Memos: [{ Memo: { MemoData: xrpl.convertStringToHex(`PO: ${po.poName}, MPT: ${po.issuanceId}`) } }] };      
+      const escrowMemo = JSON.stringify({ type: 'SCPO_ESCROW', po: po.poName, mpt: po.issuanceId, ipfs: po.ipfsUri, total: po.total, currency: currency, items: po.metadata?.items?.length || 0, terms: po.paymentTerms, created: Date.now() });
+      const escrow: any = { TransactionType: 'EscrowCreate', Account: wallet.classicAddress, Destination: po.vendorAddress, Amount: escrowAmount, FinishAfter: finishRipple, CancelAfter: cancelRipple, Condition: condition, Memos: [{ Memo: { MemoType: xrpl.convertStringToHex('SCPO_ESCROW'), MemoData: xrpl.convertStringToHex(escrowMemo) } }] };
       const preparedEscrow = await client.autofill(escrow); preparedEscrow.LastLedgerSequence = currentLedger + 20;
       const signedEscrow = wallet.sign(preparedEscrow);
       const escrowResult = await client.submitAndWait(signedEscrow.tx_blob);
-      if (typeof escrowResult.result.meta === 'object' && escrowResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Escrow creation failed');
+      if (typeof escrowResult.result.meta === 'object' && escrowResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Escrow creation failed: ' + (escrowResult.result.meta as any).TransactionResult);
       const escrowSequence = escrowResult.result.tx_json.Sequence as number;
       setResult('Delivering PO (MPT) to Vendor...');
       const paymentTx: any = {
@@ -1097,10 +1170,12 @@ const fundEscrow = async (po: SavedPO) => {
         throw new Error('MPT Delivery failed: ' + paymentResult.result.meta.TransactionResult);
       }
       updatePO({ ...po, escrowSequence, status: 'funded' });
-      alert('Escrow funded & PO delivered! Sequence: ' + escrowSequence);
+      const currencyLabel = currency === 'RLUSD' ? `$${totalNum} RLUSD` : `${xrpl.dropsToXrp(escrowAmount)} XRP`;
+      alert(`Escrow funded (${currencyLabel}) & PO delivered! Sequence: ${escrowSequence}`);
     } catch (err: any) { alert('Failed to fund escrow: ' + err.message); }
   };
 
+  // ── Task 2.4: Claim Escrow (supports both XRP and RLUSD) ──
   const claimEscrowForPO = async (po: SavedPO) => {
     if (po.status === 'superseded') return alert('This PO version is superseded. Use the latest version.');
     if (!vendorProfile.seed) return alert('Claim seed required');
@@ -1111,7 +1186,8 @@ const fundEscrow = async (po: SavedPO) => {
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
       const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
-      const escrowFinish: EscrowFinish = { TransactionType: 'EscrowFinish', Account: wallet.classicAddress, Owner: po.buyerAddress, OfferSequence: po.escrowSequence, Condition: condition, Fulfillment: fulfillment };      
+      // Use 'any' type because EscrowFinish type doesn't include token escrow fields yet
+      const escrowFinish: any = { TransactionType: 'EscrowFinish', Account: wallet.classicAddress, Owner: po.buyerAddress, OfferSequence: po.escrowSequence, Condition: condition, Fulfillment: fulfillment };      
       const prepared = await client.autofill(escrowFinish);
       prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
@@ -1153,8 +1229,16 @@ const fundEscrow = async (po: SavedPO) => {
       const client = await getXRPLClient();
       const response: any = await client.request({ command: 'ledger_entry', escrow: { owner, seq: sequence }, ledger_index: 'validated' });
       if (response.result.node && response.result.node.LedgerEntryType === 'Escrow') {
-        const escrowObj = response.result.node; const rippleEpochStart = 946684800; const finishTime = new Date(((escrowObj as any).FinishAfter + rippleEpochStart) * 1000);
+        const escrowObj = response.result.node;
+        const rippleEpochStart = 946684800;
+        const finishTime = new Date(((escrowObj as any).FinishAfter + rippleEpochStart) * 1000);
         setClaimableAfter(finishTime); setIsClaimable(new Date() >= finishTime);
+        // Detect escrow currency — if Amount is an object, it's a token escrow
+        if (typeof escrowObj.Amount === 'object' && escrowObj.Amount.currency) {
+          console.log(`Escrow holds ${escrowObj.Amount.value} ${escrowObj.Amount.currency} (token escrow)`);
+        } else {
+          console.log(`Escrow holds ${xrpl.dropsToXrp(escrowObj.Amount)} XRP`);
+        }
       } else { setClaimableAfter(null); setIsClaimable(false); }
     } catch (err: any) { if (err.data?.error === 'entryNotFound') { setClaimableAfter(null); setIsClaimable(false); } }
   };
@@ -2069,6 +2153,15 @@ const addLinkedVendorByDID = async () => {
                       <option value="30 Days">30 Days</option>
                       <option value="60 Days">60 Days</option>
                     </select>
+                    {isRLUSDConfigured() && (
+                      <>
+                        <label style={{ display: 'block', margin: '40px 0 10px', color: '#F2B04A', fontWeight: 'bold' }}>Escrow Currency</label>
+                        <select style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={escrowCurrency} onChange={(e) => setEscrowCurrency(e.target.value as 'XRP' | 'RLUSD')}>
+                          <option value="RLUSD">💵 RLUSD (1:1 USD — recommended)</option>
+                          <option value="XRP">⚡ XRP (market rate conversion)</option>
+                        </select>
+                      </>
+                    )}
                     <label style={{ display: 'block', margin: '40px 0 10px', color: '#F2B04A', fontWeight: 'bold' }}>Delivery Terms</label>
                     <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={deliveryTerms} onChange={(e) => setDeliveryTerms(e.target.value)} />
                   </div>
@@ -2203,6 +2296,15 @@ const addLinkedVendorByDID = async () => {
                           <option value="60 Days">60 Days</option>
                         </select>
                       </div>
+                      {isRLUSDConfigured() && (
+                        <div style={{ flex: 1 }}>
+                          <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Escrow Currency</label>
+                          <select style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={escrowCurrency} onChange={(e) => setEscrowCurrency(e.target.value as 'XRP' | 'RLUSD')}>
+                            <option value="RLUSD">💵 RLUSD (1:1 USD)</option>
+                            <option value="XRP">⚡ XRP (market rate)</option>
+                          </select>
+                        </div>
+                      )}
                     </div>
                     <h4 style={{ color: '#F2B04A', margin: '40px 0 20px', textAlign: 'center' }}>Request Items</h4>
                     <div style={{ maxWidth: '900px', margin: '0 auto' }}>
@@ -2327,7 +2429,7 @@ const addLinkedVendorByDID = async () => {
                           <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                           <td style={{ padding: '10px' }}>${po.total}</td>
                           <td style={{ padding: '10px', display: 'flex', gap: '5px' }}>
-                            <button onClick={() => fundEscrow(po)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                            <button onClick={() => fundEscrow(po)} style={{ background: po.escrowCurrency === 'RLUSD' ? '#2e86de' : '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                               Fund Escrow
                             </button>
                             <button onClick={async () => { setSelectedOpenPO(po); await viewPOFromUri(po.ipfsUri, po, setCustomerScpoActionViewedPO, setCustomerScpoActionPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
@@ -2358,6 +2460,7 @@ const addLinkedVendorByDID = async () => {
                 <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {customerScpoActionViewedPO.description || 'N/A'}</p>
                 <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {customerScpoActionViewedPO.department}</p>
                 <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {customerScpoActionViewedPO.paymentTerms}</p>
+                <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {customerScpoActionViewedPO.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
                 <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {customerScpoActionViewedPO.deliveryTerms}</p>
                 <h4 style={{ color: '#F2B04A' }}>Items</h4>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -2503,6 +2606,7 @@ const addLinkedVendorByDID = async () => {
                 <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {vendorScpoActionViewedPO.description || 'N/A'}</p>
                 <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {vendorScpoActionViewedPO.department}</p>
                 <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {vendorScpoActionViewedPO.paymentTerms}</p>
+                <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {vendorScpoActionViewedPO.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
                 <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {vendorScpoActionViewedPO.deliveryTerms}</p>
                 <h4 style={{ color: '#F2B04A' }}>Items</h4>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -2606,7 +2710,7 @@ const addLinkedVendorByDID = async () => {
                     <ul>{selectedItem.attachments.map((att: Attachment, i: number) => <li key={i}><a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>{att.name}</a></li>)}</ul>
                     <p><strong style={{ color: '#F2B04A' }}>NFT ID:</strong> {selectedItem.nftId}</p>
                     <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                      <QRCodeSVG value={`https://testnet.xrpl.org/nft/${selectedItem.nftId}`} size={128} />
+                      <QRCodeSVG value={`https://devnet.xrpl.org/nft/${selectedItem.nftId}`} size={128} />
                       <p style={{ color: '#F2B04A' }}>QR Code for NFT (scan to view on XRPL Testnet)</p>
                     </div>
                     <button onClick={() => setSelectedItem(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
@@ -2737,6 +2841,7 @@ const addLinkedVendorByDID = async () => {
                         <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {vendorOverviewViewedPO.description || 'N/A'}</p>
                         <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {vendorOverviewViewedPO.department}</p>
                         <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {vendorOverviewViewedPO.paymentTerms}</p>
+                        <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {vendorOverviewViewedPO.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
                         <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {vendorOverviewViewedPO.deliveryTerms}</p>
                         <h4 style={{ color: '#F2B04A' }}>Items</h4>
                         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -3014,6 +3119,7 @@ const addLinkedVendorByDID = async () => {
                     <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.description || 'N/A'}</p>
                     <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.department}</p>
                     <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.paymentTerms}</p>
+                    <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
                     <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.deliveryTerms}</p>
                     <h4 style={{ color: '#F2B04A' }}>Items</h4>
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -3234,7 +3340,7 @@ const addLinkedVendorByDID = async () => {
                     <p><strong style={{ color: '#F2B04A' }}>Country:</strong> {selectedLinkedVendor.country}</p>
                     <p><strong style={{ color: '#F2B04A' }}>Wallet Address:</strong> {selectedLinkedVendor.classicAddress}</p>
                     {selectedLinkedVendor.linkTxHash && (
-                      <p><strong style={{ color: '#F2B04A' }}>On-chain Link Tx:</strong> <a href={`https://testnet.xrpl.org/transactions/${selectedLinkedVendor.linkTxHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
+                      <p><strong style={{ color: '#F2B04A' }}>On-chain Link Tx:</strong> <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedVendor.linkTxHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
                         {selectedLinkedVendor.linkTxHash.substring(0, 10)}...
                       </a></p>
                     )}
@@ -3376,7 +3482,7 @@ const addLinkedVendorByDID = async () => {
                     <p><strong style={{ color: '#F2B04A' }}>Country:</strong> {selectedLinkedCustomer.country}</p>
                     <p><strong style={{ color: '#F2B04A' }}>Wallet Address:</strong> {selectedLinkedCustomer.classicAddress}</p>
                     {selectedLinkedCustomer.linkTxHash && (
-                      <p><strong style={{ color: '#F2B04A' }}>On-chain Link Tx:</strong> <a href={`https://testnet.xrpl.org/transactions/${selectedLinkedCustomer.linkTxHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
+                      <p><strong style={{ color: '#F2B04A' }}>On-chain Link Tx:</strong> <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedCustomer.linkTxHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
                         {selectedLinkedCustomer.linkTxHash.substring(0, 10)}...
                       </a></p>
                     )}
@@ -3454,7 +3560,7 @@ const addLinkedVendorByDID = async () => {
                               <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.poName}</td>
                               <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.amount}</td>
                               <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>
-                                <a href={`https://testnet.xrpl.org/transactions/${entry.txHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>{entry.txHash.substring(0, 10)}...</a>
+                                <a href={`https://devnet.xrpl.org/transactions/${entry.txHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>{entry.txHash.substring(0, 10)}...</a>
                               </td>
                             </tr>
                           ))}
@@ -3576,6 +3682,7 @@ const addLinkedVendorByDID = async () => {
                         <p style={{ color: '#666', fontSize: '13px', margin: '0 0 10px' }}>Issuance: {version.po.issuanceId?.substring(0, 16)}...</p>
                         <p><strong style={{ color: '#F2B04A' }}>Total:</strong> ${version.po.total}</p>
                         <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {version.po.paymentTerms || 'N/A'}</p>
+                        <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {(version.po.escrowCurrency || version.poData?.escrowCurrency) === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
                         {version.loading ? (
                           <p style={{ color: '#F2B04A', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>Loading PO details from IPFS...</p>
                         ) : version.poData ? (
