@@ -748,9 +748,40 @@ useEffect(() => {
       } catch (e) {
         console.error('Failed to send recall receipt:', e);
       }
-      updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
-      alert('PO recalled on-chain.');
-      setTimeout(() => loadPOsFromLedger(), 2000);
+      // Also recall parent PO if this is an updated version
+      if (po.parentIssuanceId) {
+        try {
+          const parentRecallDest = po.vendorAddress || process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress;
+          const parentRecallReceipt: Payment = {
+            TransactionType: 'Payment',
+            Account: wallet.classicAddress,
+            Destination: parentRecallDest,
+            Amount: '1',
+            Memos: [{
+              Memo: {
+                MemoType: xrpl.convertStringToHex('SCPO_RECALL'),
+                MemoData: xrpl.convertStringToHex(JSON.stringify({
+                  type: 'SCPO_RECALL',
+                  mpt: po.parentIssuanceId,
+                  recalledAt: Date.now()
+                }))
+              }
+            }]
+          };
+          const preparedParentRecall = await client.autofill(parentRecallReceipt);
+          preparedParentRecall.LastLedgerSequence = currentLedger + 20;
+          const signedParentRecall = wallet.sign(preparedParentRecall);
+          await client.submitAndWait(signedParentRecall.tx_blob);
+          console.log('Parent PO recall receipt sent:', po.parentIssuanceId);
+        } catch (e) {
+          console.error('Failed to send parent recall receipt:', e);
+        }
+      
+        updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
+        alert('PO recalled on-chain.');
+        setTimeout(() => loadPOsFromLedger(), 2000);
+        return;
+      }
     } catch (err: any) { alert('Recall failed: ' + err.message); }
   };
   const viewPOFromUri = async (uri: string, po: SavedPO | null, setViewedPO: React.Dispatch<React.SetStateAction<POData | null>>, setPoLoadError: React.Dispatch<React.SetStateAction<string | null>>) => {
