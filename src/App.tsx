@@ -35,6 +35,342 @@ interface FeeEntry { date: string; poName: string; amount: string; txHash: strin
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
 interface InventoryItem { id: string; name: string; department: string; description: string; attachments: Attachment[]; nftId: string; ipfsUri: string; dateAdded: string; }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 3 — Inventory Catalog Enhancement (Task 3.1a)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Schema Constants ──────────────────────────────────────────────────────────
+
+/** On-chain identifier stamped in NFT Memo: MemoType = hex("SCPO_INV_META") */
+const INV_META_TYPE = 'SCPO_INV' as const;
+
+/** MPT metadata type identifier */
+const INV_QTY_TYPE = 'SCPO_INV_QTY' as const;
+
+/** Memo type key used on NFTokenMint transaction */
+const INV_MEMO_TYPE = 'SCPO_INV_META' as const;
+
+/** NFT taxon — same value as Phase 1 for backward compat with existing fetches */
+const INV_NFT_TAXON = 1 as const;
+
+/** High ceiling for bulk inventory MPTs (MaximumAmount is immutable after creation) */
+const BULK_MPT_MAX = '999999' as const;
+
+/** Hex-encoded memo type constants for on-chain use */
+const INV_HEX_CONSTANTS = {
+  /** hex("SCPO_INV_META") */
+  MEMO_TYPE: '5343504F5F494E565F4D455441',
+} as const;
+
+// ── Union Types ───────────────────────────────────────────────────────────────
+
+/** Lifecycle status of an inventory item */
+type ItemStatus = 'active' | 'discontinued' | 'out_of_stock';
+
+/**
+ * How physical units are tracked.
+ * - bulk: single MPT issuance tracks total quantity (Phase 3)
+ * - serialized: one MPT per physical unit with serial in metadata (future)
+ */
+type TrackingMode = 'bulk' | 'serialized';
+
+/** Supported units of measure for inventory quantities */
+type UnitOfMeasure = 'ea' | 'kg' | 'lb' | 'm' | 'ft' | 'box' | string;
+
+// ── Pricing Sub-Types ─────────────────────────────────────────────────────────
+
+/**
+ * A single volume price tier for customer-facing pricing.
+ * Stored in sharedUri (ECDH-encrypted IPFS file).
+ */
+interface VolumePriceTier {
+  /** Minimum quantity to qualify for this tier price */
+  minQty: number;
+  /** Unit price at this tier */
+  price: string;
+}
+
+/**
+ * A single cost break tier for vendor-only cost tracking.
+ * Stored in vendorUri (self-encrypted IPFS file).
+ */
+interface CostBreakTier {
+  /** Minimum quantity to qualify for this cost break */
+  minQty: number;
+  /** Unit cost at this tier */
+  unitCost: string;
+}
+
+/**
+ * Customer-visible pricing block — goes into sharedUri.
+ * No cost data here — only what a customer needs to place an order.
+ */
+interface SharedPricing {
+  /** List price per unit */
+  unitPrice: string;
+  /** ISO 4217 currency code (e.g. "USD") */
+  currency: string;
+  /** Volume-based price tiers, sorted ascending by minQty */
+  volumeTiers: VolumePriceTier[];
+  /** ISO date when this pricing becomes effective (YYYY-MM-DD) */
+  effectiveDate: string;
+  /** ISO date when this pricing expires (YYYY-MM-DD) */
+  expiresDate: string;
+}
+
+/**
+ * Vendor-only cost block — goes into vendorUri.
+ * Contains internal cost data never shared with customers.
+ */
+interface VendorCost {
+  /** Standard unit cost */
+  unitCost: string;
+  /** ISO 4217 currency code (e.g. "USD") */
+  currency: string;
+  /** Volume-based cost breaks, sorted ascending by minQty */
+  costBreaks: CostBreakTier[];
+}
+
+/**
+ * Vendor-only pricing block — goes into vendorUri.
+ * Contains list price + volume tiers for vendor reference.
+ */
+interface VendorPricing {
+  /** List price per unit */
+  listPrice: string;
+  /** ISO 4217 currency code */
+  currency: string;
+  /** Volume price tiers (mirrors sharedUri, vendor can see everything) */
+  volumeTiers: VolumePriceTier[];
+  /** ISO date when pricing becomes effective */
+  effectiveDate: string;
+  /** ISO date when pricing expires */
+  expiresDate: string;
+}
+
+// ── IPFS Document Types ───────────────────────────────────────────────────────
+
+/**
+ * Document attachment reference stored in IPFS files.
+ * Same shape as existing Attachment interface — kept separate for clarity.
+ */
+interface InventoryAttachment {
+  /** Human-readable file name */
+  name: string;
+  /** IPFS URI: ipfs://Qm... */
+  uri: string;
+}
+
+/**
+ * Vendor-only IPFS document (self-encrypted with deriveSelfEncryptionKey).
+ * Contains ALL data: cost, pricing, supplier, design files, BOMs.
+ * Only the vendor can decrypt this file.
+ */
+interface VendorInventoryDoc {
+  // ── Catalog fields (duplicated from on-chain for self-contained record) ──
+  partNumber: string;
+  partName: string;
+  fullDescription: string;
+  category: string;
+  familyCode: string;
+  productBrand: string;
+  department: string;
+  productionPlant: string;
+  weight: string;
+  competitiveFlag: boolean;
+  trackingMode: TrackingMode;
+  status: ItemStatus;
+
+  // ── Vendor-only financials ──
+  cost: VendorCost;
+  pricing: VendorPricing;
+
+  // ── Supplier data ──
+  supplierCode: string;
+  supplierName: string;
+
+  // ── Document attachments ──
+  attachments: {
+    pricingSheet?: InventoryAttachment;
+    designFile?: InventoryAttachment;
+    bom?: InventoryAttachment;
+    usageGuide?: InventoryAttachment;
+  };
+
+  // ── Links back to on-chain tokens ──
+  nftId: string;
+  mptIssuanceId: string;
+
+  // ── Metadata ──
+  createdAt: number;   // Unix timestamp (seconds)
+  updatedAt: number;   // Unix timestamp (seconds)
+  lastUpdated: string; // ISO date string (YYYY-MM-DD) for human display
+  version: number;
+}
+
+/**
+ * Customer-shared IPFS document (ECDH-encrypted — any linked customer
+ * who knows the vendor's public key can derive the decryption key via
+ * deriveSharedSecret(vendorPubKey, vendorPubKey)).
+ *
+ * Contains: part info, pricing, usage docs.
+ * Does NOT contain: cost, supplier code, design files, BOMs.
+ */
+interface SharedInventoryDoc {
+  // ── Public catalog fields ──
+  partNumber: string;
+  partName: string;
+  description: string;
+  category: string;
+  productBrand: string;
+  weight: string;
+
+  // ── Customer-visible pricing ──
+  pricing: SharedPricing;
+
+  // ── Usage/installation documents only ──
+  usageDocuments: InventoryAttachment[];
+
+  // ── Link back to on-chain NFT ──
+  nftId: string;
+
+  // ── Metadata ──
+  version: number;
+}
+
+/**
+ * On-chain NFT Memo metadata (stored as hex-encoded JSON in MemoData).
+ * MemoType = hex("SCPO_INV_META").
+ *
+ * Uses compact single-char keys to minimize on-chain byte usage.
+ * The NFT URI field stores sharedUri for backward compat with existing
+ * inventory fetching code (fetchVendorInventory reads URI directly).
+ */
+interface InventoryNFTMeta {
+  /** Type tag — always "SCPO_INV" */
+  t: typeof INV_META_TYPE;
+  /** Part number / SKU */
+  pn: string;
+  /** Display name */
+  nm: string;
+  /** Short public description (≤60 chars recommended) */
+  desc: string;
+  /** Product category */
+  cat: string;
+  /** Product family code */
+  fc: string;
+  /** Brand name */
+  brand: string;
+  /** Whether item is competitive/restricted */
+  cf: boolean;
+  /** Unit weight with unit (e.g. "0.25kg") */
+  wt: string;
+  /** Department */
+  dept: string;
+  /** Production plant identifier */
+  plant: string;
+  /** Item lifecycle status */
+  st: ItemStatus;
+  /** Tracking mode — "bulk" for Phase 3, "serialized" for future */
+  tm: TrackingMode;
+  /** Parent NFT ID for supersession chain (empty string if first version) */
+  parent: string;
+  /** Metadata schema version */
+  v: number;
+  /** List price (canonical source on-chain) */
+  lp: string;
+  /** List price currency (ISO 4217) */
+  lc: string;
+  /** IPFS URI for vendor-only encrypted data */
+  vu: string;
+  /** IPFS URI for customer-shared encrypted data (optional in V2 flow) */
+  su?: string;
+}
+
+/**
+ * On-chain MPT metadata stored in MPTokenMetadata field (hex-encoded JSON).
+ * Links the quantity token back to its parent NFT catalog entry.
+ */
+interface InventoryMPTMeta {
+  /** Type tag — always "SCPO_INV_QTY" */
+  t: typeof INV_QTY_TYPE;
+  /** Parent NFTokenID (links quantity to catalog entry) */
+  nft: string;
+  /** Part number (duplicated for quick lookup without resolving NFT) */
+  pn: string;
+  /** Unit of measure */
+  unit: UnitOfMeasure;
+}
+
+// ── Main V2 Interface ─────────────────────────────────────────────────────────
+
+/**
+ * InventoryItemV2 — Phase 3 inventory catalog item.
+ *
+ * Backward compat: InventoryItem (Phase 1) still works for old NFTs.
+ * Detection: presence of mptIssuanceId field OR SCPO_INV_META memo on the
+ * mint transaction identifies a V2 item. V1 items lack both.
+ *
+ * Token model:
+ *   - NFT = permanent catalog identity / SKU (immutable once minted)
+ *   - MPT = fungible quantity token (mint/burn as stock changes)
+ */
+interface InventoryItemV2 {
+  // ── Local identity ──
+  /** Local UUID (Date.now() string, same pattern as SavedPO.id) */
+  id: string;
+
+  // ── On-chain token identifiers ──
+  /** NFTokenID of the catalog NFT */
+  nftId: string;
+  /** MPTokenIssuanceID of the quantity token (48-char hex) */
+  mptIssuanceId: string;
+
+  // ── On-chain metadata (from NFT Memo: SCPO_INV_META) ──
+  partNumber: string;
+  name: string;
+  /** Short public description (≤60 chars) */
+  shortDescription: string;
+  category: string;
+  familyCode: string;
+  productBrand: string;
+  competitiveFlag: boolean;
+  weight: string;
+  department: string;
+  productionPlant: string;
+  status: ItemStatus;
+  trackingMode: TrackingMode;
+  /** NFTokenID of the previous version (empty string if first version) */
+  parentNFTId: string;
+  /** On-chain metadata schema version */
+  version: number;
+
+  // ── Pricing (from NFT Memo lp/lc fields) ──
+  /** List price per unit (canonical source is on-chain Memo) */
+  listPrice: string;
+  /** ISO 4217 currency code for list price */
+  priceCurrency: string;
+
+  // ── IPFS URIs ──
+  /** Self-encrypted IPFS URI — vendor eyes only (cost, supplier, all docs) */
+  vendorUri: string;
+  /** ECDH-encrypted IPFS URI — shared with linked customers (price, usage docs) */
+  sharedUri: string;
+
+  // ── Quantity (resolved from MPT balance) ──
+  /** Current quantity on hand from MPT balance query */
+  quantityOnHand: number;
+  /** Unit of measure matching InventoryMPTMeta.unit */
+  unit: UnitOfMeasure;
+
+  // ── Local metadata ──
+  /** ISO date string when item was first added */
+  dateAdded: string;
+  /** ISO date string when item was last updated locally */
+  dateUpdated: string;
+}
+
+
 const buildLedgerMetadata = (poName: string, ipfsUri: string, status: string, buyerAddress?: string, vendorAddress?: string, total?: string, payTerms?: string, parentIssuanceId?: string, escrowCur?: string) => ({
   t: "SCPO",
   n: poName,
@@ -250,6 +586,31 @@ export default function App() {
   const [selectedItem, setSelectedItem] = useState<any | null>(null);
   const [vendorInventories, setVendorInventories] = useState<{ [vendorAddress: string]: InventoryItem[] }>({});
   const [selectedInventoryItem, setSelectedInventoryItem] = useState<string>('custom');
+ // Add alongside existing inventory state variables
+  const [invPartNumber, setInvPartNumber] = useState('');
+  const [invCategory, setInvCategory] = useState('');
+  const [invFamilyCode, setInvFamilyCode] = useState('');
+  const [invBrand, setInvBrand] = useState('');
+  const [invWeight, setInvWeight] = useState('');
+  const [invPlant, setInvPlant] = useState('');
+  const [invCompetitiveFlag, setInvCompetitiveFlag] = useState(false);
+  const [invShortDesc, setInvShortDesc] = useState('');
+// Pricing (goes to sharedUri)
+  const [invUnitPrice, setInvUnitPrice] = useState('');
+  const [invPriceCurrency, setInvPriceCurrency] = useState('USD');
+  const [invEffectiveDate, setInvEffectiveDate] = useState('');
+  const [invExpiresDate, setInvExpiresDate] = useState('');
+// Cost (goes to vendorUri only)
+  const [invUnitCost, setInvUnitCost] = useState('');
+  const [invCostCurrency, setInvCostCurrency] = useState('USD');
+// Supplier (goes to vendorUri only)
+  const [invSupplierCode, setInvSupplierCode] = useState('');
+  const [invSupplierName, setInvSupplierName] = useState('');
+// Quantity
+  const [invInitialQty, setInvInitialQty] = useState('');
+  const [invUnit, setInvUnit] = useState<UnitOfMeasure>('ea');
+// V2 inventory storage (parallel to savedInventory for V1 backward compat)
+  const [savedInventoryV2, setSavedInventoryV2] = useState<InventoryItemV2[]>([]);
   const [customerScpoActionPoInventory, setCustomerScpoActionPoInventory] = useState<{[itemNum: string]: InventoryItem}>({});
   const [vendorScpoActionPoInventory, setVendorScpoActionPoInventory] = useState<{[itemNum: string]: InventoryItem}>({});
   const [customerViewPoInventory, setCustomerViewPoInventory] = useState<{[itemNum: string]: InventoryItem}>({});
@@ -268,6 +629,7 @@ export default function App() {
   const [escrowCurrency, setEscrowCurrency] = useState<'XRP' | 'RLUSD'>(isRLUSDConfigured() ? 'RLUSD' : 'XRP');
   const linkedVendors = customerLinkedVendorUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
   const linkedCustomers = vendorLinkedCustomerUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
+
 
   useEffect(() => {
     const total = items.reduce((sum, item) => sum + parseFloat(item.total || '0'), 0);
@@ -1441,7 +1803,7 @@ const getUpdatablePOs = () => {
     } catch (err) { console.error('Fetch vendor inventory error:', err); return []; }
   };
 
-  useEffect(() => { if (mode === 'customer' && activeTab === 'create' && vendor) { (async () => { const inv = await fetchVendorInventory(vendor); setVendorInventories(prev => ({ ...prev, [vendor]: inv })); })(); } }, [vendor, mode, activeTab]);
+  useEffect(() => { if (mode === 'customer' && activeTab === 'create' && vendor) { (async () => { const { v2, v1 } = await fetchVendorInventoryV2(vendor); const merged: InventoryItem[] = [...v1, ...v2.map(item => ({ id: item.id, nftId: item.nftId, name: item.name, department: item.department, description: item.shortDescription, attachments: [], ipfsUri: item.vendorUri, dateAdded: item.dateAdded }))]; setVendorInventories(prev => ({ ...prev, [vendor]: merged })); })(); } }, [vendor, mode, activeTab]);
 
   const loadPoInventory = async (viewedPO: POData, savedPO: SavedPO, setPoInventory: React.Dispatch<React.SetStateAction<{[itemNum: string]: InventoryItem}>>) => {
     if (!vendorInventories[savedPO.vendorAddress]) { const inv = await fetchVendorInventory(savedPO.vendorAddress); setVendorInventories(prev => ({ ...prev, [savedPO.vendorAddress]: inv })); }
@@ -1456,35 +1818,471 @@ const getUpdatablePOs = () => {
   useEffect(() => { if (customerViewViewedPO && selectedFundedPO) loadPoInventory(customerViewViewedPO, selectedFundedPO, setCustomerViewPoInventory); }, [customerViewViewedPO, selectedFundedPO]);
   useEffect(() => { if (vendorViewViewedPO && selectedFundedPO) loadPoInventory(vendorViewViewedPO, selectedFundedPO, setVendorViewPoInventory); }, [vendorViewViewedPO, selectedFundedPO]);
 
-  const generateInventory = async () => {
-    if (!invName) return alert('Name required');
-    if (!vendorProfile.seed) return alert('Vendor wallet seed required');
-    let attachments: Attachment[] = [];
-    const files = [{ file: invPricingFile, name: 'Pricing' }, { file: invDesignFile, name: 'Design' }, { file: invBomFile, name: 'BOM' }, { file: invUsageFile, name: 'Usage' }];
-    for (const { file, name } of files) {
-      if (file) { try { const uri = await uploadFileToIPFS(file); attachments.push({ name: `${name}_${file.name}`, uri }); } catch (err: any) { alert(`Failed to upload ${name} file: ` + err.message); return; } }
+  const extractNFTokenID = (meta: any): string | null => {
+    if (!meta) return null;
+    for (const node of meta.AffectedNodes || []) {
+      const created = node.CreatedNode;
+      if (!created) continue;
+      if (created.LedgerEntryType === 'NFTokenPage') {
+        const tokens = created.NewFields?.NFTokens || [];
+        const id = tokens[tokens.length - 1]?.NFToken?.NFTokenID;
+        if (id) return id;
+      }
+      if (created.LedgerEntryType === 'NFToken') {
+        const id = created.NewFields?.NFTokenID;
+        if (id) return id;
+      }
     }
-    const invData = { name: invName, department: invDepartment, description: invDesc, attachments };
+    // Also check modified NFTokenPage (token appended to existing page)
+    for (const node of meta.AffectedNodes || []) {
+      const modified = node.ModifiedNode;
+      if (!modified || modified.LedgerEntryType !== 'NFTokenPage') continue;
+      const finalTokens = modified.FinalFields?.NFTokens || [];
+      const prevTokens = modified.PreviousFields?.NFTokens || [];
+      if (finalTokens.length > prevTokens.length) {
+        const id = finalTokens[finalTokens.length - 1]?.NFToken?.NFTokenID;
+        if (id) return id;
+      }
+    }
+    return null;
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Task 3.1c — generateInventoryV2
+  // ─────────────────────────────────────────────────────────────────────────────
+  const generateInventoryV2 = async () => {
+    // ── Validation ──────────────────────────────────────────────────────────────
+    if (!invName)        return alert('Item name is required');
+    if (!invPartNumber)  return alert('Part number is required');
+    if (!invUnitPrice)   return alert('List price is required');
+    if (!invInitialQty || parseInt(invInitialQty) <= 0) return alert('Initial quantity must be greater than 0');
+    if (!vendorProfile.seed) return alert('Vendor wallet seed required');
+
+    setInvResult('Starting inventory item creation...');
+
     try {
-      setInvResult('Uploading inventory data to IPFS...');
-      const ipfsUri = await uploadToIPFS(invData);
-      const client = await getXRPLClient();
-      const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
+      const client  = await getXRPLClient();
+      const wallet  = xrpl.Wallet.fromSeed(vendorProfile.seed);
       const ledgerResponse = await client.request({ command: 'ledger_current' });
-      const currentLedger = ledgerResponse.result.ledger_current_index;
-      const nft: any = { TransactionType: 'NFTokenMint', Account: wallet.classicAddress, URI: xrpl.convertStringToHex(ipfsUri), Flags: 8, NFTokenTaxon: 1 };
-      const preparedNFT = await client.autofill(nft); preparedNFT.LastLedgerSequence = currentLedger + 20;
-      const signedNFT = wallet.sign(preparedNFT);
-      const nftResult = await client.submitAndWait(signedNFT.tx_blob);
-      if (typeof nftResult.result.meta === 'object' && nftResult.result.meta.TransactionResult !== 'tesSUCCESS') { setInvResult('NFT Mint failed'); return; }
-      let nftId = 'unknown';
-      const mintedNode = (nftResult.result.meta as any)?.AffectedNodes?.find((node: any) => node.CreatedNode?.LedgerEntryType === 'NFTokenPage');
-      if (mintedNode) { const tokens = mintedNode.CreatedNode.NewFields.NFTokens || []; nftId = tokens[tokens.length - 1]?.NFToken?.NFTokenID || 'unknown'; }
-      const newItem: InventoryItem = { id: Date.now().toString(), name: invName, department: invDepartment, description: invDesc, attachments, nftId, ipfsUri, dateAdded: new Date().toLocaleDateString() };
-      saveNewInventory(newItem);
-      setInvResult(`Inventory Item Created! NFT ID: ${nftId}\nIPFS URI: ${ipfsUri}`);
-      setInvName(''); setInvDepartment(''); setInvDesc(''); setInvPricingFile(null); setInvDesignFile(null); setInvBomFile(null); setInvUsageFile(null);
-    } catch (err: any) { setInvResult('Error: ' + err.message); }
+      const currentLedger  = ledgerResponse.result.ledger_current_index;
+      const now = Math.floor(Date.now() / 1000);
+
+      // ── Step 1: Upload vendor-only doc to IPFS (self-encrypted) ───────────────
+      setInvResult('Uploading vendor-only data to IPFS...');
+
+      let pricingSheetAttachment: InventoryAttachment | undefined;
+      let designFileAttachment:   InventoryAttachment | undefined;
+      let bomAttachment:          InventoryAttachment | undefined;
+      let usageGuideAttachment:   InventoryAttachment | undefined;
+
+      if (invPricingFile) {
+        const uri = await uploadFileToIPFS(invPricingFile);
+        pricingSheetAttachment = { name: invPricingFile.name, uri };
+      }
+      if (invDesignFile) {
+        const uri = await uploadFileToIPFS(invDesignFile);
+        designFileAttachment = { name: invDesignFile.name, uri };
+      }
+      if (invBomFile) {
+        const uri = await uploadFileToIPFS(invBomFile);
+        bomAttachment = { name: invBomFile.name, uri };
+      }
+      if (invUsageFile) {
+        const uri = await uploadFileToIPFS(invUsageFile);
+        usageGuideAttachment = { name: invUsageFile.name, uri };
+      }
+
+      const vendorDoc: VendorInventoryDoc = {
+        partNumber:      invPartNumber,
+        partName:        invName,
+        fullDescription: invDesc,
+        category:        invCategory,
+        familyCode:      invFamilyCode,
+        productBrand:    invBrand,
+        department:      invDepartment,
+        productionPlant: invPlant,
+        weight:          invWeight,
+        competitiveFlag: invCompetitiveFlag,
+        trackingMode:    'bulk',
+        status:          'active',
+        cost: {
+          unitCost:   invUnitCost || '0',
+          currency:   invCostCurrency,
+          costBreaks: [],
+        },
+        pricing: {
+          listPrice:    invUnitPrice,
+          currency:     invPriceCurrency,
+          volumeTiers:  [],
+          effectiveDate: invEffectiveDate || new Date().toISOString().split('T')[0],
+          expiresDate:   invExpiresDate   || '',
+        },
+        supplierCode: invSupplierCode,
+        supplierName: invSupplierName,
+        attachments: {
+          ...(pricingSheetAttachment && { pricingSheet: pricingSheetAttachment }),
+          ...(designFileAttachment   && { designFile:   designFileAttachment }),
+          ...(bomAttachment          && { bom:          bomAttachment }),
+          ...(usageGuideAttachment   && { usageGuide:   usageGuideAttachment }),
+        },
+        nftId:          '',
+        mptIssuanceId:  '',
+        createdAt:   now,
+        updatedAt:   now,
+        lastUpdated: new Date().toISOString().split('T')[0],
+        version:     1,
+      };
+
+      const vendorUri = await uploadVendorInventoryDoc(vendorDoc, wallet);
+      console.log('✅ Vendor doc uploaded:', vendorUri);
+
+      // ── Step 2: Mint NFT (catalog identity) ───────────────────────────────────
+      setInvResult('Minting inventory NFT...');
+
+      const nftMeta: InventoryNFTMeta = {
+        t:      INV_META_TYPE,
+        pn:     invPartNumber,
+        nm:     invName,
+        desc:   (invShortDesc || invDesc).substring(0, 60),
+        cat:    invCategory,
+        fc:     invFamilyCode,
+        brand:  invBrand,
+        cf:     invCompetitiveFlag,
+        wt:     invWeight,
+        dept:   invDepartment,
+        plant:  invPlant,
+        st:     'active',
+        tm:     'bulk',
+        parent: '',
+        v:      1,
+        lp:     invUnitPrice,
+        lc:     invPriceCurrency,
+        vu:     vendorUri,
+      };
+
+      const metaJson   = JSON.stringify(nftMeta);
+      const metaHex    = xrpl.convertStringToHex(metaJson);
+      const memoTypeHex = INV_HEX_CONSTANTS.MEMO_TYPE;
+
+      const nftMintTx: any = {
+        TransactionType: 'NFTokenMint',
+        Account:         wallet.classicAddress,
+        URI:             xrpl.convertStringToHex(vendorUri),
+        Flags:           8,
+        NFTokenTaxon:    INV_NFT_TAXON,
+        Memos: [{
+          Memo: {
+            MemoType: memoTypeHex,
+            MemoData: metaHex,
+          }
+        }]
+      };
+
+      const preparedNFT = await client.autofill(nftMintTx);
+      preparedNFT.LastLedgerSequence = currentLedger + 20;
+      const signedNFT   = wallet.sign(preparedNFT);
+      const nftResult   = await client.submitAndWait(signedNFT.tx_blob);
+
+      if (
+        typeof nftResult.result.meta === 'object' &&
+        nftResult.result.meta.TransactionResult !== 'tesSUCCESS'
+      ) {
+        throw new Error('NFT mint failed: ' + nftResult.result.meta.TransactionResult);
+      }
+
+      const nftId = extractNFTokenID(nftResult.result.meta);
+      if (!nftId) throw new Error('Could not extract NFTokenID from mint result');
+      console.log('✅ NFT minted:', nftId);
+
+      // ── Step 3: Create MPT issuance (quantity token) ──────────────────────────
+      setInvResult('Creating quantity token (MPT)...');
+
+      const mptMeta: InventoryMPTMeta = {
+        t:    INV_QTY_TYPE,
+        nft:  nftId,
+        pn:   invPartNumber,
+        unit: invUnit,
+      };
+
+      const mptCreateTx: any = {
+        TransactionType:  'MPTokenIssuanceCreate',
+        Account:          wallet.classicAddress,
+        MPTokenMetadata:  xrpl.convertStringToHex(JSON.stringify(mptMeta)),
+        MaximumAmount:    BULK_MPT_MAX,
+        AssetScale:       0,
+        TransferFee:      0,
+        Flags:            0,
+      };
+
+      const preparedMPT = await client.autofill(mptCreateTx);
+      preparedMPT.LastLedgerSequence = currentLedger + 20;
+      const signedMPT   = wallet.sign(preparedMPT);
+      const mptResult   = await client.submitAndWait(signedMPT.tx_blob);
+
+      if (
+        typeof mptResult.result.meta === 'object' &&
+        mptResult.result.meta.TransactionResult !== 'tesSUCCESS'
+      ) {
+        throw new Error('MPT creation failed: ' + mptResult.result.meta.TransactionResult);
+      }
+
+      const mptMeta2 = mptResult.result.meta as any;
+      let mptIssuanceId = '';
+      for (const node of mptMeta2.AffectedNodes || []) {
+        if (node.CreatedNode?.LedgerEntryType === 'MPTokenIssuance') {
+          mptIssuanceId = node.CreatedNode.NewFields?.MPTokenIssuanceID
+            || node.CreatedNode.LedgerIndex
+            || '';
+          break;
+        }
+      }
+      if (!mptIssuanceId) throw new Error('Could not extract MPTokenIssuanceID from MPT creation');
+      console.log('✅ MPT created:', mptIssuanceId);
+
+      // ── Step 4: Mint initial quantity to self ─────────────────────────────────
+      setInvResult(`Minting initial quantity (${invInitialQty} ${invUnit})...`);
+
+      const authTx: any = {
+        TransactionType:   'MPTokenAuthorize',
+        Account:           wallet.classicAddress,
+        MPTokenIssuanceID: mptIssuanceId,
+      };
+      const preparedAuth = await client.autofill(authTx);
+      preparedAuth.LastLedgerSequence = currentLedger + 20;
+      const signedAuth   = wallet.sign(preparedAuth);
+      await client.submitAndWait(signedAuth.tx_blob);
+
+      const mintQtyTx: any = {
+        TransactionType: 'Payment',
+        Account:         wallet.classicAddress,
+        Destination:     wallet.classicAddress,
+        Amount: {
+          mpt_issuance_id: mptIssuanceId,
+          value:           invInitialQty,
+        },
+      };
+      const preparedQty = await client.autofill(mintQtyTx);
+      preparedQty.LastLedgerSequence = currentLedger + 20;
+      const signedQty   = wallet.sign(preparedQty);
+      const qtyResult   = await client.submitAndWait(signedQty.tx_blob);
+
+      if (
+        typeof qtyResult.result.meta === 'object' &&
+        qtyResult.result.meta.TransactionResult !== 'tesSUCCESS'
+      ) {
+        throw new Error('Initial quantity mint failed: ' + qtyResult.result.meta.TransactionResult);
+      }
+      console.log('✅ Initial quantity minted:', invInitialQty, invUnit);
+
+      // ── Step 5: Re-upload vendor doc with token IDs ───────────────────────────
+      const finalVendorDoc: VendorInventoryDoc = {
+        ...vendorDoc,
+        nftId,
+        mptIssuanceId,
+        updatedAt: Math.floor(Date.now() / 1000),
+      };
+      const finalVendorUri = await uploadVendorInventoryDoc(finalVendorDoc, wallet);
+
+      // ── Step 6: Save to local state ───────────────────────────────────────────
+      const newItem: InventoryItemV2 = {
+        id:              Date.now().toString(),
+        nftId,
+        mptIssuanceId,
+        partNumber:      invPartNumber,
+        name:            invName,
+        shortDescription: (invShortDesc || invDesc).substring(0, 60),
+        category:        invCategory,
+        familyCode:      invFamilyCode,
+        productBrand:    invBrand,
+        competitiveFlag: invCompetitiveFlag,
+        weight:          invWeight,
+        department:      invDepartment,
+        productionPlant: invPlant,
+        status:          'active',
+        trackingMode:    'bulk',
+        parentNFTId:     '',
+        version:         1,
+        listPrice:       invUnitPrice,
+        priceCurrency:   invPriceCurrency,
+        vendorUri:       finalVendorUri,
+        sharedUri:       '',
+        quantityOnHand:  parseInt(invInitialQty),
+        unit:            invUnit,
+        dateAdded:       new Date().toLocaleDateString(),
+        dateUpdated:     new Date().toLocaleDateString(),
+      };
+
+      const updatedV2 = [...savedInventoryV2, newItem];
+      setSavedInventoryV2(updatedV2);
+      localStorage.setItem('savedInventoryV2', JSON.stringify(updatedV2));
+
+      setInvResult(
+        `✅ Inventory Item Created!\n` +
+        `NFT ID: ${nftId}\n` +
+        `MPT ID: ${mptIssuanceId}\n` +
+        `Vendor URI: ${finalVendorUri}\n` +
+        `Initial Qty: ${invInitialQty} ${invUnit}`
+      );
+
+      // Reset form
+      setInvPartNumber('');  setInvName('');         setInvShortDesc('');
+      setInvCategory('');    setInvFamilyCode('');   setInvBrand('');
+      setInvWeight('');      setInvPlant('');        setInvDepartment('');
+      setInvCompetitiveFlag(false);
+      setInvUnitPrice('');   setInvPriceCurrency('USD');
+      setInvEffectiveDate(''); setInvExpiresDate('');
+      setInvUnitCost('');    setInvCostCurrency('USD');
+      setInvSupplierCode(''); setInvSupplierName('');
+      setInvInitialQty('');  setInvUnit('ea');
+      setInvPricingFile(null); setInvDesignFile(null);
+      setInvBomFile(null);   setInvUsageFile(null);
+      setInvDesc('');
+
+    } catch (err: any) {
+      console.error('generateInventoryV2 failed:', err);
+      setInvResult('Error: ' + err.message);
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Task 3.1d — fetchVendorInventoryV2
+  // ─────────────────────────────────────────────────────────────────────────────
+  const fetchVendorInventoryV2 = async (
+    vendorAddress: string
+  ): Promise<{ v2: InventoryItemV2[]; v1: InventoryItem[] }> => {
+    const v2Items: InventoryItemV2[] = [];
+    const v1Items: InventoryItem[]   = [];
+
+    try {
+      const client = await getXRPLClient();
+
+      const nftResp = await client.request({
+        command:      'account_nfts',
+        account:      vendorAddress,
+        ledger_index: 'validated',
+      }) as AccountNFTsResponse;
+
+      const inventoryNFTs = nftResp.result.account_nfts.filter(
+        (nft: xrpl.AccountNFToken) => nft.NFTokenTaxon === INV_NFT_TAXON
+      );
+
+      for (const nft of inventoryNFTs) {
+        let nftMeta: InventoryNFTMeta | null = null;
+
+        try {
+          const txResp = await client.request({
+            command:      'account_tx',
+            account:      vendorAddress,
+            ledger_index_min: -1,
+            ledger_index_max: -1,
+            limit:        400,
+          });
+
+          for (const tx of txResp.result.transactions || []) {
+            const txObj = (tx as any).tx_json || (tx as any).tx || {};
+            if (txObj.TransactionType !== 'NFTokenMint') continue;
+
+            const mintedId = extractNFTokenID((tx as any).meta || (tx as any).metaData);
+            if (mintedId !== nft.NFTokenID) continue;
+
+            for (const m of txObj.Memos || []) {
+              try {
+                const memoType = xrpl.convertHexToString(m.Memo?.MemoType || '');
+                if (memoType !== INV_MEMO_TYPE) continue;
+                const memoData = xrpl.convertHexToString(m.Memo?.MemoData || '');
+                nftMeta = JSON.parse(memoData) as InventoryNFTMeta;
+                break;
+              } catch { /* skip unparseable memo */ }
+            }
+            break;
+          }
+        } catch (e) {
+          console.error('Failed to scan mint tx for NFT', nft.NFTokenID, e);
+        }
+
+        if (nftMeta && nftMeta.t === INV_META_TYPE) {
+          let quantityOnHand = 0;
+          let mptIssuanceId  = '';
+          let unit: UnitOfMeasure = 'ea';
+
+          try {
+            const mptResp = await client.request({
+              command:      'account_objects',
+              account:      vendorAddress,
+              type:         'mptoken',
+              ledger_index: 'validated',
+            });
+
+            for (const obj of mptResp.result.account_objects as any[]) {
+              try {
+                const meta = JSON.parse(
+                  xrpl.convertHexToString(obj.MPTokenMetadata || '')
+                ) as InventoryMPTMeta;
+                if (meta.t === INV_QTY_TYPE && meta.nft === nft.NFTokenID) {
+                  mptIssuanceId  = obj.MPTokenIssuanceID || '';
+                  quantityOnHand = parseInt(obj.MPTAmount || '0', 10);
+                  unit           = meta.unit as UnitOfMeasure;
+                  break;
+                }
+              } catch { /* skip */ }
+            }
+          } catch (e) {
+            console.error('Failed to fetch MPT for NFT', nft.NFTokenID, e);
+          }
+
+          v2Items.push({
+            id:               nft.NFTokenID,
+            nftId:            nft.NFTokenID,
+            mptIssuanceId,
+            partNumber:       nftMeta.pn,
+            name:             nftMeta.nm,
+            shortDescription: nftMeta.desc,
+            category:         nftMeta.cat,
+            familyCode:       nftMeta.fc,
+            productBrand:     nftMeta.brand,
+            competitiveFlag:  nftMeta.cf,
+            weight:           nftMeta.wt,
+            department:       nftMeta.dept,
+            productionPlant:  nftMeta.plant,
+            status:           nftMeta.st,
+            trackingMode:     nftMeta.tm,
+            parentNFTId:      nftMeta.parent,
+            version:          nftMeta.v,
+            listPrice:        nftMeta.lp,
+            priceCurrency:    nftMeta.lc,
+            vendorUri:        nftMeta.vu,
+            sharedUri:        nftMeta.su || '',
+            quantityOnHand,
+            unit,
+            dateAdded:        'On-chain',
+            dateUpdated:      'On-chain',
+          });
+
+        } else if (nft.URI) {
+          try {
+            const ipfsUri = xrpl.convertHexToString(nft.URI);
+            const data    = await fetchFromIPFS(ipfsUri);
+            v1Items.push({
+              id:          nft.NFTokenID,
+              nftId:       nft.NFTokenID,
+              ipfsUri,
+              dateAdded:   'Unknown',
+              ...data,
+            });
+          } catch (e) {
+            console.error('Failed to load V1 inventory item', nft.NFTokenID, e);
+          }
+        }
+      }
+
+      console.log(
+        `fetchVendorInventoryV2: ${v2Items.length} V2 items, ${v1Items.length} V1 items for ${vendorAddress}`
+      );
+    } catch (err) {
+      console.error('fetchVendorInventoryV2 error:', err);
+    }
+
+    return { v2: v2Items, v1: v1Items };
   };
 
   const sortInventoryNewestFirst = (items: InventoryItem[]) => items.sort((a, b) => parseInt(b.id) - parseInt(a.id));
@@ -1526,6 +2324,10 @@ const getUpdatablePOs = () => {
     if (savedItems) try { setItems(JSON.parse(savedItems)); } catch { setItems([]); }
         const savedInventoryData = localStorage.getItem('savedInventory');
     if (savedInventoryData) try { setSavedInventory(JSON.parse(savedInventoryData)); } catch { setSavedInventory([]); }
+    
+    // Add inside the large useEffect that loads localStorage (near the savedInventoryData block)
+    const savedInventoryV2Data = localStorage.getItem('savedInventoryV2');
+    if (savedInventoryV2Data) try { setSavedInventoryV2(JSON.parse(savedInventoryV2Data)); } catch { setSavedInventoryV2([]); }
     
     setHydrated(true);
 
@@ -1630,6 +2432,138 @@ const getUpdatablePOs = () => {
   const deriveEncryptionKeyWithPeer = (myWallet: any, theirPublicKeyHex: string): string => {
     return deriveSharedSecret(myWallet.privateKey, theirPublicKeyHex);
   };
+
+  // ─────────────────────────────────────────────────────────────────────────────
+// Task 3.1b — Two-Tier IPFS Upload Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * uploadVendorInventoryDoc
+ * Encrypts the vendor-only inventory document with the vendor's self-encryption
+ * key (ECDH of own public key with own public key — only the vendor can reproduce
+ * this key) and uploads the ciphertext to IPFS via Pinata.
+ *
+ * @param doc      - Full VendorInventoryDoc object
+ * @param wallet   - Vendor's xrpl.Wallet (needs publicKey + privateKey)
+ * @returns        - IPFS URI: ipfs://Qm...
+ */
+const uploadVendorInventoryDoc = async (
+  doc: VendorInventoryDoc,
+  wallet: xrpl.Wallet
+): Promise<string> => {
+  // Derive self-encryption key: ECDH(myPub, myPub) → deterministic key
+  // Only this wallet can reproduce this key
+  const encryptionKey = deriveSelfEncryptionKey(wallet);
+
+  const ipfsUri = await uploadEncryptedToIPFS(doc, encryptionKey);
+
+  console.log(`✅ Vendor inventory doc uploaded: ${ipfsUri}`);
+  return ipfsUri;
+};
+
+/**
+ * uploadSharedInventoryDoc
+ * Encrypts the customer-shared inventory document with a key derived from the
+ * vendor's public key alone (ECDH of vendorPubKey with vendorPubKey).
+ *
+ * Decryption by customer:
+ *   const decryptionKey = deriveSharedSecret(vendorPubKey, vendorPubKey)
+ * The vendor's public key is available from their DID document (vm field),
+ * so any linked customer who has resolved the vendor's DID can decrypt.
+ *
+ * @param doc          - SharedInventoryDoc object (no cost/supplier data)
+ * @param vendorWallet - Vendor's xrpl.Wallet (needs publicKey for key derivation)
+ * @returns            - IPFS URI: ipfs://Qm...
+ */
+const uploadSharedInventoryDoc = async (
+  doc: SharedInventoryDoc,
+  vendorWallet: xrpl.Wallet
+): Promise<string> => {
+  // Derive shared key from vendor's own public key.
+  // Any party with the vendor's public key can derive this same key:
+  //   const decryptionKey = deriveSharedSecret(vendorPubKey, vendorPubKey)
+  const encryptionKey = deriveSharedSecret(vendorWallet.publicKey, vendorWallet.publicKey);
+
+  const ipfsUri = await uploadEncryptedToIPFS(doc, encryptionKey);
+
+  console.log(`✅ Shared inventory doc uploaded: ${ipfsUri}`);
+  return ipfsUri;
+};
+
+/**
+ * fetchVendorInventoryDoc
+ * Fetches and decrypts a VendorInventoryDoc from IPFS using the vendor's
+ * self-encryption key. Only callable by the vendor (requires their wallet).
+ *
+ * @param uri    - IPFS URI: ipfs://Qm...
+ * @param wallet - Vendor's xrpl.Wallet
+ * @returns      - Decrypted VendorInventoryDoc
+ */
+const fetchVendorInventoryDoc = async (
+  uri: string,
+  wallet: xrpl.Wallet
+): Promise<VendorInventoryDoc> => {
+  const encryptionKey = deriveSelfEncryptionKey(wallet);
+  const hash = uri.replace('ipfs://', '');
+  const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${hash}`;
+
+  const response = await fetch(gatewayUrl, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch vendor inventory doc from IPFS: ${response.status}`);
+  }
+
+  const { encryptedData } = await response.json();
+  if (!encryptedData) {
+    throw new Error('No encryptedData field in IPFS response');
+  }
+
+  const decrypted = CryptoJS.AES.decrypt(encryptedData, encryptionKey).toString(CryptoJS.enc.Utf8);
+  if (!decrypted) {
+    throw new Error('Decryption failed — wrong key or corrupted data');
+  }
+
+  return JSON.parse(decrypted) as VendorInventoryDoc;
+};
+
+/**
+ * fetchSharedInventoryDoc
+ * Fetches and decrypts a SharedInventoryDoc from IPFS using the ECDH key
+ * derived from the vendor's public key. Callable by any linked customer who
+ * has the vendor's public key (available from their DID document).
+ *
+ * @param uri          - IPFS URI: ipfs://Qm...
+ * @param vendorPubKey - Vendor's Ed25519 public key hex (from DID document vm field)
+ * @returns            - Decrypted SharedInventoryDoc
+ */
+const fetchSharedInventoryDoc = async (
+  uri: string,
+  vendorPubKey: string
+): Promise<SharedInventoryDoc> => {
+  // Mirror of uploadSharedInventoryDoc key derivation:
+  //   const decryptionKey = deriveSharedSecret(vendorPubKey, vendorPubKey)
+  // The vendor's public key is deterministic — any party with it gets the same key.
+  const encryptionKey = deriveSharedSecret(vendorPubKey, vendorPubKey);
+  const hash = uri.replace('ipfs://', '');
+  const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${hash}`;
+
+  const response = await fetch(gatewayUrl, { cache: 'no-store' });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch shared inventory doc from IPFS: ${response.status}`);
+  }
+
+  const { encryptedData } = await response.json();
+  if (!encryptedData) {
+    throw new Error('No encryptedData field in IPFS response');
+  }
+
+  const decrypted = CryptoJS.AES.decrypt(encryptedData, encryptionKey).toString(CryptoJS.enc.Utf8);
+  if (!decrypted) {
+    throw new Error('Decryption failed — wrong key or corrupted data');
+  }
+
+  return JSON.parse(decrypted) as SharedInventoryDoc;
+};
+
   // ===== DID HELPERS (Phase 1A) =====
   const buildDIDDocument = (publicKey: string, profileUri: string, catalogUri?: string): string => {
     const doc: any = {
@@ -2703,7 +3637,38 @@ const addLinkedVendorByDID = async () => {
             {inventorySubTab === 'list' && (
               <div>
                 <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Your Inventory</h3>
-                {savedInventory.length === 0 ? <p>No inventory items added yet.</p> : (
+                {savedInventoryV2.length === 0 ? <p>No V2 inventory items added yet.</p> : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '30px' }}>
+                    <thead>
+                      <tr style={{ background: '#FFF3E0' }}>
+                        <th style={{ padding: '10px' }}>Part Number</th>
+                        <th style={{ padding: '10px' }}>Name</th>
+                        <th style={{ padding: '10px' }}>Category</th>
+                        <th style={{ padding: '10px' }}>Department</th>
+                        <th style={{ padding: '10px' }}>List Price</th>
+                        <th style={{ padding: '10px' }}>Qty on Hand</th>
+                        <th style={{ padding: '10px' }}>Status</th>
+                        <th style={{ padding: '10px' }}>Date Added</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {savedInventoryV2.map(item => (
+                        <tr key={item.id}>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.partNumber}</td>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.name}</td>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.category}</td>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.department}</td>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.listPrice} {item.priceCurrency}</td>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.quantityOnHand} {item.unit}</td>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.status}</td>
+                          <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{item.dateAdded}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <h4 style={{ color: '#F2B04A', marginBottom: '10px' }}>Legacy Items</h4>
+                {savedInventory.length === 0 ? <p>No legacy inventory items.</p> : (
                   <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ background: '#FFF3E0' }}>
@@ -2754,12 +3719,87 @@ const addLinkedVendorByDID = async () => {
             {inventorySubTab === 'add' && (
               <div>
                 <h3 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '20px' }}>Add New Inventory Item</h3>
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Part Number</label>
+                <input value={invPartNumber} onChange={(e) => setInvPartNumber(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
                 <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Name</label>
                 <input value={invName} onChange={(e) => setInvName(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Short Description <span style={{ fontWeight: 'normal', color: '#999' }}>({invShortDesc.length}/60)</span></label>
+                <input value={invShortDesc} onChange={(e) => setInvShortDesc(e.target.value.substring(0, 60))} maxLength={60} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Full Description</label>
+                <textarea value={invDesc} onChange={(e) => setInvDesc(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', height: '100px', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Category</label>
+                <input value={invCategory} onChange={(e) => setInvCategory(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Family Code</label>
+                <input value={invFamilyCode} onChange={(e) => setInvFamilyCode(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Brand</label>
+                <input value={invBrand} onChange={(e) => setInvBrand(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
                 <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Department</label>
                 <input value={invDepartment} onChange={(e) => setInvDepartment(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Description</label>
-                <textarea value={invDesc} onChange={(e) => setInvDesc(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', height: '100px', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Production Plant</label>
+                <input value={invPlant} onChange={(e) => setInvPlant(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Weight</label>
+                <input value={invWeight} onChange={(e) => setInvWeight(e.target.value)} placeholder="e.g. 0.25kg" style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+                  <input type="checkbox" id="invCompetitiveFlag" checked={invCompetitiveFlag} onChange={(e) => setInvCompetitiveFlag(e.target.checked)} style={{ width: '20px', height: '20px', cursor: 'pointer' }} />
+                  <label htmlFor="invCompetitiveFlag" style={{ color: '#F2B04A', fontWeight: 'bold', cursor: 'pointer' }}>Competitive Flag</label>
+                </div>
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>List Price</label>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
+                  <input value={invUnitPrice} onChange={(e) => setInvUnitPrice(e.target.value)} placeholder="0.00" style={{ flex: 1, padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+                  <select value={invPriceCurrency} onChange={(e) => setInvPriceCurrency(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', background: 'white', cursor: 'pointer' }}>
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                    <option value="GBP">GBP</option>
+                  </select>
+                </div>
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Internal Cost <span style={{ fontWeight: 'normal', color: '#999' }}>(vendor only)</span></label>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
+                  <input value={invUnitCost} onChange={(e) => setInvUnitCost(e.target.value)} placeholder="0.00" style={{ flex: 1, padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+                  <select value={invCostCurrency} onChange={(e) => setInvCostCurrency(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', background: 'white', cursor: 'pointer' }}>
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                    <option value="GBP">GBP</option>
+                  </select>
+                </div>
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Supplier <span style={{ fontWeight: 'normal', color: '#999' }}>(vendor only)</span></label>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
+                  <input value={invSupplierCode} onChange={(e) => setInvSupplierCode(e.target.value)} placeholder="Supplier Code" style={{ flex: 1, padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+                  <input value={invSupplierName} onChange={(e) => setInvSupplierName(e.target.value)} placeholder="Supplier Name" style={{ flex: 1, padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+                </div>
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Initial Quantity</label>
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
+                  <input value={invInitialQty} onChange={(e) => setInvInitialQty(e.target.value)} placeholder="0" type="number" min="1" style={{ flex: 1, padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+                  <select value={invUnit} onChange={(e) => setInvUnit(e.target.value as UnitOfMeasure)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', background: 'white', cursor: 'pointer' }}>
+                    <option value="ea">ea</option>
+                    <option value="kg">kg</option>
+                    <option value="lb">lb</option>
+                    <option value="m">m</option>
+                    <option value="ft">ft</option>
+                    <option value="box">box</option>
+                  </select>
+                </div>
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Effective Date</label>
+                <input type="date" value={invEffectiveDate} onChange={(e) => setInvEffectiveDate(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
+                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Expires Date</label>
+                <input type="date" value={invExpiresDate} onChange={(e) => setInvExpiresDate(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
+
                 <h4 style={{ color: '#F2B04A', marginBottom: '10px' }}>Documents</h4>
                 <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Pricing File</label>
                 <input type="file" onChange={(e) => setInvPricingFile(e.target.files?.[0] || null)} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '15px' }} />
@@ -2769,7 +3809,8 @@ const addLinkedVendorByDID = async () => {
                 <input type="file" onChange={(e) => setInvBomFile(e.target.files?.[0] || null)} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '15px' }} />
                 <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Usage File</label>
                 <input type="file" onChange={(e) => setInvUsageFile(e.target.files?.[0] || null)} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '30px' }} />
-                <button onClick={generateInventory} style={{ display: 'block', margin: '0 auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+
+                <button onClick={generateInventoryV2} style={{ display: 'block', margin: '0 auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                   Generate
                 </button>
                 {invResult && <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', borderRadius: '15px', marginTop: '20px' }}>{invResult}</pre>}
