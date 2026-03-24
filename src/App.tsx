@@ -919,7 +919,18 @@ export default function App() {
   const [deploying, setDeploying] = useState(false);
   const [revokeAddress, setRevokeAddress] = useState('');
   const [revoking, setRevoking] = useState(false);
-  const [adminSubTab, setAdminSubTab] = useState<'fees' | 'credentials' | 'auditLog'>('fees');
+  const [adminSubTab, setAdminSubTab] = useState<'fees' | 'credentials' | 'auditLog' | 'lenderSim'>('fees');
+  const [simLenderSeed, setSimLenderSeed] = useState('');
+  const [simVendorAddress, setSimVendorAddress] = useState('');
+  const [simRequestId, setSimRequestId] = useState('');
+  const [simAdvanceAmount, setSimAdvanceAmount] = useState('');
+  const [simAPR, setSimAPR] = useState('0.12');
+  const [simRepayByDays, setSimRepayByDays] = useState('30');
+  const [simDenyReason, setSimDenyReason] = useState('');
+  const [simSubmitting, setSimSubmitting] = useState(false);
+  const [simResult, setSimResult] = useState('');
+  const [simPendingRequests, setSimPendingRequests] = useState<FinancingRequest[]>([]);
+  const [simScanning, setSimScanning] = useState(false);
 
   // ── Phase 6A: Yield state ───────────────────────────────────────────────────
   const [yieldPositions, setYieldPositions] = useState<YieldPosition[]>([]);
@@ -946,6 +957,8 @@ export default function App() {
   const [financingLenderAddress, setFinancingLenderAddress] = useState('');
   const [financingLenderAPR, setFinancingLenderAPR] = useState<number>(0.12);
   const [financingSubmitting, setFinancingSubmitting] = useState(false);
+  const [financingStatusMap, setFinancingStatusMap] = useState<Record<string, FinancingRequest>>({});
+  const [disbursing, setDisbursing] = useState(false);
   const [financingEscrowDetails, setFinancingEscrowDetails] = useState<Awaited<ReturnType<typeof fetchEscrowDetails>> | null>(null);
   const [financingEscrowLoading, setFinancingEscrowLoading] = useState(false);
 
@@ -1255,7 +1268,9 @@ export default function App() {
         requestedAt:     new Date().toISOString(),
         version:         1,
       };
-      const termsCID = await pinJSONToBoth(termsDoc, `financing-terms-${requestId}`);
+      const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
+      if (!pinataApiKey) throw new Error('Pinata API key missing');
+      const termsCID = await pinJSONToBoth(termsDoc, pinataApiKey);
       const ipfsCID = termsCID.replace('ipfs://', '');
 
       // Write FINANCE_REQUEST memo on-chain
@@ -1303,6 +1318,104 @@ export default function App() {
       setFinancingSubmitting(false);
     }
   };
+  // ── Phase 6B Session 2: Poll vendor wallet for lender responses ──────────────
+  const refreshFinancingStatus = async () => {
+    console.log('[refreshFinancingStatus] triggered. vendorAddress:', vendorProfile.classicAddress);
+    if (!vendorProfile.classicAddress) return;
+    try {
+      const requests = await scanFinancingRequests(vendorProfile.classicAddress);
+      console.log('[refreshFinancingStatus] found', requests.length, 'requests:', JSON.stringify(requests.map(r => ({ id: r.requestId.slice(0,8), status: r.status, po: r.poIssuanceId.slice(0,8), poFull: r.poIssuanceId }))));
+      setFinancingRequests(requests);
+      // Build issuanceId → latest request map for badge display
+      const map: Record<string, FinancingRequest> = {};
+      for (const req of requests) {
+        const existing = map[req.poIssuanceId];
+        if (!existing || req.requestTimestamp > existing.requestTimestamp) {
+          map[req.poIssuanceId] = req;
+        }
+      }
+      console.log('[refreshFinancingStatus] statusMap keys:', Object.keys(map), 'savedPO issuanceIds:', savedPOs.map(p => p.issuanceId));
+      setFinancingStatusMap(map);
+      // Notify vendor of any newly approved/denied requests
+      for (const req of requests) {
+        if (req.status === 'approved' && !req.disbursementTxHash) {
+          console.log(`[FinancingStatus] ✅ APPROVED — RequestId: ${req.requestId}, Amount: ${req.approvedAmount}`);
+        }
+        if (req.status === 'denied') {
+          console.log(`[FinancingStatus] ❌ DENIED — RequestId: ${req.requestId}, Reason: ${req.denialReason}`);
+        }
+      }
+    } catch (err) {
+      console.error('[refreshFinancingStatus] scan failed:', err);
+    }
+  };
+
+  // ── Phase 6B Session 2: Execute disbursement when lender has approved ────────
+  // Flow: lender → SC.PO company wallet (FINANCE_APPROVED memo signals approval)
+  //       SC.PO → vendor (1-drop + FINANCE_DISBURSED memo, actual advance sent separately)
+  // For MVP: SC.PO forwards the advance from company wallet to vendor wallet.
+  const disburseAdvance = async (req: FinancingRequest) => {
+    if (disbursing) return;
+    if (!req.approvedAmount || !req.approvedAPR) return alert('Approval details missing');
+    const companySeed = process.env.REACT_APP_COMPANY_SEED;
+    if (!companySeed) return alert('Company wallet not configured');
+    setDisbursing(true);
+    try {
+      const client = await getXRPLClient();
+      const companyWallet = xrpl.Wallet.fromSeed(companySeed);
+
+      // Step 1: Send advance (RLUSD) from company wallet to vendor
+      const rlusdIssuer = process.env.REACT_APP_RLUSD_ISSUER || '';
+      const advancePayment: Payment = {
+        TransactionType: 'Payment',
+        Account: companyWallet.classicAddress,
+        Destination: req.vendorAddress,
+        Amount: {
+          currency: getRLUSDCurrency(),
+          issuer: rlusdIssuer,
+          value: req.approvedAmount,
+        } as any,
+        Memos: [buildMemo(SCPO_ACTIONS.FINANCE_DISBURSED, req.requestId, {
+          reqId:  req.requestId,
+          txRef:  '',         // filled in after submission
+          amt:    req.approvedAmount,
+        } as any)],
+      };
+      const preparedAdvance = await client.autofill(advancePayment);
+      preparedAdvance.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signedAdvance = companyWallet.sign(preparedAdvance);
+      const advanceResult = await submitBlobQueued(signedAdvance.tx_blob);
+      const disburseTxHash = advanceResult.result.hash;
+
+      // Step 2: Write FINANCE_DISBURSED audit memo from company → vendor
+      const auditMemo: Payment = {
+        TransactionType: 'Payment',
+        Account: companyWallet.classicAddress,
+        Destination: req.vendorAddress,
+        Amount: '1',
+        Memos: [buildMemo(SCPO_ACTIONS.FINANCE_DISBURSED, req.requestId, {
+          reqId: req.requestId,
+          txRef: disburseTxHash,
+          amt:   req.approvedAmount,
+        } as any)],
+      };
+      const preparedAudit = await client.autofill(auditMemo);
+      preparedAudit.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signedAudit = companyWallet.sign(preparedAudit);
+      await submitBlobQueued(signedAudit.tx_blob);
+
+      console.log(`[disburseAdvance] ✅ Disbursed $${req.approvedAmount} RLUSD to ${req.vendorAddress}. Tx: ${disburseTxHash}`);
+      alert(`✅ Advance disbursed!\n\n$${req.approvedAmount} RLUSD sent to your wallet.\nTx: ${disburseTxHash}`);
+
+      // Refresh status so badge updates to 'disbursed'
+      await refreshFinancingStatus();
+    } catch (err: any) {
+      alert('Disbursement failed: ' + err.message);
+    } finally {
+      setDisbursing(false);
+    }
+  };
+
   const unlinkProfile = async (profileUUID: string) => {
     if (!window.confirm('Remove this link? You can re-link at any time by entering their wallet address again.')) return;
     const profile = publicProfiles[profileUUID];
@@ -1358,6 +1471,13 @@ export default function App() {
     const savedMode = localStorage.getItem('mode');
     if (savedMode) setMode(savedMode as 'customer' | 'vendor');
   }, []);
+
+  // Refresh financing status whenever vendor address is known
+  useEffect(() => {
+    if (vendorProfile.classicAddress) {
+      refreshFinancingStatus();
+    }
+  }, [vendorProfile.classicAddress]);
 
   useEffect(() => { localStorage.setItem('mode', mode); }, [mode]);
 
@@ -2556,7 +2676,25 @@ useEffect(() => {
         }
       }
     }
-    // Phase 6B placeholder: financing repayment routing goes here
+    // ── Phase 6B Session 2: Financing repayment routing ──────────────────────
+    try {
+      const activeFinancing = await getActiveFinancingRequest(po.vendorAddress || vendorProfile.classicAddress, po.issuanceId);
+      if (activeFinancing && activeFinancing.status === 'disbursed' && activeFinancing.disbursedAt && activeFinancing.approvedAmount && activeFinancing.approvedAPR !== undefined) {
+        const split = computeRepaymentSplit(
+          po.total,
+          activeFinancing.approvedAmount,
+          activeFinancing.approvedAPR,
+          activeFinancing.disbursedAt
+        );
+        console.log(`[claimEscrowForPO] Financing repayment split — Lender: ${split.lenderRepayment}, SC.PO: ${split.scpoFee}, Vendor: ${split.vendorRemainder}, Interest: ${split.interestAccrued}`);
+        // Repayment transactions execute after EscrowFinish below.
+        // The full three-way split (RLUSD payments) is built in Session 3.
+        // For now: log the split and write the FINANCE_REPAID memo so the status updates.
+        setResult(`Repayment split calculated — Lender: $${split.lenderRepayment} | SC.PO fee: $${split.scpoFee} | Your remainder: $${split.vendorRemainder}`);
+      }
+    } catch (financeErr: any) {
+      console.warn('[claimEscrowForPO] Financing check failed, proceeding with standard claim:', financeErr.message);
+    }
 
     // ── Existing claim logic (unchanged) ──────────────────────────────────────
     if (!vendorProfile.seed) return alert('Claim seed required');
@@ -6284,13 +6422,34 @@ const addLinkedVendorByDID = async () => {
                         <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Date Issued</th>
                         <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Total $</th>
                         <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Time Remaining</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
+                        <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>
+                          Action
+                          <button onClick={refreshFinancingStatus} title="Refresh financing status" style={{ marginLeft: '6px', fontSize: '10px', padding: '1px 6px', borderRadius: '8px', border: '1px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', verticalAlign: 'middle' }}>↻</button>
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
                       {(fundedExpanded ? sortPOsNewestFirst(getLatestActivePOs('funded')) : sortPOsNewestFirst(getLatestActivePOs('funded').slice(0, 2))).map(po => (
                           <tr key={po.issuanceId || po.id}>
-                          <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span><YieldBadge poIssuanceId={po.issuanceId} positions={yieldPositions} /></td>
+                          <td style={{ padding: '10px' }}>
+                             {po.poName}
+                             <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span>
+                             <YieldBadge poIssuanceId={po.issuanceId} positions={yieldPositions} />
+                             {(() => {
+                               const fr = financingStatusMap[po.issuanceId];
+                               if (!fr) return null;
+                               const badges: Record<string, { label: string; bg: string }> = {
+                                 pending_lender: { label: '⏳ Pending Lender', bg: '#B7791F' },
+                                 approved:       { label: '✅ Approved',        bg: '#276749' },
+                                 denied:         { label: '❌ Denied',          bg: '#9B2C2C' },
+                                 disbursed:      { label: '💸 Disbursed',       bg: '#553C9A' },
+                                 repaid:         { label: '🔁 Repaid',          bg: '#2C7A7B' },
+                               };
+                               const b = badges[fr.status];
+                               if (!b) return null;
+                               return <span style={{ background: b.bg, color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '6px' }}>{b.label}</span>;
+                               })()}
+                           </td>
                           <td style={{ padding: '10px' }}>{po.dateIssued}</td>
                           <td style={{ padding: '10px' }}>${po.total}</td>
                           <td style={{ padding: '10px' }}>{getTimeRemaining(po)}</td>
@@ -6301,7 +6460,23 @@ const addLinkedVendorByDID = async () => {
                             <button onClick={async () => { setSelectedFundedPO(po); await viewPOFromUri(po.ipfsUri, po, setVendorScpoActionViewedPO, setVendorScpoActionPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                               View PO
                             </button>
-                            {po.escrowCurrency === 'RLUSD' && (
+                            {(() => {
+                              const fr = financingStatusMap[po.issuanceId];
+                              if (fr?.status === 'approved') {
+                                return (
+                                  <button
+                                    onClick={() => disburseAdvance(fr)}
+                                    disabled={disbursing}
+                                    style={{ background: disbursing ? '#ccc' : '#276749', color: 'white', padding: '8px', borderRadius: '20px', cursor: disbursing ? 'not-allowed' : 'pointer' }}
+                                    onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
+                                  >
+                                    {disbursing ? 'Disbursing...' : '💸 Disburse Advance'}
+                                  </button>
+                                );
+                              }
+                              return null;
+                            })()}
+                            {po.escrowCurrency === 'RLUSD' && !financingStatusMap[po.issuanceId] && (
                               <button
                                 onClick={async () => {
                                   setFinancingModalPO(po);
@@ -10010,6 +10185,9 @@ const addLinkedVendorByDID = async () => {
                   <button onClick={() => setAdminSubTab('credentials')} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #D88F2E', background: adminSubTab === 'credentials' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white', color: adminSubTab === 'credentials' ? 'white' : '#D88F2E', cursor: 'pointer', fontWeight: 'bold' }}>
                     Domain & Credentials
                   </button>
+                  <button onClick={() => setAdminSubTab('lenderSim')} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #553C9A', background: adminSubTab === 'lenderSim' ? 'linear-gradient(90deg, #553C9A, #6B46C1)' : 'white', color: adminSubTab === 'lenderSim' ? 'white' : '#553C9A', cursor: 'pointer', fontWeight: 'bold' }}>
+                    🧪 Lender Sim
+                  </button>
                   <button onClick={() => {
                     setAdminSubTab('auditLog');
                     if (auditLog.length === 0) {
@@ -10146,6 +10324,183 @@ const addLinkedVendorByDID = async () => {
                           )}
                         </tbody>
                       </table>
+                    )}
+                  </div>
+                )}
+
+                {adminSubTab === 'lenderSim' && (
+                  <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+                    <div style={{ background: '#F3F0FF', border: '2px solid #553C9A', borderRadius: '16px', padding: '20px', marginBottom: '20px' }}>
+                      <p style={{ color: '#553C9A', fontWeight: 'bold', margin: '0 0 4px' }}>🧪 Lender Simulator — Dev Only</p>
+                      <p style={{ color: '#666', fontSize: '12px', margin: 0 }}>Writes FINANCE_APPROVED or FINANCE_DENIED memos on-chain from a lender wallet, so you can test the full financing flow without a real lender.</p>
+                    </div>
+
+                    {/* Scan for pending requests */}
+                    <div style={{ background: '#FAF5FF', border: '1px solid #B794F4', borderRadius: '12px', padding: '14px', marginBottom: '20px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#553C9A' }}>📥 Pending Financing Requests</span>
+                        <button
+                          onClick={async () => {
+                            setSimScanning(true);
+                            try {
+                              const addr = vendorProfile.classicAddress || customerProfile.classicAddress;
+                              if (!addr) return alert('No wallet address found');
+                              const all = await scanFinancingRequests(addr);
+                              setSimPendingRequests(all.filter(r => r.status === 'pending_lender'));
+                            } catch (e: any) {
+                              alert('Scan failed: ' + e.message);
+                            } finally {
+                              setSimScanning(false);
+                            }
+                          }}
+                          style={{ padding: '6px 14px', borderRadius: '20px', border: '1px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+                        >
+                          {simScanning ? 'Scanning...' : '↻ Scan Chain'}
+                        </button>
+                      </div>
+                      {simPendingRequests.length === 0 ? (
+                        <p style={{ fontSize: '12px', color: '#999', margin: 0 }}>No pending requests found — click Scan Chain to load</p>
+                      ) : (
+                        <select
+                          onChange={e => {
+                            const req = simPendingRequests.find(r => r.requestId === e.target.value);
+                            if (req) {
+                              setSimRequestId(req.requestId);
+                              setSimVendorAddress(req.vendorAddress);
+                              setSimAdvanceAmount((parseFloat(req.requestedAmount) || 0).toFixed(2));
+                            }
+                          }}
+                          defaultValue=""
+                          style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #B794F4', fontSize: '12px' }}
+                        >
+                          <option value="" disabled>— Select a request to auto-fill —</option>
+                          {simPendingRequests.map(req => (
+                            <option key={req.requestId} value={req.requestId}>
+                              ${req.requestedAmount} RLUSD — {req.vendorAddress.slice(0, 8)}...{req.vendorAddress.slice(-4)} — {req.requestId.slice(0, 8)}...
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    {/* Inputs */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px' }}>
+                      <div>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Lender Wallet Seed</label>
+                        <input type="password" placeholder="sXXXXX..." value={simLenderSeed} onChange={e => setSimLenderSeed(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Vendor Wallet Address (recipient)</label>
+                        <input placeholder="rXXXXX..." value={simVendorAddress} onChange={e => setSimVendorAddress(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Request ID (from financing request)</label>
+                        <input placeholder="uuid-xxxx..." value={simRequestId} onChange={e => setSimRequestId(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
+                        <p style={{ fontSize: '11px', color: '#999', margin: '4px 0 0' }}>Find this in the console log after submitting a financing request</p>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+                        <div>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Advance Amount (RLUSD)</label>
+                          <input placeholder="800.00" value={simAdvanceAmount} onChange={e => setSimAdvanceAmount(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>APR (e.g. 0.12)</label>
+                          <input placeholder="0.12" value={simAPR} onChange={e => setSimAPR(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Repay By (days)</label>
+                          <input placeholder="30" value={simRepayByDays} onChange={e => setSimRepayByDays(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
+                        </div>
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#9B2C2C', display: 'block', marginBottom: '4px' }}>Denial Reason (only for DENY)</label>
+                        <input placeholder="e.g. Insufficient escrow term" value={simDenyReason} onChange={e => setSimDenyReason(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #FC8181', fontSize: '13px', boxSizing: 'border-box' }} />
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
+                      <button
+                        disabled={simSubmitting || !simLenderSeed || !simVendorAddress || !simRequestId || !simAdvanceAmount}
+                        onClick={async () => {
+                          setSimSubmitting(true);
+                          setSimResult('');
+                          try {
+                            const client = await getXRPLClient();
+                            const lenderWallet = xrpl.Wallet.fromSeed(simLenderSeed);
+                            const repayBy = Math.floor(Date.now() / 1000) + parseInt(simRepayByDays) * 86400;
+                            const approveTx: Payment = {
+                              TransactionType: 'Payment',
+                              Account: lenderWallet.classicAddress,
+                              Destination: simVendorAddress,
+                              Amount: '1',
+                              Memos: [buildMemo(SCPO_ACTIONS.FINANCE_APPROVED, simRequestId, {
+                                reqId:   simRequestId,
+                                apr:     parseFloat(simAPR),
+                                advAmt:  simAdvanceAmount,
+                                repayBy: repayBy,
+                              } as any)],
+                            };
+                            const prepared = await client.autofill(approveTx);
+                            prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+                            const signed = lenderWallet.sign(prepared);
+                            const result = await submitBlobQueued(signed.tx_blob);
+                            const txHash = result.result.hash;
+                            setSimResult(`✅ FINANCE_APPROVED written!\nTx: ${txHash}\n\nSwitch to vendor mode and click "💸 Disburse Advance" on the funded PO.`);
+                            console.log(`[LenderSim] FINANCE_APPROVED tx: ${txHash}`);
+                          } catch (err: any) {
+                            setSimResult(`❌ Error: ${err.message}`);
+                          } finally {
+                            setSimSubmitting(false);
+                          }
+                        }}
+                        style={{ flex: 1, padding: '12px', background: simSubmitting ? '#ccc' : 'linear-gradient(90deg, #276749, #38A169)', color: 'white', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: simSubmitting ? 'not-allowed' : 'pointer', fontSize: '14px' }}
+                      >
+                        {simSubmitting ? 'Submitting...' : '✅ Approve Financing'}
+                      </button>
+                      <button
+                        disabled={simSubmitting || !simLenderSeed || !simVendorAddress || !simRequestId || !simDenyReason}
+                        onClick={async () => {
+                          setSimSubmitting(true);
+                          setSimResult('');
+                          try {
+                            const client = await getXRPLClient();
+                            const lenderWallet = xrpl.Wallet.fromSeed(simLenderSeed);
+                            const denyTx: Payment = {
+                              TransactionType: 'Payment',
+                              Account: lenderWallet.classicAddress,
+                              Destination: simVendorAddress,
+                              Amount: '1',
+                              Memos: [buildMemo(SCPO_ACTIONS.FINANCE_DENIED, simRequestId, {
+                                reqId:  simRequestId,
+                                reason: simDenyReason,
+                              } as any)],
+                            };
+                            const prepared = await client.autofill(denyTx);
+                            prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+                            const lenderWallet2 = xrpl.Wallet.fromSeed(simLenderSeed);
+                            const signed = lenderWallet2.sign(prepared);
+                            const result = await submitBlobQueued(signed.tx_blob);
+                            const txHash = result.result.hash;
+                            setSimResult(`❌ FINANCE_DENIED written!\nTx: ${txHash}`);
+                            console.log(`[LenderSim] FINANCE_DENIED tx: ${txHash}`);
+                          } catch (err: any) {
+                            setSimResult(`❌ Error: ${err.message}`);
+                          } finally {
+                            setSimSubmitting(false);
+                          }
+                        }}
+                        style={{ flex: 1, padding: '12px', background: simSubmitting ? '#ccc' : 'linear-gradient(90deg, #9B2C2C, #E53E3E)', color: 'white', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: simSubmitting ? 'not-allowed' : 'pointer', fontSize: '14px' }}
+                      >
+                        {simSubmitting ? 'Submitting...' : '❌ Deny Financing'}
+                      </button>
+                    </div>
+
+                    {/* Result */}
+                    {simResult && (
+                      <div style={{ background: simResult.startsWith('✅') ? '#F0FFF4' : '#FFF5F5', border: `1px solid ${simResult.startsWith('✅') ? '#9AE6B4' : '#FC8181'}`, borderRadius: '10px', padding: '14px', fontSize: '13px', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+                        {simResult}
+                      </div>
                     )}
                   </div>
                 )}

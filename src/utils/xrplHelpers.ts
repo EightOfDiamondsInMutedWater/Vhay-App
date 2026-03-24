@@ -578,22 +578,12 @@ export const getPOCreationInfo = async (issuanceId: string): Promise<{ date: str
       d = new Date();
     }
 
-    // Also grab the txHash from PreviousTxnID for audit trail use (best effort)
-    let txHash = '';
-    try {
-      const issuanceResp = await client.request({
-        command: 'ledger_entry',
-        mpt_issuance: issuanceId,
-        ledger_index: 'validated'
-      } as any);
-      txHash = (issuanceResp.result as any).node?.PreviousTxnID || '';
-    } catch { /* txHash stays empty — non-critical */ }
-
     return {
       date: `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`,
-      txHash,
+      txHash: '',
     };
-  } catch {
+  } catch (e: any) {
+    console.warn('[getPOCreationInfo] ledger lookup failed for', issuanceId.slice(0, 8), ':', e?.message || e);
     return { date: new Date().toLocaleDateString(), txHash: '' };
   }
 };

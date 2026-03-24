@@ -328,7 +328,11 @@ export const scanFinancingRequests = async (
       limit: 400,
     });
 
-    for (const txEntry of resp.result.transactions || []) {
+    // Sort oldest-first so FINANCE_REQUEST is always processed before
+    // FINANCE_APPROVED/DENIED — account_tx returns newest-first by default
+    const sortedTxs = [...(resp.result.transactions || [])].reverse();
+
+    for (const txEntry of sortedTxs) {
       const tx = (txEntry as any).tx_json || (txEntry as any).tx || {};
       if (!tx?.Memos?.length) continue;
 
