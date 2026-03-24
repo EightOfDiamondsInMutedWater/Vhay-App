@@ -22,21 +22,18 @@ export const decodeTier = (hexType: string): string => {
 export const deployPermissionedDomain = async (client: xrpl.Client, platformWallet: xrpl.Wallet) => {
   const transaction = {
     TransactionType: 'PermissionedDomainSet',
-    Account: platformWallet.address,
+    Account: platformWallet.classicAddress,
     AcceptedCredentials: [
       {
         Credential: {
-          Issuer: platformWallet.address,
+          Issuer: platformWallet.classicAddress,
           CredentialType: SCPO_BASIC_HEX
         }
       }
     ]
   };
 
- const tx = await client.submitAndWait(transaction as any, {
-    autofill: true,
-    wallet: platformWallet
-  });
+ const tx = await submitQueued(transaction, platformWallet);
 
   const meta = tx.result.meta as any;
 
@@ -70,16 +67,13 @@ export const issueCredential = async (
 
   const transaction = {
     TransactionType: 'CredentialCreate',
-    Account: platformWallet.address,
+    Account: platformWallet.classicAddress,
     Subject: subjectAddress,
     CredentialType: credentialType,
     Expiration: expirationTime
   };
 
-  const tx = await client.submitAndWait(transaction as any, {
-    autofill: true,
-    wallet: platformWallet
-  });
+  const tx = await submitQueued(transaction, platformWallet);
 
   const meta = tx.result.meta as any;
   if (meta.TransactionResult !== 'tesSUCCESS') {
@@ -102,10 +96,7 @@ export const acceptCredential = async (
     CredentialType: credentialType
   };
 
-  const tx = await client.submitAndWait(transaction as any, {
-    autofill: true,
-    wallet: userWallet
-  });
+  const tx = await submitQueued(transaction, userWallet);
 
   const meta = tx.result.meta as any;
   if (meta.TransactionResult !== 'tesSUCCESS') {
@@ -122,15 +113,12 @@ export const revokeCredential = async (
 ) => {
   const transaction = {
     TransactionType: 'CredentialDelete',
-    Account: platformWallet.address,
+    Account: platformWallet.classicAddress,
     Subject: subjectAddress,
     CredentialType: credentialType
   };
 
-  const tx = await client.submitAndWait(transaction as any, {
-    autofill: true,
-    wallet: platformWallet
-  });
+  const tx = await submitQueued(transaction, platformWallet);
 
   const meta = tx.result.meta as any;
   if (meta.TransactionResult !== 'tesSUCCESS') {
@@ -156,7 +144,7 @@ export const checkAndRenewCredential = async (
     const credentials = (credsResp.result as any).account_objects || [];
 
     for (const cred of credentials) {
-      if (cred.Issuer === platformWallet.address && cred.CredentialType === credentialType) {
+      if (cred.Issuer === platformWallet.classicAddress && cred.CredentialType === credentialType) {
         // Credential exists — check if near expiry (within 30 days)
         if (cred.Expiration) {
           const rippleEpoch = 946684800;
@@ -168,7 +156,7 @@ export const checkAndRenewCredential = async (
             console.log('Credential near expiry, renewing...');
             await revokeCredential(client, platformWallet, userWallet.classicAddress, credentialType);
             await issueCredential(client, platformWallet, userWallet.classicAddress, credentialType);
-            await acceptCredential(client, userWallet, platformWallet.address, credentialType);
+            await acceptCredential(client, userWallet, platformWallet.classicAddress, credentialType);
             console.log('✅ Credential renewed');
             return 'renewed';
           }
@@ -183,7 +171,7 @@ export const checkAndRenewCredential = async (
 
   // No matching credential — issue new one
   await issueCredential(client, platformWallet, userWallet.classicAddress, credentialType);
-  await acceptCredential(client, userWallet, platformWallet.address, credentialType);
+  await acceptCredential(client, userWallet, platformWallet.classicAddress, credentialType);
   console.log('✅ New credential issued');
   return 'issued';
 };
@@ -227,6 +215,7 @@ export const validateCredential = async (
   // 3. Check if any credential matches the domain's accepted list
   for (const cred of credentials) {
     // Must be accepted (Flags & 0x10000)
+    console.log('[validateCredential] checking cred Flags:', cred.Flags, 'hex:', cred.Flags?.toString(16), 'accepted?', !!(cred.Flags & 0x00010000));
     if (!(cred.Flags & 0x00010000)) continue;
 
     // Check expiration
@@ -250,6 +239,8 @@ export const validateCredential = async (
     }
   }
 
+  console.log('[validateCredential] credentials found:', JSON.stringify(credentials));
+  console.log('[validateCredential] domain AcceptedCredentials:', JSON.stringify(domain.AcceptedCredentials));
   return { valid: false, reason: 'No matching credential found' };
 };
 
@@ -279,22 +270,200 @@ export const canCreatePO = async (
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 4.3 — XRPL Connection Resilience
+// Multi-endpoint failover with exponential backoff and health monitoring
+// ─────────────────────────────────────────────────────────────────────────────
+
+const XRPL_ENDPOINTS: string[] = process.env.REACT_APP_XRPL_NODES
+  ? process.env.REACT_APP_XRPL_NODES.split(',').map(s => s.trim()).filter(Boolean)
+  : ['wss://s.devnet.rippletest.net:51233'];
+
+const CONNECTION_TIMEOUT_MS = 20000;
+const MAX_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 1000;
+
 let xrplClient: xrpl.Client | null = null;
 let connectingPromise: Promise<xrpl.Client> | null = null;
+let currentEndpointIndex = 0;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const connectToEndpoint = async (endpoint: string): Promise<xrpl.Client> => {
+  const client = new xrpl.Client(endpoint, { connectionTimeout: CONNECTION_TIMEOUT_MS });
+  await client.connect();
+  client.on('disconnected', () => {
+    console.warn(`[XRPL] Disconnected from ${endpoint} — will reconnect on next request`);
+    if (xrplClient === client) {
+      xrplClient = null;
+      connectingPromise = null;
+    }
+  });
+  return client;
+};
 
 export const getXRPLClient = async (): Promise<xrpl.Client> => {
   if (xrplClient?.isConnected()) return xrplClient;
-  if (!connectingPromise) {
-    connectingPromise = (async () => {
-      const client = new xrpl.Client('wss://s.devnet.rippletest.net:51233', { connectionTimeout: 20000 });
-      await client.connect();
-      xrplClient = client;
-      connectingPromise = null;
-      return client;
-    })();
-  }
+  if (connectingPromise) return connectingPromise;
+
+  connectingPromise = (async () => {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const endpoint = XRPL_ENDPOINTS[currentEndpointIndex % XRPL_ENDPOINTS.length];
+      try {
+        if (attempt > 0) {
+          const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+          console.warn(`[XRPL] Retry ${attempt}/${MAX_RETRIES - 1} on ${endpoint} after ${delay}ms`);
+          await sleep(delay);
+        }
+        const client = await connectToEndpoint(endpoint);
+        console.log(`[XRPL] ✅ Connected to ${endpoint}`);
+        xrplClient = client;
+        connectingPromise = null;
+        return client;
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[XRPL] Failed to connect to ${endpoint}: ${err.message}`);
+        currentEndpointIndex = (currentEndpointIndex + 1) % XRPL_ENDPOINTS.length;
+      }
+    }
+
+    connectingPromise = null;
+    throw new Error(`[XRPL] All connection attempts failed. Last error: ${lastError?.message}`);
+  })();
+
   return connectingPromise;
 };
+
+export const resetXRPLClient = () => {
+  xrplClient = null;
+  connectingPromise = null;
+  currentEndpointIndex = 0;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 4.4 — Transaction Queue
+// Serializes XRPL submissions to prevent sequence number conflicts
+// Retries on transient failures with exponential backoff
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TX_MAX_RETRIES = 3;
+const TX_RETRY_BASE_DELAY_MS = 1000;
+
+// Transient error codes that are safe to retry
+const RETRYABLE_ERRORS = new Set([
+  'tefPAST_SEQ',
+  'terPRE_SEQ',
+  'terQUEUED',
+  'telINSUF_FEE_P',
+  'tooBusy',
+  'slowDown',
+  'noNetwork',
+]);
+
+let txQueuePromise: Promise<any> = Promise.resolve();
+
+export const submitQueued = async (
+  transaction: any,
+  wallet: xrpl.Wallet
+): Promise<any> => {
+  // Chain onto the existing queue — each submission waits for the previous to complete
+  const result = txQueuePromise.then(async () => {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < TX_MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = TX_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+          console.warn(`[TxQueue] Retry ${attempt}/${TX_MAX_RETRIES - 1} after ${delay}ms`);
+          await sleep(delay);
+        }
+        const client = await getXRPLClient();
+        const tx = await client.submitAndWait(transaction as any, {
+          autofill: true,
+          wallet,
+        });
+        const meta = tx.result.meta as any;
+        const resultCode: string = meta?.TransactionResult || '';
+        if (resultCode !== 'tesSUCCESS') {
+          if (RETRYABLE_ERRORS.has(resultCode)) {
+            console.warn(`[TxQueue] Retryable error ${resultCode} on attempt ${attempt + 1}`);
+            lastError = new Error(resultCode);
+            continue;
+          }
+          throw new Error(`Transaction failed: ${resultCode}`);
+        }
+        console.log(`[TxQueue] ✅ ${resultCode} — ${tx.result.hash}`);
+        return tx;
+      } catch (err: any) {
+        const isRetryable = RETRYABLE_ERRORS.has(err.message) ||
+          err.message?.includes('noNetwork') ||
+          err.message?.includes('slowDown') ||
+          err.message?.includes('tooBusy');
+        if (isRetryable && attempt < TX_MAX_RETRIES - 1) {
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastError || new Error('[TxQueue] Max retries exceeded');
+  });
+
+  // Update the queue tail — next submission will wait for this one
+  txQueuePromise = result.catch(() => {});
+  return result;
+};
+
+export const submitBlobQueued = async (
+  txBlob: string
+): Promise<any> => {
+  const result = txQueuePromise.then(async () => {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt < TX_MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = TX_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+          console.warn(`[TxQueue] Blob retry ${attempt}/${TX_MAX_RETRIES - 1} after ${delay}ms`);
+          await sleep(delay);
+        }
+        const client = await getXRPLClient();
+        const tx = await client.submitAndWait(txBlob);
+        const meta = (tx.result.meta as any);
+        const resultCode: string = meta?.TransactionResult || '';
+        if (resultCode !== 'tesSUCCESS') {
+          if (RETRYABLE_ERRORS.has(resultCode)) {
+            console.warn(`[TxQueue] Retryable error ${resultCode} on attempt ${attempt + 1}`);
+            lastError = new Error(resultCode);
+            continue;
+          }
+          throw new Error(`Transaction failed: ${resultCode}`);
+        }
+        console.log(`[TxQueue] ✅ ${resultCode} — ${tx.result.hash}`);
+        return tx;
+      } catch (err: any) {
+        const isRetryable = RETRYABLE_ERRORS.has(err.message) ||
+          err.message?.includes('noNetwork') ||
+          err.message?.includes('slowDown') ||
+          err.message?.includes('tooBusy');
+        if (isRetryable && attempt < TX_MAX_RETRIES - 1) {
+          lastError = err;
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    throw lastError || new Error('[TxQueue] Max retries exceeded');
+  });
+
+  txQueuePromise = result.catch(() => {});
+  return result;
+};
+
 
 // Helper 1: Get all MPTs you created (your purchase orders)
 export const getMyMPTs = async (address: string) => {
@@ -370,13 +539,81 @@ export const getVendorAuthorizedPOs = async (vendorAddress: string) => {
   });
   return response.result.account_objects;
 };
+// ─────────────────────────────────────────────────────────────────────────────
+// PO Creation Date Lookup
+// For a given issuanceId, looks up the MPTokenIssuance ledger entry to get
+// the PreviousTxnID, then fetches that transaction to get the close_time_iso.
+// This is the same reliable pattern used by the working scanFeeEntries function.
+// ─────────────────────────────────────────────────────────────────────────────
+export const getPOCreationDate = async (issuanceId: string): Promise<string> => {
+  const info = await getPOCreationInfo(issuanceId);
+  return info.date;
+};
+export const getPOCreationInfo = async (issuanceId: string): Promise<{ date: string; txHash: string }> => {
+  try {
+    const client = await getXRPLClient();
+    // The first 4 bytes of the MPTokenIssuanceID are the ledger sequence (big-endian)
+    // where the MPTokenIssuanceCreate tx was included. This lets us look up the exact
+    // ledger close time directly — no scanning, no pagination, always correct.
+    const ledgerSequence = parseInt(issuanceId.slice(0, 8), 16);
+    const rippleEpoch = 946684800;
+
+    const ledgerResp = await client.request({
+      command: 'ledger',
+      ledger_index: ledgerSequence,
+      transactions: false,
+      expand: false,
+    } as any);
+
+    const ledgerData = (ledgerResp.result as any).ledger || (ledgerResp.result as any).closed?.ledger;
+    const closeTimeIso = ledgerData?.close_time_iso || null;
+    const closeTimeRipple = ledgerData?.close_time ?? null;
+
+    let d: Date;
+    if (closeTimeIso) {
+      d = new Date(closeTimeIso);
+    } else if (closeTimeRipple !== null) {
+      d = new Date((closeTimeRipple + rippleEpoch) * 1000);
+    } else {
+      d = new Date();
+    }
+
+    // Also grab the txHash from PreviousTxnID for audit trail use (best effort)
+    let txHash = '';
+    try {
+      const issuanceResp = await client.request({
+        command: 'ledger_entry',
+        mpt_issuance: issuanceId,
+        ledger_index: 'validated'
+      } as any);
+      txHash = (issuanceResp.result as any).node?.PreviousTxnID || '';
+    } catch { /* txHash stays empty — non-critical */ }
+
+    return {
+      date: `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`,
+      txHash,
+    };
+  } catch {
+    return { date: new Date().toLocaleDateString(), txHash: '' };
+  }
+};
 
 export const getEscrowsForPO = async (buyerAddress: string, issuanceId: string) => {
   const client = await getXRPLClient();
   const escrows = await getMyEscrows(buyerAddress);
   return escrows.filter((escrow: any) => {
-    const memo = escrow.Memos?.[0]?.Memo?.MemoData || '';
-    return memo.includes(issuanceId);
+    const memoObj = escrow.Memos?.[0]?.Memo || {};
+    // Try v1 standard envelope first
+    try {
+      const memoType = xrpl.convertHexToString(memoObj.MemoType || '');
+      if (memoType === 'SCPO') {
+        const envelope = JSON.parse(xrpl.convertHexToString(memoObj.MemoData || ''));
+        return envelope?.r === issuanceId;
+      }
+    } catch { /* fall through to legacy */ }
+    // Legacy fallback — pre-standardization SCPO_ESCROW memos
+    const rawData = xrpl.convertHexToString(memoObj.MemoData || '');
+    return rawData.includes(issuanceId);
   });
 };
 // ============================================================
@@ -467,10 +704,7 @@ export const setupRLUSDTrustLine = async (
       }
     };
 
-    const result = await client.submitAndWait(trustSetTx as any, {
-      autofill: true,
-      wallet: userWallet
-    });
+    const result = await submitQueued(trustSetTx, userWallet);
 
     const meta = result.result.meta as any;
     if (meta.TransactionResult === 'tesSUCCESS') {
@@ -533,4 +767,251 @@ export const canUseRLUSDEscrow = async (
     vendorTrustLine: true,
     buyerBalance: buyerCheck.balance
   };
+};
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 4.1 — Fee Scanner
+// Reconstructs FeeEntry[] from on-chain FEE_PAYMENT memos on the company wallet
+// Replaces localStorage.getItem('feeEntries') as the source of truth
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface FeeEntry { date: string; poName: string; amount: string; txHash: string; }
+
+export const scanFeeEntries = async (companyWallet: string): Promise<FeeEntry[]> => {
+  if (!companyWallet) return [];
+  const entries: FeeEntry[] = [];
+  try {
+    const client = await getXRPLClient();
+    const resp = await client.request({
+      command: 'account_tx',
+      account: companyWallet,
+      ledger_index_min: -1,
+      ledger_index_max: -1,
+      limit: 400,
+    });
+    for (const tx of resp.result.transactions || []) {
+      try {
+        const txObj = (tx as any).tx_json || (tx as any).tx || {};
+        if (txObj.TransactionType !== 'Payment') continue;
+        const memos = txObj.Memos || [];
+        for (const m of memos) {
+          const memo = m.Memo || {};
+          if (!memo.MemoType || !memo.MemoData) continue;
+          try {
+            const memoType = xrpl.convertHexToString(memo.MemoType);
+            if (memoType !== 'SCPO') continue;
+            const envelope = JSON.parse(xrpl.convertHexToString(memo.MemoData));
+            if (envelope?.a !== 'FEE_PAYMENT') continue;
+            // Reconstruct FeeEntry from envelope
+            const p = envelope.p || {};
+            const txMeta = (tx as any).tx_json || (tx as any).tx || {};
+            const hash = txMeta.hash || (tx as any).hash || '';
+            // Convert ledger close time to readable date
+            const closeTime = (tx as any).close_time_iso
+              || (tx as any).tx?.date
+              || null;
+            const date = closeTime
+              ? new Date(closeTime).toLocaleString()
+              : new Date().toLocaleString();
+            entries.push({
+              date,
+              poName: p.poName || 'Unknown PO',
+              amount: p.amount || '0',
+              txHash: hash,
+            });
+          } catch { continue; }
+        }
+      } catch { continue; }
+    }
+  } catch (e) {
+    console.error('[FeeScanner] Failed to scan fee entries:', e);
+  }
+  return entries;
+};
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 4.1 — Linked Profile Scanner
+// Reconstructs ProfileLink[] from on-chain LINK_PROFILE memos
+// Replaces localStorage as the source of truth for linked profiles
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ProfileLinkOnChain {
+  linkerAddress: string;
+  linkeeAddress: string;
+  linkeeProfileUUID: string;
+  linkeeIpfsUri: string;
+  role: 'vendor' | 'customer';
+  txHash: string;
+  createdAt: number;
+}
+
+export const scanLinkedProfiles = async (
+  walletAddress: string
+): Promise<ProfileLinkOnChain[]> => {
+  if (!walletAddress) return [];
+  const links: ProfileLinkOnChain[] = [];
+  const unlinkedAddresses = new Set<string>(); // tracks unlinked linkeeAddresses
+  try {
+    const client = await getXRPLClient();
+    const resp = await client.request({
+      command: 'account_tx',
+      account: walletAddress,
+      ledger_index_min: -1,
+      ledger_index_max: -1,
+      limit: 400,
+    });
+    for (const tx of resp.result.transactions || []) {
+      try {
+        const txObj = (tx as any).tx_json || (tx as any).tx || {};
+        if (txObj.TransactionType !== 'Payment') continue;
+        const memos = txObj.Memos || [];
+        for (const m of memos) {
+          const memo = m.Memo || {};
+          if (!memo.MemoType || !memo.MemoData) continue;
+          try {
+            const memoType = xrpl.convertHexToString(memo.MemoType);
+            if (memoType !== 'SCPO') continue;
+            const envelope = JSON.parse(xrpl.convertHexToString(memo.MemoData));
+            const p = envelope.p || {};
+            const hash = txObj.hash || (tx as any).hash || '';
+            const closeTime = (tx as any).close_time_iso || null;
+            const createdAt = closeTime ? new Date(closeTime).getTime() : Date.now();
+
+            // Track UNLINK_PROFILE memos — these cancel out LINK_PROFILE memos
+            if (envelope?.a === 'UNLINK_PROFILE') {
+              const unlinkedAddr = envelope.r || p.linkedAddr || '';
+              if (unlinkedAddr) unlinkedAddresses.add(unlinkedAddr);
+              continue;
+            }
+
+            if (envelope?.a !== 'LINK_PROFILE') continue;
+            links.push({
+              linkerAddress: txObj.Account || walletAddress,
+              linkeeAddress: envelope.r || p.linkedAddr || '',
+              linkeeProfileUUID: p.profileUUID || '',
+              linkeeIpfsUri: p.ipfsUri || '',
+              role: p.role || 'vendor',
+              txHash: hash,
+              createdAt,
+            });
+          } catch { continue; }
+        }
+      } catch { continue; }
+    }
+  } catch (e) {
+    console.error('[LinkScanner] Failed to scan linked profiles:', e);
+  }
+
+  // Filter out any links that have been subsequently unlinked
+  return links.filter(link => !unlinkedAddresses.has(link.linkeeAddress));
+};
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 4.6 — On-Chain Audit Log Scanner
+// Reads all SCPO memos from a wallet's transaction history
+// Returns a structured, chronological audit log queryable by action or PO ref
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface AuditLogEntry {
+  action: string;       // SCPO_ACTIONS value e.g. 'CREATE_PO'
+  ref: string;          // issuanceId or wallet address
+  payload: any;         // action-specific payload
+  txHash: string;
+  account: string;      // wallet that submitted the tx
+  date: string;         // human-readable ISO date
+  timestamp: number;    // ms since epoch for sorting
+}
+
+export const scanAuditLog = async (
+  walletAddress: string,
+  filterAction?: string
+): Promise<AuditLogEntry[]> => {
+  if (!walletAddress) return [];
+  const entries: AuditLogEntry[] = [];
+  try {
+    const client = await getXRPLClient();
+    const resp = await client.request({
+      command: 'account_tx',
+      account: walletAddress,
+      ledger_index_min: -1,
+      ledger_index_max: -1,
+      limit: 400,
+    });
+    for (const tx of resp.result.transactions || []) {
+      try {
+        const txObj = (tx as any).tx_json || (tx as any).tx || {};
+        const memos = txObj.Memos || [];
+        for (const m of memos) {
+          const memo = m.Memo || {};
+          if (!memo.MemoType || !memo.MemoData) continue;
+          try {
+            const memoType = xrpl.convertHexToString(memo.MemoType);
+            if (memoType !== 'SCPO') continue;
+            const envelope = JSON.parse(xrpl.convertHexToString(memo.MemoData));
+            if (!envelope?.a) continue;
+            if (filterAction && envelope.a !== filterAction) continue;
+            const hash = txObj.hash || (tx as any).hash || '';
+            const closeTime = (tx as any).close_time_iso || null;
+            const timestamp = closeTime ? new Date(closeTime).getTime() : Date.now();
+            entries.push({
+              action: envelope.a,
+              ref: envelope.r || '',
+              payload: envelope.p || {},
+              txHash: hash,
+              account: txObj.Account || walletAddress,
+              date: closeTime ? new Date(closeTime).toLocaleString() : 'Unknown',
+              timestamp,
+            });
+          } catch { continue; }
+        }
+      } catch { continue; }
+    }
+  } catch (e) {
+    console.error('[AuditLog] Failed to scan audit log:', e);
+  }
+  // Return chronological order, oldest first
+  return entries.sort((a, b) => a.timestamp - b.timestamp);
+};
+
+// ── Phase 6.0b — Institutional Credential (Lender / Partner tier) ─────────────
+// Hex of "SCPO_INST" — shorter than SCPO_INSTITUTIONAL for on-chain efficiency
+export const SCPO_INST_HEX = xrpl.convertStringToHex('SCPO_INST');
+
+/**
+ * Issue an Institutional-tier credential to a lender or yield partner wallet.
+ * Admin-only. Call after completing off-platform identity verification.
+ */
+export const issueInstitutionalCredential = async (
+  client: xrpl.Client,
+  platformWallet: xrpl.Wallet,
+  lenderAddress: string,
+  expirationDays: number = 365
+) => {
+  return issueCredential(client, platformWallet, lenderAddress, SCPO_INST_HEX, expirationDays);
+};
+
+/**
+ * Update the Permissioned Domain to accept Institutional credentials.
+ * Call once after first institutional lender is onboarded.
+ * Adds SCPO_INST_HEX to the AcceptedCredentials list alongside existing tiers.
+ */
+export const addInstitutionalToPermissionedDomain = async (
+  client: xrpl.Client,
+  platformWallet: xrpl.Wallet,
+  domainId: string
+) => {
+  const transaction: any = {
+    TransactionType: 'PermissionedDomainSet',
+    Account: platformWallet.classicAddress,
+    DomainID: domainId,
+    AcceptedCredentials: [
+      { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_BASIC_HEX } },
+      { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_VERIFIED_HEX } },
+      { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_INSTITUTIONAL_HEX } },
+      { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_INST_HEX } },
+    ]
+  };
+  const tx = await submitQueued(transaction, platformWallet);
+  const meta = tx.result.meta as any;
+  if (meta.TransactionResult !== 'tesSUCCESS') {
+    throw new Error(`Domain update failed: ${meta.TransactionResult}`);
+  }
+  return { success: true, txHash: tx.result.hash };
 };

@@ -1,7 +1,7 @@
 const xrpl = require('xrpl');
 
-const COMPANY_SEED = 'sEd7wt3ncrR1HDsS7WnKgTv4kLCLp9e';
-const RLUSD_ISSUER = 'rPqZ3zqtkNE3D135BEb766j3wpGb82Dg9g';
+const COMPANY_SEED = 'sEdV5ad8yQaTEAsxUNiczZ8QJMDaP3g';
+const RLUSD_ISSUER = 'rMERWtUb1ReN5t3iQ4S9H1yQBMvWzGKVDT';
 const DEVNET_URL = 'wss://s.devnet.rippletest.net:51233';
 
 async function main() {

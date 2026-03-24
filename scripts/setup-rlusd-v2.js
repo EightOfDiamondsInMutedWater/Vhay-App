@@ -23,8 +23,8 @@ const xrpl = require('xrpl');
 // ============================================================
 // CONFIGURATION — Your existing wallet seeds
 // ============================================================
-const BUYER_SEED = 'sEdSjPzCe4LGkGuJ7xVEt1EsAvHUCmd';
-const VENDOR_SEED = 'sEdTNzxUVqnj7mEVeigwA3iz21pHEgw';
+const BUYER_SEED = 'sEdVXKFQEFvzK18y531VRYRf6ft4JFV';
+const VENDOR_SEED = 'sEdSAFqhJ89ngGxACafTddxyqYULzpM';
 
 const RLUSD_AMOUNT_PER_WALLET = '10000';
 const TRUST_LINE_LIMIT = '1000000';
