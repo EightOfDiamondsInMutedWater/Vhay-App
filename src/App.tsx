@@ -1371,7 +1371,7 @@ export default function App() {
         Account: companyWallet.classicAddress,
         Destination: req.vendorAddress,
         Amount: {
-          currency: getRLUSDCurrency(),
+          currency: 'USD',
           issuer: rlusdIssuer,
           value: req.approvedAmount,
         } as any,
@@ -1668,7 +1668,11 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
           let vendorPoStatus: SavedPO['status'] = 'accepted';
           let vendorEscrowSequence: number | undefined = undefined;
           const posBuyerAddr = meta.b || '';
-          if (posBuyerAddr && issuanceId) {
+
+          // Check claimed first — most definitive signal, no escrow lookup needed
+          if (issuanceId && vendorClaimedPOIds.has(issuanceId)) {
+            vendorPoStatus = 'claimed';
+          } else if (posBuyerAddr && issuanceId) {
             try {
               const { condition: expectedCondition } = await generateEscrowCondition(issuanceId);
               const client = await getXRPLClient();
@@ -1685,12 +1689,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                 vendorPoStatus = 'funded';
                 vendorEscrowSequence = (matchingEscrow as any).Sequence;
               }
-            } catch (e) { /* no escrows or lookup failed */ }
-          }
-          // Check if this PO was claimed (receipt memo is definitive proof)
-          if (issuanceId && vendorClaimedPOIds.has(issuanceId)) {
-            vendorPoStatus = 'claimed';
-            // Keep escrowSequence — valid historical data needed for proof of payment
+            } catch (e) { /* no escrows or lookup failed — stays accepted */ }
           }
           // Check if this PO was recalled by the buyer
           if (issuanceId && posBuyerAddr) {
@@ -1959,7 +1958,7 @@ useEffect(() => {
         }
         updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
         alert('PO recalled on-chain.');
-        setTimeout(() => loadPOsFromLedger(), 2000);
+        setTimeout(() => loadPOsFromLedger(), 5000);
         return;
       }
 
@@ -2028,7 +2027,7 @@ useEffect(() => {
       
         updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
         alert('PO recalled on-chain.');
-        setTimeout(() => loadPOsFromLedger(), 2000);
+        setTimeout(() => loadPOsFromLedger(), 5000);
         return;
       }
     } catch (err: any) { alert('Recall failed: ' + err.message); }
@@ -2333,7 +2332,7 @@ useEffect(() => {
       setUpdateResult(`PO Updated and Sent Successfully! New Issuance: ${issuanceId}\nTx Hash: ${txHash}\n\nVendor notified to re-accept. Old version hidden.`);
       setSelectedUpdatePO(null);
       // Immediate refresh to update tables
-      setTimeout(() => loadPOsFromLedger(), 2000);
+      setTimeout(() => loadPOsFromLedger(), 5000);
     } catch (err: any) { alert('Update failed: ' + err.message); setUpdateResult('Error: ' + err.message); }
   };
 
@@ -2358,7 +2357,13 @@ useEffect(() => {
       const signed = wallet.sign(prepared);
       const acceptResultTx = await submitBlobQueued(signed.tx_blob);
       if (typeof acceptResultTx.result.meta === 'object' && acceptResultTx.result.meta.TransactionResult === 'tesSUCCESS') {
-        alert(`PO ${po.poName} Accepted & Authorized!`); updatePOStatus(po.id, 'accepted');
+        alert(`PO ${po.poName} Accepted & Authorized!`);
+        // Optimistically update local state immediately so UI shows correct table
+        // without waiting for ledger scan to confirm the MPT hold
+        setSavedPOs(prev => prev.map(p =>
+          p.id === po.id ? { ...p, status: 'accepted' as const } : p
+        ));
+        setTimeout(() => loadPOsFromLedger(), 4000);
       } else { alert('Accept failed'); }
     } catch (err: any) { alert('Accept failed: ' + err.message); }
   };
@@ -2676,21 +2681,13 @@ useEffect(() => {
         }
       }
     }
-    // ── Phase 6B Session 2: Financing repayment routing ──────────────────────
+    // ── Phase 6B Session 3: Check for active financing before claim ───────────
+    // Detected here, executed after EscrowFinish below
+    let activeFinancing: Awaited<ReturnType<typeof getActiveFinancingRequest>> = null;
     try {
-      const activeFinancing = await getActiveFinancingRequest(po.vendorAddress || vendorProfile.classicAddress, po.issuanceId);
-      if (activeFinancing && activeFinancing.status === 'disbursed' && activeFinancing.disbursedAt && activeFinancing.approvedAmount && activeFinancing.approvedAPR !== undefined) {
-        const split = computeRepaymentSplit(
-          po.total,
-          activeFinancing.approvedAmount,
-          activeFinancing.approvedAPR,
-          activeFinancing.disbursedAt
-        );
-        console.log(`[claimEscrowForPO] Financing repayment split — Lender: ${split.lenderRepayment}, SC.PO: ${split.scpoFee}, Vendor: ${split.vendorRemainder}, Interest: ${split.interestAccrued}`);
-        // Repayment transactions execute after EscrowFinish below.
-        // The full three-way split (RLUSD payments) is built in Session 3.
-        // For now: log the split and write the FINANCE_REPAID memo so the status updates.
-        setResult(`Repayment split calculated — Lender: $${split.lenderRepayment} | SC.PO fee: $${split.scpoFee} | Your remainder: $${split.vendorRemainder}`);
+      activeFinancing = await getActiveFinancingRequest(po.vendorAddress || vendorProfile.classicAddress, po.issuanceId);
+      if (activeFinancing) {
+        console.log(`[claimEscrowForPO] Active financing detected — status: ${activeFinancing.status}, amount: ${activeFinancing.approvedAmount}`);
       }
     } catch (financeErr: any) {
       console.warn('[claimEscrowForPO] Financing check failed, proceeding with standard claim:', financeErr.message);
@@ -2745,6 +2742,80 @@ useEffect(() => {
       }
       alert(`Escrow claimed! Tx: ${result.result.hash}`);
       updatePO({ ...po, status: 'claimed' });
+
+      // ── Phase 6B Session 3: Execute three-way repayment split ─────────────
+      if (activeFinancing && activeFinancing.status === 'disbursed' &&
+          activeFinancing.disbursedAt && activeFinancing.approvedAmount &&
+          activeFinancing.approvedAPR !== undefined) {
+        try {
+          setResult('Processing financing repayment split...');
+          const split = computeRepaymentSplit(
+            po.total,
+            activeFinancing.approvedAmount,
+            activeFinancing.approvedAPR,
+            activeFinancing.disbursedAt
+          );
+          console.log(`[claimEscrowForPO] Repayment split — Lender: ${split.lenderRepayment}, SC.PO: ${split.scpoFee}, Vendor remainder: ${split.vendorRemainder}, Interest: ${split.interestAccrued}`);
+
+          const rlusdIssuer = process.env.REACT_APP_RLUSD_ISSUER || '';
+          const companyWalletAddress = process.env.REACT_APP_COMPANY_WALLET || '';
+          const repayClient = await getXRPLClient();
+          const vendorWallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
+
+          // Step 1: Vendor → Lender (principal + interest)
+          const lenderRepayTx: Payment = {
+            TransactionType: 'Payment',
+            Account: vendorWallet.classicAddress,
+            Destination: activeFinancing.lenderAddress,
+            Amount: { currency: 'USD', issuer: rlusdIssuer, value: split.lenderRepayment } as any,
+            Memos: [buildMemo(SCPO_ACTIONS.FINANCE_REPAID, activeFinancing.requestId, {
+              reqId: activeFinancing.requestId, lenderTx: '', scTx: '', netTx: '',
+            } as any)]
+          };
+          const preparedLender = await repayClient.autofill(lenderRepayTx);
+          preparedLender.LastLedgerSequence = (await repayClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+          const lenderRepayResult = await submitBlobQueued(vendorWallet.sign(preparedLender).tx_blob);
+          const lenderTxHash = lenderRepayResult.result.hash;
+          console.log(`[claimEscrowForPO] ✅ Lender repaid $${split.lenderRepayment}. Tx: ${lenderTxHash}`);
+
+          // Step 2: Vendor → SC.PO company wallet (platform fee)
+          const scpoFeeTx: Payment = {
+            TransactionType: 'Payment',
+            Account: vendorWallet.classicAddress,
+            Destination: companyWalletAddress,
+            Amount: { currency: 'USD', issuer: rlusdIssuer, value: split.scpoFee } as any,
+            Memos: [buildMemo(SCPO_ACTIONS.FINANCE_REPAID, activeFinancing.requestId, {
+              reqId: activeFinancing.requestId, lenderTx: lenderTxHash, scTx: '', netTx: '',
+            } as any)]
+          };
+          const preparedSCPO = await repayClient.autofill(scpoFeeTx);
+          preparedSCPO.LastLedgerSequence = (await repayClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+          const scpoFeeResult = await submitBlobQueued(vendorWallet.sign(preparedSCPO).tx_blob);
+          const scpoTxHash = scpoFeeResult.result.hash;
+          console.log(`[claimEscrowForPO] ✅ SC.PO fee paid $${split.scpoFee}. Tx: ${scpoTxHash}`);
+
+          // Step 3: Write FINANCE_REPAID audit memo on-chain
+          const repaidMemoTx: Payment = {
+            TransactionType: 'Payment',
+            Account: vendorWallet.classicAddress,
+            Destination: companyWalletAddress,
+            Amount: '1',
+            Memos: [buildMemo(SCPO_ACTIONS.FINANCE_REPAID, activeFinancing.requestId, {
+              reqId: activeFinancing.requestId, lenderTx: lenderTxHash, scTx: scpoTxHash, netTx: result.result.hash,
+            } as any)]
+          };
+          const preparedMemo = await repayClient.autofill(repaidMemoTx);
+          preparedMemo.LastLedgerSequence = (await repayClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+          await submitBlobQueued(vendorWallet.sign(preparedMemo).tx_blob);
+
+          await refreshFinancingStatus();
+
+          alert(`✅ Financing repaid!\n\nLender repayment: $${split.lenderRepayment} RLUSD\nSC.PO fee: $${split.scpoFee} RLUSD\nYour remainder: $${split.vendorRemainder} RLUSD\nInterest accrued: $${split.interestAccrued} RLUSD`);
+        } catch (repayErr: any) {
+          console.error('[claimEscrowForPO] Repayment failed:', repayErr.message);
+          alert(`⚠️ Escrow claimed but financing repayment failed: ${repayErr.message}\n\nPlease contact support.\nRequest ID: ${activeFinancing.requestId}`);
+        }
+      }
 
       // ── Phase 6.0a: Auto-burn inventory MPTs on claim ─────────────────────
       // Fetch PO items from IPFS to find which inventory NFTs were in this PO,
@@ -10429,6 +10500,7 @@ const addLinkedVendorByDID = async () => {
                             const client = await getXRPLClient();
                             const lenderWallet = xrpl.Wallet.fromSeed(simLenderSeed);
                             const repayBy = Math.floor(Date.now() / 1000) + parseInt(simRepayByDays) * 86400;
+                            // Step 1: Write FINANCE_APPROVED memo on-chain
                             const approveTx: Payment = {
                               TransactionType: 'Payment',
                               Account: lenderWallet.classicAddress,
@@ -10446,8 +10518,35 @@ const addLinkedVendorByDID = async () => {
                             const signed = lenderWallet.sign(prepared);
                             const result = await submitBlobQueued(signed.tx_blob);
                             const txHash = result.result.hash;
-                            setSimResult(`✅ FINANCE_APPROVED written!\nTx: ${txHash}\n\nSwitch to vendor mode and click "💸 Disburse Advance" on the funded PO.`);
-                            console.log(`[LenderSim] FINANCE_APPROVED tx: ${txHash}`);
+                            console.log(`[LenderSim] FINANCE_APPROVED memo tx: ${txHash}`);
+
+                            // Step 2: Lender sends advance RLUSD to company wallet
+                            // SC.PO company wallet then forwards to vendor at disburse time
+                            const rlusdIssuer = process.env.REACT_APP_RLUSD_ISSUER || '';
+                            const companyWalletAddress = process.env.REACT_APP_COMPANY_WALLET || '';
+                            const fundTx: Payment = {
+                              TransactionType: 'Payment',
+                              Account: lenderWallet.classicAddress,
+                              Destination: companyWalletAddress,
+                              Amount: {
+                                currency: 'USD',
+                                issuer: rlusdIssuer,
+                                value: simAdvanceAmount,
+                              } as any,
+                              Memos: [buildMemo(SCPO_ACTIONS.FINANCE_APPROVED, simRequestId, {
+                                reqId:  simRequestId,
+                                note:   'advance_funding',
+                                amt:    simAdvanceAmount,
+                              } as any)],
+                            };
+                            const preparedFund = await client.autofill(fundTx);
+                            preparedFund.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+                            const signedFund = lenderWallet.sign(preparedFund);
+                            const fundResult = await submitBlobQueued(signedFund.tx_blob);
+                            const fundTxHash = fundResult.result.hash;
+                            console.log(`[LenderSim] Lender → Company wallet transfer tx: ${fundTxHash}`);
+
+                            setSimResult(`✅ FINANCE_APPROVED written!\nTx: ${txHash}\n\n💸 Lender sent $${simAdvanceAmount} RLUSD to SC.PO company wallet.\nFund Tx: ${fundTxHash}\n\nSwitch to vendor mode and click "💸 Disburse Advance" on the funded PO.`);
                           } catch (err: any) {
                             setSimResult(`❌ Error: ${err.message}`);
                           } finally {
