@@ -549,6 +549,20 @@ export const getPOCreationDate = async (issuanceId: string): Promise<string> => 
   const info = await getPOCreationInfo(issuanceId);
   return info.date;
 };
+
+export const getPOCreationTxHash = async (issuanceId: string): Promise<string> => {
+  try {
+    const client = await getXRPLClient();
+    const issuanceResp = await client.request({
+      command: 'ledger_entry',
+      mpt_issuance: issuanceId,
+      ledger_index: 'validated'
+    } as any);
+    return (issuanceResp.result as any).node?.PreviousTxnID || '';
+  } catch {
+    return '';
+  }
+};
 export const getPOCreationInfo = async (issuanceId: string): Promise<{ date: string; txHash: string }> => {
   try {
     const client = await getXRPLClient();

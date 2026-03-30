@@ -17,6 +17,7 @@ import {
   scanAuditLog,
   getPOCreationDate,
   getPOCreationInfo,
+  getPOCreationTxHash,
 } from './utils/xrplHelpers';
 import type { FeeEntry, ProfileLinkOnChain, AuditLogEntry } from './utils/xrplHelpers';
 import { exportAsJSON, exportAsCSV, export1099CSV } from './utils/exportHelpers';
@@ -959,6 +960,9 @@ export default function App() {
   const [financingSubmitting, setFinancingSubmitting] = useState(false);
   const [financingStatusMap, setFinancingStatusMap] = useState<Record<string, FinancingRequest>>({});
   const [disbursing, setDisbursing] = useState(false);
+  const [financingPackage, setFinancingPackage] = useState<any>(null);
+  const [showProofPackage, setShowProofPackage] = useState(false);
+  const [proofPackageLoading, setProofPackageLoading] = useState(false);
   const [financingEscrowDetails, setFinancingEscrowDetails] = useState<Awaited<ReturnType<typeof fetchEscrowDetails>> | null>(null);
   const [financingEscrowLoading, setFinancingEscrowLoading] = useState(false);
 
@@ -1312,6 +1316,8 @@ export default function App() {
       alert(`✅ Financing request submitted!\n\nRequest ID: ${requestId}\nAmount: $${requestedAmount} RLUSD\nTx: ${txHash}\n\nThe lender will review and respond on-chain.`);
       setShowFinancingModal(false);
       setFinancingModalPO(null);
+      setFinancingPackage(null);
+      setShowProofPackage(false);
     } catch (err: any) {
       alert('Financing request failed: ' + err.message);
     } finally {
@@ -1604,6 +1610,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         if (recalledPOIds.has(issuanceId)) continue;
 
         const poInfo1 = meta.dt ? null : await getPOCreationInfo(issuanceId);
+        const poTxHash1 = await getPOCreationTxHash(issuanceId);
           livePOs.push({
             id: issuanceId || Date.now().toString(),
             poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
@@ -1613,7 +1620,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             status: poStatus,
             escrowSequence: customerEscrowSequence,
             issuanceId,
-            txHash: poInfo1?.txHash || '',
+            txHash: poTxHash1,
             buyerAddress: customerProfile.classicAddress,
           vendorAddress: vendorAddr,
           vendorUUID: customerLinkedVendorUUIDsRef.current.find(uuid => publicProfiles[uuid]?.classicAddress === vendorAddr) || '',
@@ -1699,6 +1706,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             } catch (e) { /* skip */ }
           }
           const poInfo2 = meta.dt ? null : await getPOCreationInfo(issuanceId);
+          const poTxHash2 = await getPOCreationTxHash(issuanceId);
           vendorPOList.push({
             id: issuanceId || Date.now().toString(),
             poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
@@ -1708,7 +1716,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             status: vendorPoStatus,
             escrowSequence: vendorEscrowSequence,
             issuanceId,          
-            txHash: poInfo2?.txHash || '',
+            txHash: poTxHash2,
             buyerAddress: meta.b || '',
             vendorAddress: vendorProfile.classicAddress,
             vendorUUID: vendorProfile.profileUUID,
@@ -1757,6 +1765,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             if (vendorPOList.some(p => p.issuanceId === issuanceId)) continue;
             if (buyerRecalledIds.has(issuanceId)) continue;
             const poInfo3 = meta.dt ? null : await getPOCreationInfo(issuanceId);
+            const poTxHash3 = await getPOCreationTxHash(issuanceId);
             vendorPOList.push({
               id: issuanceId || Date.now().toString(),
               poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
@@ -1765,7 +1774,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
               ipfsUri: meta.uri || '',
               status: 'open',
               issuanceId,
-              txHash: poInfo3?.txHash || '',
+              txHash: poTxHash3,
               buyerAddress: customerAddr,
               vendorAddress: vendorProfile.classicAddress,
               vendorUUID: vendorProfile.profileUUID,
@@ -6703,6 +6712,109 @@ const addLinkedVendorByDID = async () => {
                     );
                   })()}
 
+                  {/* Proof of Funds Package */}
+                  {financingEscrowDetails && financingLenderAddress && financingModalPO.escrowSequence && (
+                    <div style={{ marginBottom: '16px' }}>
+                      <button
+                        onClick={async () => {
+                          if (showProofPackage) { setShowProofPackage(false); return; }
+                          setProofPackageLoading(true);
+                          try {
+                            const pkg = await assembleFinancingPackage(
+                              { ...financingModalPO, escrowSequence: financingModalPO.escrowSequence! },
+                              'preview',
+                              (parseFloat(financingModalPO.total) * financingAdvanceRate).toFixed(2),
+                              financingLenderAddress,
+                              'basic',
+                              'basic',
+                              auditLog.length > 0 ? auditLog : await scanAuditLog(financingModalPO.buyerAddress),
+                              ''
+                            );
+                            setFinancingPackage(pkg);
+                            setShowProofPackage(true);
+                          } catch (e) {
+                            console.warn('Could not assemble proof package:', e);
+                          } finally {
+                            setProofPackageLoading(false);
+                          }
+                        }}
+                        style={{ width: '100%', padding: '10px', background: 'white', border: '1.5px solid #553C9A', borderRadius: '10px', color: '#553C9A', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer', textAlign: 'left' }}
+                      >
+                        {proofPackageLoading ? '⏳ Loading...' : showProofPackage ? '🔒 Hide Proof of Funds Package ▲' : '🔒 View Proof of Funds Package ▼'}
+                      </button>
+                      {showProofPackage && financingPackage && (
+                        <div style={{ background: '#F8F9FA', border: '1px solid #553C9A', borderRadius: '10px', padding: '14px', marginTop: '8px', fontSize: '12px' }}>
+                          <p style={{ color: '#553C9A', fontWeight: 'bold', margin: '0 0 10px' }}>
+                            🔒 On-Chain Collateral Proof — Lender Verification Package
+                          </p>
+                          <p style={{ color: '#666', fontSize: '11px', margin: '0 0 12px' }}>
+                            All data sourced directly from XRPL. Lender can verify independently at devnet.xrpl.org.
+                          </p>
+
+                          {/* Escrow Proof */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>📦 Escrow (Primary Collateral)</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', color: '#555' }}>
+                              <span>Amount Locked:</span><span style={{ fontWeight: 'bold', color: '#276749' }}>${financingPackage.escrowAmount} {financingPackage.escrowCurrency}</span>
+                              <span>Escrow Sequence:</span><span style={{ fontFamily: 'monospace' }}>#{financingPackage.escrowSequence}</span>
+                              <span>Owner (Buyer):</span><span style={{ fontFamily: 'monospace', fontSize: '11px' }}>{financingPackage.escrowOwner.slice(0,8)}...{financingPackage.escrowOwner.slice(-4)}</span>
+                              <span>Destination (Vendor):</span><span style={{ fontFamily: 'monospace', fontSize: '11px' }}>{financingPackage.escrowDestination.slice(0,8)}...{financingPackage.escrowDestination.slice(-4)}</span>
+                              <span>Claimable After:</span><span>{new Date(financingPackage.finishAfter).toLocaleDateString()}</span>
+                              <span>Expires After:</span><span style={{ color: financingPackage.daysUntilCancel <= 7 ? '#e74c3c' : '#333' }}>{new Date(financingPackage.cancelAfter).toLocaleDateString()} ({financingPackage.daysUntilCancel.toFixed(1)} days)</span>
+                            </div>
+                          </div>
+
+                          {/* PO Proof */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>📋 Purchase Order</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', color: '#555' }}>
+                              <span>PO Name:</span><span style={{ fontWeight: 'bold' }}>{financingPackage.poName}</span>
+                              <span>PO Total:</span><span style={{ fontWeight: 'bold' }}>${financingPackage.poTotal} RLUSD</span>
+                              <span>Payment Terms:</span><span>{financingPackage.paymentTerms}</span>
+                              <span>Issuance ID:</span><span style={{ fontFamily: 'monospace', fontSize: '10px', wordBreak: 'break-all' }}>{financingPackage.poIssuanceId.slice(0,16)}...</span>
+                            </div>
+                          </div>
+
+                          {/* Transaction Chain */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>🔗 Transaction Chain</div>
+                            {[
+                              ['PO Created', financingPackage.txHashes.created],
+                              ['PO Accepted', financingPackage.txHashes.accepted],
+                              ['Escrow Funded', financingPackage.txHashes.funded],
+                            ].map(([label, hash]) => (
+                              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                <span style={{ color: '#555' }}>{label}:</span>
+                                {hash ? (
+                                  <a href={`https://devnet.xrpl.org/transactions/${hash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#553C9A', fontFamily: 'monospace', fontSize: '11px' }}>
+                                    {hash.slice(0,10)}...{hash.slice(-6)} ↗
+                                  </a>
+                                ) : (
+                                  <span style={{ color: '#ccc', fontSize: '11px' }}>Not recorded</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Identity */}
+                          <div style={{ marginBottom: '12px' }}>
+                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>🪪 Identity & Credentials</div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', color: '#555' }}>
+                              <span>Buyer Credential:</span><span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold' }}>{financingPackage.buyerCredTier} ✓</span>
+                              <span>Vendor Credential:</span><span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold' }}>{financingPackage.vendorCredTier} ✓</span>
+                              <span>Network:</span><span style={{ fontFamily: 'monospace' }}>{financingPackage.networkId}</span>
+                              <span>Package Version:</span><span>v{financingPackage.packageVersion}</span>
+                            </div>
+                          </div>
+
+                          <p style={{ fontSize: '10px', color: '#999', margin: '8px 0 0', textAlign: 'center' }}>
+                            Generated {new Date(financingPackage.assembledAt).toLocaleString()} — Verify at devnet.xrpl.org
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Risk Disclosure */}
                   <div style={{ background: '#FFFBEB', border: '1px solid #F6E05E', borderRadius: '8px', padding: '10px 14px', marginBottom: '20px', fontSize: '11px', color: '#92400E' }}>
                     ⚠️ <strong>Important:</strong> By requesting financing, you agree that the escrow proceeds at claim time will first repay the lender (advance + interest) and SC.PO fee before you receive the remainder. This is a binding on-chain commitment. Consult a financial or legal advisor before proceeding.
@@ -9041,6 +9153,84 @@ const addLinkedVendorByDID = async () => {
                 const recallEntry = poAuditEntries.find(e => e.action === 'RECALL_PO');
                 if (recallEntry || po.status === 'recalled') {
                   entries.push({ date: recallEntry?.date || po.dateIssued, event: 'PO Recalled — Commitment Reversed', debit: 'Accounts Payable', credit: 'Purchase Commitment Reversal', amount: fmtAmt, txHash: recallEntry?.txHash || '', isMemo: false });
+                }
+
+                // ── Phase 6B: Financing entries (vendor mode only) ─────────────
+                // If this PO had active financing, add liability and repayment entries.
+                if (mode === 'vendor') {
+                  const financing = financingStatusMap[po.issuanceId];
+                  if (financing && financing.approvedAmount) {
+                    const advAmt = parseFloat(financing.approvedAmount);
+                    const fmtAdv = `$${advAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} RLUSD`;
+
+                    // Entry 1: Advance received — creates a liability
+                    if (financing.status === 'disbursed' || financing.status === 'repaid') {
+                      entries.push({
+                        date: financing.disbursedAt
+                          ? new Date(financing.disbursedAt * 1000).toLocaleDateString()
+                          : po.dateIssued,
+                        event: 'PO Advance Received from Lender',
+                        debit: 'Cash / RLUSD',
+                        credit: 'Financing Liability (Short-Term)',
+                        amount: fmtAdv,
+                        txHash: financing.disbursementTxHash || '',
+                        isMemo: false,
+                      });
+                    }
+
+                    // Entry 2: Repayment at claim — settles the liability
+                    if (financing.status === 'repaid' && po.status === 'claimed' && financing.approvedAPR !== undefined && financing.disbursedAt) {
+                      const split = computeRepaymentSplit(
+                        po.total,
+                        financing.approvedAmount,
+                        financing.approvedAPR,
+                        financing.disbursedAt
+                      );
+                      const repayAmt = parseFloat(split.lenderRepayment);
+                      const interestAmt = parseFloat(split.interestAccrued);
+                      const fmtRepay = `$${repayAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} RLUSD`;
+                      const fmtInterest = `$${interestAmt.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 })} RLUSD`;
+
+                      // Repay principal
+                      entries.push({
+                        date: po.dateIssued,
+                        event: 'Financing Repaid to Lender (Principal)',
+                        debit: 'Financing Liability (Short-Term)',
+                        credit: 'Cash / RLUSD',
+                        amount: fmtRepay,
+                        txHash: financing.repaidTxHash || '',
+                        isMemo: false,
+                      });
+
+                      // Interest expense
+                      if (interestAmt > 0) {
+                        entries.push({
+                          date: po.dateIssued,
+                          event: 'Financing Interest Expense',
+                          debit: 'Interest Expense',
+                          credit: 'Cash / RLUSD',
+                          amount: fmtInterest,
+                          txHash: financing.repaidTxHash || '',
+                          isMemo: false,
+                        });
+                      }
+
+                      // SC.PO platform fee
+                      const scpoFeeAmt = parseFloat(split.scpoFee);
+                      if (scpoFeeAmt > 0) {
+                        const fmtFee = `$${scpoFeeAmt.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 })} RLUSD`;
+                        entries.push({
+                        date: po.dateIssued,
+                        event: 'SC.PO Financing Platform Fee',
+                        debit: 'Financing Fee Expense',
+                        credit: 'Cash / RLUSD',
+                        amount: fmtFee,
+                        txHash: financing.repaidTxHash || '',
+                        isMemo: true,
+                      });
+                      }
+                    }
+                  }
                 }
 
                 // ── Phase 6A: Yield income entry (customer mode only) ──────────

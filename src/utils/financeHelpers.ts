@@ -262,8 +262,9 @@ export const assembleFinancingPackage = async (
   // Detect network
   const client = await getXRPLClient();
   const serverInfo: any = await client.request({ command: 'server_info' });
-  const network = serverInfo.result?.info?.network_id === 0 ? 'devnet'
-    : serverInfo.result?.info?.network_id === 1 ? 'mainnet'
+  const network = (serverInfo.result?.info?.network_id === 1) ? 'mainnet'
+    : (process.env.REACT_APP_XRPL_NODES || '').includes('devnet') || !process.env.REACT_APP_XRPL_NODES
+    ? 'devnet'
     : 'testnet';
 
   return {
