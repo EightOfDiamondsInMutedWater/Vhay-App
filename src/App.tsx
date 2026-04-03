@@ -5893,7 +5893,9 @@ const addLinkedVendorByDID = async () => {
         </div>
       </div>
       <div style={{ marginLeft: isMobile ? '0' : '190px', flex: 1, padding: isMobile ? '16px' : '40px', paddingTop: isMobile ? '56px' : '40px', background: '#FFF2D6', minHeight: '100vh', overflowY: 'auto' }}>
-        <h1 style={{ color: '#F2B04A', textAlign: 'center', fontSize: '36px', marginBottom: '30px' }}>SC.PO Generator</h1>
+        <h1 style={{ color: '#F2B04A', textAlign: 'center', fontSize: '36px', marginBottom: '30px' }}>
+          Vhay<sup style={{ fontSize: '14px', verticalAlign: 'super', lineHeight: '0' }}>™</sup>
+        </h1>
         {activeTab === 'create' && mode === 'customer' && (
           <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
             <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '40px' }}>Create / Update SC.PO (MPT)</h2>
