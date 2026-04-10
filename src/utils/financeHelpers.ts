@@ -129,7 +129,7 @@ export interface LenderProfile {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** SC.PO platform fee on financing advances (1% of advance amount) */
-export const SCPO_FINANCE_FEE_RATE = 0.01;
+export const SCPO_FINANCE_FEE_RATE = 0.0075; // 0.75% per advance disbursed
 
 /** Maximum advance rate allowed (80% of PO total) */
 export const MAX_ADVANCE_RATE = 0.80;

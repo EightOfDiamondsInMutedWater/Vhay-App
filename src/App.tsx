@@ -1436,11 +1436,11 @@ export default function App() {
       const termsCID = await pinJSONToBoth(termsDoc, pinataApiKey);
       const ipfsCID  = termsCID.replace('ipfs://', '');
 
-      // Write COLLATERAL_PLEDGE memo on-chain as 1-drop self-payment
+      // Write COLLATERAL_PLEDGE memo on-chain as 1-drop payment to company wallet
       const pledgeTx: Payment = {
         TransactionType: 'Payment',
         Account:         wallet.classicAddress,
-        Destination:     wallet.classicAddress,
+        Destination:     process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress,
         Amount:          '1',
         Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_PLEDGE, pledgeId, {
           nfts:      pledgeSelectedNfts,
@@ -1514,7 +1514,7 @@ export default function App() {
       const drawTx: Payment = {
         TransactionType: 'Payment',
         Account:         wallet.classicAddress,
-        Destination:     wallet.classicAddress,
+        Destination:     process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress,
         Amount:          '1',
         Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_DRAW, drawId, {
           pledgeId: line.pledgeId,
@@ -1688,7 +1688,7 @@ export default function App() {
       const releaseTx: Payment = {
         TransactionType: 'Payment',
         Account:         wallet.classicAddress,
-        Destination:     wallet.classicAddress,
+        Destination:     process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress,
         Amount:          '1',
         Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_RELEASE, line.pledgeId, {
           pledgeId: line.pledgeId,
@@ -1771,7 +1771,7 @@ export default function App() {
             const noticeTx: Payment = {
               TransactionType: 'Payment',
               Account:         wallet.classicAddress,
-              Destination:     wallet.classicAddress,
+              Destination:     process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress,
               Amount:          '1',
               Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_MARGIN_NOTICE, line.pledgeId, {
                 pledgeId: line.pledgeId,
@@ -2604,7 +2604,7 @@ useEffect(() => {
       return alert(`Cannot create PO: ${credCheck.reason}\n\nBoth parties must have a valid credential in the SC.PO domain. Save your profile to get one.`);
     }
 
-    const feeUsd = 0.01;
+    const feeUsd = 1.00; // $1.00 flat per PO created
     let feeAmount: any;
     let feeLabel: string;
     if (escrowCurrency === 'RLUSD' && isRLUSDConfigured()) {
@@ -2634,7 +2634,7 @@ useEffect(() => {
       const wallet = xrpl.Wallet.fromSeed(seed);
       const ledgerResponse = await client.request({ command: 'ledger_current' });
       const currentLedger = ledgerResponse.result.ledger_current_index;
-      setResult(`Sending $0.01 creation fee...`);
+      setResult(`Sending $1.00 PO creation fee...`);
       const feePayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: process.env.REACT_APP_COMPANY_WALLET || '', Amount: feeAmount, Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, { poName, feeType: 'CREATE', amount: feeLabel })] };
       const preparedFee = await client.autofill(feePayment); preparedFee.LastLedgerSequence = currentLedger + 20;
       const signedFee = wallet.sign(preparedFee);
@@ -2939,6 +2939,32 @@ useEffect(() => {
       const buffer = 60; const finishRipple = currentRippleTime + (days * 86400) + buffer; const cancelRipple = finishRipple + (7 * 86400);
       const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
       console.log(`Escrow linked to PO via condition. IssuanceID: ${po.issuanceId}`);
+      // Escrow lock fee: 0.05% of PO value → Vhay company wallet
+      const escrowLockFeeUsd = totalNum * 0.0005;
+      const companyWalletAddr = process.env.REACT_APP_COMPANY_WALLET || '';
+      if (companyWalletAddr) {
+        const rlusd = getRLUSDCurrency();
+        const lockFeeAmount = currency === 'RLUSD' && isRLUSDConfigured()
+          ? { currency: rlusd.currency, issuer: rlusd.issuer, value: escrowLockFeeUsd.toFixed(6) }
+          : xrpl.xrpToDrops((escrowLockFeeUsd / await getXrpPriceUsd()).toFixed(6));
+        const lockFeeTx: Payment = {
+          TransactionType: 'Payment',
+          Account: wallet.classicAddress,
+          Destination: companyWalletAddr,
+          Amount: lockFeeAmount as any,
+          Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, {
+            poName: po.poName,
+            feeType: 'ESCROW_LOCK',
+            amount: `$${escrowLockFeeUsd.toFixed(4)} (0.05% of $${totalNum})`,
+          } as any)],
+        };
+        const preparedLockFee = await client.autofill(lockFeeTx);
+        preparedLockFee.LastLedgerSequence = currentLedger + 20;
+        const signedLockFee = wallet.sign(preparedLockFee);
+        await submitBlobQueued(signedLockFee.tx_blob);
+        console.log(`[fundEscrow] ✅ Escrow lock fee paid: $${escrowLockFeeUsd.toFixed(4)}`);
+      }
+
       const escrow: any = { TransactionType: 'EscrowCreate', Account: wallet.classicAddress, Destination: po.vendorAddress, Amount: escrowAmount, FinishAfter: finishRipple, CancelAfter: cancelRipple, Condition: condition, Memos: [buildMemo(SCPO_ACTIONS.FUND_ESCROW, po.issuanceId, { poName: po.poName, amount: po.total, currency, terms: po.paymentTerms, ipfs: po.ipfsUri, itemCount: po.metadata?.items?.length || 0 })] };
       const preparedEscrow = await client.autofill(escrow); preparedEscrow.LastLedgerSequence = currentLedger + 20;
       const signedEscrow = wallet.sign(preparedEscrow);
@@ -3862,6 +3888,32 @@ const getUpdatablePOs = () => {
     }
     const nftId = extractNFTokenID(nftResult.result.meta) || 'unknown';
 
+    // Inventory Parent NFT fee: $1.00 flat per SKU created → Vhay company wallet
+    const companyWalletForFee = process.env.REACT_APP_COMPANY_WALLET || '';
+    if (companyWalletForFee && isRLUSDConfigured()) {
+      try {
+        const rlusd = getRLUSDCurrency();
+        const nftFeeTx: Payment = {
+          TransactionType: 'Payment',
+          Account: wallet.classicAddress,
+          Destination: companyWalletForFee,
+          Amount: { currency: rlusd.currency, issuer: rlusd.issuer, value: '1.00' } as any,
+          Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, {
+            poName: partNumber,
+            feeType: 'NFT_MINT',
+            amount: '$1.00 RLUSD',
+          } as any)],
+        };
+        const preparedNftFee = await client.autofill(nftFeeTx);
+        preparedNftFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+        const signedNftFee = wallet.sign(preparedNftFee);
+        await submitBlobQueued(signedNftFee.tx_blob);
+        console.log(`[inventoryMint] ✅ Parent NFT fee paid: $1.00 for SKU ${partNumber}`);
+      } catch (feeErr: any) {
+        console.error('[inventoryMint] NFT fee payment failed:', feeErr.message, JSON.stringify(feeErr));
+      }
+    }
+
     // Create MPT
     const mptMeta: InventoryMPTMeta = { t: INV_QTY_TYPE, nft: nftId, pn: partNumber, unit };
     const mptLedgerMeta = {
@@ -4390,6 +4442,16 @@ const getUpdatablePOs = () => {
     };
     load();
   }, [mode, activeTab, vendorProfile.classicAddress]);
+
+  // Reset credit line modals and sub-tab when leaving inventory tab
+  useEffect(() => {
+    if (mode !== 'vendor' || activeTab !== 'inventoryCatalog') {
+      setShowCreditLineDetail(null);
+      setShowPledgeModal(false);
+      setInventorySubTab('list');
+    }
+  }, [mode, activeTab]);
+
   // Load vendor inventory for customer Create tab (V2 only)
   useEffect(() => {
     if (mode !== 'customer' || activeTab !== 'create' || !vendor) return;
@@ -4681,6 +4743,32 @@ const getUpdatablePOs = () => {
 
       const nftId = extractNFTokenID(nftResult.result.meta) || 'unknown';
 
+      // Inventory Parent NFT fee: $1.00 flat per SKU created → Vhay company wallet
+      const companyWalletForNftFee = process.env.REACT_APP_COMPANY_WALLET || '';
+      if (companyWalletForNftFee && isRLUSDConfigured()) {
+        try {
+          const rlusd = getRLUSDCurrency();
+          const nftFeeTx: Payment = {
+            TransactionType: 'Payment',
+            Account: wallet.classicAddress,
+            Destination: companyWalletForNftFee,
+            Amount: { currency: rlusd.currency, issuer: rlusd.issuer, value: '1.00' } as any,
+            Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, {
+              poName: invPartNumber,
+              feeType: 'NFT_MINT',
+              amount: '$1.00 RLUSD',
+            } as any)],
+          };
+          const preparedNftFee = await client.autofill(nftFeeTx);
+          preparedNftFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+          const signedNftFee = wallet.sign(preparedNftFee);
+          await submitBlobQueued(signedNftFee.tx_blob);
+          console.log(`[inventoryMint] ✅ Parent NFT fee paid: $1.00 for SKU ${invPartNumber}`);
+        } catch (feeErr: any) {
+          console.warn('[inventoryMint] NFT fee payment failed (non-fatal):', feeErr.message);
+        }
+      }
+
       // ── Step 3: Create MPT issuance (quantity token) ──────────────────────
       setInvResult('Creating quantity token (MPT)...');
 
@@ -4772,6 +4860,33 @@ const getUpdatablePOs = () => {
           const signedInit = wallet.sign(preparedInit);
           await submitBlobQueued(signedInit.tx_blob);
           console.log('[Inventory] initial qty paid to warehouse:', initialQty, 'issuance:', mptIssuanceId);
+
+          // Inventory Unit Mint fee: $0.01 per unit → Vhay company wallet
+          const companyWalletForUnitFee = process.env.REACT_APP_COMPANY_WALLET || '';
+          if (companyWalletForUnitFee && isRLUSDConfigured()) {
+            try {
+              const unitFeeTotal = (initialQty * 0.01).toFixed(2);
+              const rlusd = getRLUSDCurrency();
+              const unitFeeTx: Payment = {
+                TransactionType: 'Payment',
+                Account: wallet.classicAddress,
+                Destination: companyWalletForUnitFee,
+                Amount: { currency: rlusd.currency, issuer: rlusd.issuer, value: unitFeeTotal } as any,
+                Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, {
+                  poName: invPartNumber,
+                  feeType: 'UNIT_MINT',
+                  amount: `$${unitFeeTotal} RLUSD (${initialQty} units @ $0.01)`,
+                } as any)],
+              };
+              const preparedUnitFee = await client.autofill(unitFeeTx);
+              preparedUnitFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+              const signedUnitFee = wallet.sign(preparedUnitFee);
+              await submitBlobQueued(signedUnitFee.tx_blob);
+              console.log(`[inventoryMint] ✅ Unit mint fee paid: $${unitFeeTotal} for ${initialQty} units of ${invPartNumber}`);
+            } catch (unitFeeErr: any) {
+              console.warn('[inventoryMint] Unit fee payment failed (non-fatal):', unitFeeErr.message);
+            }
+          }
         } catch (initPayErr: any) {
           console.warn('[Inventory] Initial warehouse payment warning:', initPayErr.message);
         }
@@ -5107,6 +5222,33 @@ const getUpdatablePOs = () => {
           throw new Error('Warehouse wallet has not authorized this MPT. The warehouse wallet must run MPTokenAuthorize for this issuance first.');
         }
         throw new Error(`Receive failed: ${meta.TransactionResult}`);
+      }
+
+      // Inventory Unit Mint fee: $0.01 per unit received → Vhay company wallet
+      const companyWalletForUnitFee = process.env.REACT_APP_COMPANY_WALLET || '';
+      if (companyWalletForUnitFee && isRLUSDConfigured()) {
+        try {
+          const unitFeeTotal = (qty * 0.01).toFixed(2);
+          const rlusd = getRLUSDCurrency();
+          const unitFeeTx: Payment = {
+            TransactionType: 'Payment',
+            Account: wallet.classicAddress,
+            Destination: companyWalletForUnitFee,
+            Amount: { currency: rlusd.currency, issuer: rlusd.issuer, value: unitFeeTotal } as any,
+            Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, {
+              poName: receiveModalItem.partNumber,
+              feeType: 'UNIT_MINT',
+              amount: `$${unitFeeTotal} RLUSD (${qty} units @ $0.01)`,
+            } as any)],
+          };
+          const preparedUnitFee = await client.autofill(unitFeeTx);
+          preparedUnitFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+          const signedUnitFee = wallet.sign(preparedUnitFee);
+          await submitBlobQueued(signedUnitFee.tx_blob);
+          console.log(`[receiveInventory] ✅ Unit mint fee paid: $${unitFeeTotal} for ${qty} units of ${receiveModalItem.partNumber}`);
+        } catch (feeErr: any) {
+          console.warn('[receiveInventory] Unit fee payment failed (non-fatal):', feeErr.message);
+        }
       }
 
       setReceiveResult(`✅ Received ${qty} ${receiveModalItem.unit} of ${receiveModalItem.name}.\nTx: ${result.result.hash}`);

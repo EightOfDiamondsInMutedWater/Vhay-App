@@ -103,7 +103,7 @@ export const DEFAULT_HAIRCUT = 0.65;
 export const COVERAGE_HEALTHY = 1.5;
 export const COVERAGE_WARNING = 1.2;
 export const MIN_DRAW_AMOUNT = 100;
-export const CREDIT_LINE_SCPO_FEE = 0.01;
+export const CREDIT_LINE_SCPO_FEE = 0.0075; // 0.75% per draw
 
 // ─────────────────────────────────────────────────────────────────────────────
 // § 4 — Pure Computation Helpers
