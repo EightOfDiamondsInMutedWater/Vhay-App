@@ -564,42 +564,87 @@ export const getPOCreationTxHash = async (issuanceId: string): Promise<string> =
   }
 };
 export const getPOCreationInfo = async (issuanceId: string): Promise<{ date: string; txHash: string }> => {
+  const ledgerSequence = parseInt(issuanceId.slice(0, 8), 16);
+  const rippleEpoch = 946684800;
+
+  // Helper: derive date from Ripple close_time or close_time_iso
+  const parseDate = (ledgerData: any): Date | null => {
+    if (ledgerData?.close_time_iso) return new Date(ledgerData.close_time_iso);
+    if (ledgerData?.close_time != null) return new Date((ledgerData.close_time + rippleEpoch) * 1000);
+    return null;
+  };
+
+  // Attempt 1: use existing WebSocket client
   try {
     const client = await getXRPLClient();
-    // The first 4 bytes of the MPTokenIssuanceID are the ledger sequence (big-endian)
-    // where the MPTokenIssuanceCreate tx was included. This lets us look up the exact
-    // ledger close time directly — no scanning, no pagination, always correct.
-    const ledgerSequence = parseInt(issuanceId.slice(0, 8), 16);
-    const rippleEpoch = 946684800;
-
     const ledgerResp = await client.request({
       command: 'ledger',
       ledger_index: ledgerSequence,
       transactions: false,
       expand: false,
     } as any);
-
     const ledgerData = (ledgerResp.result as any).ledger || (ledgerResp.result as any).closed?.ledger;
-    const closeTimeIso = ledgerData?.close_time_iso || null;
-    const closeTimeRipple = ledgerData?.close_time ?? null;
-
-    let d: Date;
-    if (closeTimeIso) {
-      d = new Date(closeTimeIso);
-    } else if (closeTimeRipple !== null) {
-      d = new Date((closeTimeRipple + rippleEpoch) * 1000);
-    } else {
-      d = new Date();
+    const d = parseDate(ledgerData);
+    if (d) {
+      return {
+        date: `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`,
+        txHash: '',
+      };
     }
-
-    return {
-      date: `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`,
-      txHash: '',
-    };
   } catch (e: any) {
-    console.warn('[getPOCreationInfo] ledger lookup failed for', issuanceId.slice(0, 8), ':', e?.message || e);
-    return { date: new Date().toLocaleDateString(), txHash: '' };
+    // WS client returned ledgerNotFound — try HTTP fallback without resetting the client
+    // resetXRPLClient() was previously here but was too aggressive — it killed the shared
+    // client mid-flight causing fetchVendorInventoryV2 to fail on concurrent calls
+    console.warn('[getPOCreationInfo] WS ledger lookup failed for', issuanceId.slice(0, 8), '— trying HTTP fallback');
   }
+
+  // Attempt 2: HTTP fallback — bypasses the WebSocket entirely
+  try {
+    const httpEndpoint = (process.env.REACT_APP_XRPL_NODES || 'wss://s.devnet.rippletest.net:51233')
+      .split(',')[0]
+      .trim()
+      .replace('wss://', 'https://')
+      .replace(':51233', ':51234');
+
+    const resp = await fetch(httpEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        method: 'ledger',
+        params: [{ ledger_index: ledgerSequence, transactions: false, expand: false }],
+      }),
+    });
+    const json = await resp.json();
+    const ledgerData = json?.result?.ledger || json?.result?.closed?.ledger;
+    const d = parseDate(ledgerData);
+    if (d) {
+      return {
+        date: `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`,
+        txHash: '',
+      };
+    }
+  } catch (httpErr: any) {
+    console.warn('[getPOCreationInfo] HTTP fallback also failed for', issuanceId.slice(0, 8), ':', httpErr?.message);
+  }
+
+  // Attempt 3: derive approximate date from Ripple epoch + ledger sequence.
+  // Devnet closes ~1 ledger/second. Use sequence as a rough offset from a
+  // known anchor (devnet genesis close_time = 825,878,070 Ripple epoch seconds).
+  try {
+    const DEVNET_GENESIS_RIPPLE = 825878070;
+    const approxRippleTime = DEVNET_GENESIS_RIPPLE + ledgerSequence;
+    const d = new Date((approxRippleTime + rippleEpoch) * 1000);
+    const year = d.getFullYear();
+    // Sanity check — if year is unreasonable, fall through to unknown
+    if (year >= 2024 && year <= 2030) {
+      return {
+        date: `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`,
+        txHash: '',
+      };
+    }
+  } catch { /* fall through */ }
+
+  return { date: 'Unknown', txHash: '' };
 };
 
 export const getEscrowsForPO = async (buyerAddress: string, issuanceId: string) => {

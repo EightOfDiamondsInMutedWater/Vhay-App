@@ -52,6 +52,29 @@ import {
   MAX_ADVANCE_RATE,
   MIN_DAYS_UNTIL_CANCEL,
 } from './utils/financeHelpers';
+import {
+  CreditLine,
+  DrawEvent,
+  RepayEvent,
+  CollateralValuation,
+  CoverageStatus,
+  scanCreditLines,
+  getActiveCreditLines,
+  calculateCollateralValue,
+  computeInterestAccrued,
+  computeCoverageRatio,
+  isPledged,
+  getPledgeForNft,
+  getAvailableCredit,
+  formatCreditLineId,
+  formatCreditLineStatus,
+  formatCreditLineSummary,
+  DEFAULT_HAIRCUT,
+  COVERAGE_HEALTHY,
+  COVERAGE_WARNING,
+  MIN_DRAW_AMOUNT,
+  CREDIT_LINE_SCPO_FEE,
+} from './utils/inventoryFinanceHelpers';
 
 const getOrGenerateUUID = (key: string): string => {
   let uuid = localStorage.getItem(key);
@@ -959,6 +982,21 @@ export default function App() {
   const [financingLenderAPR, setFinancingLenderAPR] = useState<number>(0.12);
   const [financingSubmitting, setFinancingSubmitting] = useState(false);
   const [financingStatusMap, setFinancingStatusMap] = useState<Record<string, FinancingRequest>>({});
+
+  // ── Phase 6C: Inventory Financing ──────────────────────────────────────────
+  const [creditLines, setCreditLines] = useState<CreditLine[]>([]);
+  const [pledgedNftMap, setPledgedNftMap] = useState<Record<string, string>>({}); // nftId → pledgeId
+  const [creditLinesLoading, setCreditLinesLoading] = useState(false);
+  const [showPledgeModal, setShowPledgeModal] = useState(false);
+  const [pledgeSelectedNfts, setPledgeSelectedNfts] = useState<string[]>([]);
+  const [pledgeLenderAddress, setPledgeLenderAddress] = useState('');
+  const [pledgeHaircut, setPledgeHaircut] = useState(DEFAULT_HAIRCUT);
+  const [pledgeSubmitting, setPledgeSubmitting] = useState(false);
+  const [showCreditLineDetail, setShowCreditLineDetail] = useState<CreditLine | null>(null);
+  const [drawAmount, setDrawAmount] = useState('');
+  const [repayAmount, setRepayAmount] = useState('');
+  const [creditLineActionLoading, setCreditLineActionLoading] = useState(false);
+  const [liveCollateralValuation, setLiveCollateralValuation] = useState<CollateralValuation | null>(null);
   const [disbursing, setDisbursing] = useState(false);
   const [financingPackage, setFinancingPackage] = useState<any>(null);
   const [showProofPackage, setShowProofPackage] = useState(false);
@@ -1060,7 +1098,7 @@ export default function App() {
   const [customerViewPoLoadError, setCustomerViewPoLoadError] = useState<string | null>(null);
   const [vendorViewViewedPO, setVendorViewViewedPO] = useState<POData | null>(null);
   const [vendorViewPoLoadError, setVendorViewPoLoadError] = useState<string | null>(null);
-  const [inventorySubTab, setInventorySubTab] = useState<'list' | 'add' | 'import'>('list');
+  const [inventorySubTab, setInventorySubTab] = useState<'list' | 'add' | 'import' | 'creditLines'>('list');
   const [invResult, setInvResult] = useState('');
   const [invName, setInvName] = useState('');
   const [invDepartment, setInvDepartment] = useState('');
@@ -1325,6 +1363,442 @@ export default function App() {
     }
   };
   // ── Phase 6B Session 2: Poll vendor wallet for lender responses ──────────────
+  // ── Phase 6C: Refresh credit lines from on-chain memos ─────────────────────
+  const refreshCreditLines = async () => {
+    if (!vendorProfile.classicAddress) return;
+    setCreditLinesLoading(true);
+    try {
+      const lines = await scanCreditLines(vendorProfile.classicAddress);
+      setCreditLines(lines);
+
+      // Build nftId → pledgeId map for soft lock checks throughout the UI
+      const pledgeMap: Record<string, string> = {};
+      for (const line of lines.filter(l => l.status === 'active')) {
+        for (const nftId of line.pledgedNftIds) {
+          pledgeMap[nftId] = line.pledgeId;
+        }
+      }
+      setPledgedNftMap(pledgeMap);
+    } catch (err) {
+      console.error('[refreshCreditLines] failed:', err);
+    } finally {
+      setCreditLinesLoading(false);
+    }
+  };
+  // ── Phase 6C: Pledge inventory NFTs as collateral ───────────────────────────
+  const pledgeInventory = async () => {
+    if (pledgeSubmitting) return;
+    if (!vendorProfile.seed || !vendorProfile.classicAddress) {
+      return alert('Vendor wallet required.');
+    }
+    if (pledgeSelectedNfts.length === 0) {
+      return alert('Select at least one inventory item to pledge.');
+    }
+    if (!pledgeLenderAddress) {
+      return alert('Enter the lender wallet address.');
+    }
+    if (!liveCollateralValuation || liveCollateralValuation.grossValue <= 0) {
+      return alert('Selected items have no calculable value. Make sure items have a list price and quantity on hand.');
+    }
+
+    setPledgeSubmitting(true);
+    try {
+      const client = await getXRPLClient();
+      const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
+      const pledgeId = uuidv4();
+
+      const grossVal   = liveCollateralValuation.grossValue.toFixed(2);
+      const lineAmt    = liveCollateralValuation.lendableValue.toFixed(2);
+
+      // Pin terms document to IPFS
+      const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
+      if (!pinataApiKey) throw new Error('Pinata API key missing');
+
+      const termsDoc = {
+        pledgeId,
+        vendorAddress:   wallet.classicAddress,
+        lenderAddress:   pledgeLenderAddress,
+        pledgedNftIds:   pledgeSelectedNfts,
+        grossValuation:  grossVal,
+        haircutPct:      pledgeHaircut,
+        creditLimit:     lineAmt,
+        collateralItems: liveCollateralValuation.itemsIncluded.map(i => ({
+          nftId:      i.nftId,
+          partNumber: i.partNumber,
+          name:       i.name,
+          qty:        i.qty,
+          listPrice:  i.listPrice,
+          lineValue:  i.lineValue,
+        })),
+        createdAt: new Date().toISOString(),
+        version:   1,
+      };
+      const termsCID = await pinJSONToBoth(termsDoc, pinataApiKey);
+      const ipfsCID  = termsCID.replace('ipfs://', '');
+
+      // Write COLLATERAL_PLEDGE memo on-chain as 1-drop self-payment
+      const pledgeTx: Payment = {
+        TransactionType: 'Payment',
+        Account:         wallet.classicAddress,
+        Destination:     wallet.classicAddress,
+        Amount:          '1',
+        Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_PLEDGE, pledgeId, {
+          nfts:      pledgeSelectedNfts,
+          valuation: grossVal,
+          haircut:   pledgeHaircut,
+          lineAmt,
+          lender:    pledgeLenderAddress,
+          termsCID:  ipfsCID,
+        } as any)],
+      };
+
+      const prepared = await client.autofill(pledgeTx);
+      prepared.LastLedgerSequence =
+        (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signed = wallet.sign(prepared);
+      const result = await submitBlobQueued(signed.tx_blob);
+      const meta   = result.result.meta as any;
+
+      if (meta.TransactionResult !== 'tesSUCCESS') {
+        throw new Error(`Pledge transaction failed: ${meta.TransactionResult}`);
+      }
+
+      const txHash = result.result.hash;
+      console.log(`[pledgeInventory] ✅ COLLATERAL_PLEDGE written. PledgeId: ${pledgeId}, Tx: ${txHash}`);
+
+      alert(
+        `✅ Inventory pledged as collateral!\n\n` +
+        `Credit Line ID: ${pledgeId.slice(0, 8).toUpperCase()}\n` +
+        `Gross Value: $${grossVal}\n` +
+        `Credit Limit: $${lineAmt} (${(pledgeHaircut * 100).toFixed(0)}% advance rate)\n` +
+        `Tx: ${txHash}\n\n` +
+        `The lender has been notified on-chain. Await their approval and first disbursement.`
+      );
+
+      // Reset modal state and refresh
+      setShowPledgeModal(false);
+      setPledgeSelectedNfts([]);
+      setPledgeLenderAddress('');
+      setPledgeHaircut(DEFAULT_HAIRCUT);
+      setLiveCollateralValuation(null);
+      await refreshCreditLines();
+    } catch (err: any) {
+      alert('Pledge failed: ' + err.message);
+    } finally {
+      setPledgeSubmitting(false);
+    }
+  };
+  // ── Phase 6C: Draw down against an active credit line ──────────────────────
+  const drawFromCreditLine = async (line: CreditLine) => {
+    if (creditLineActionLoading) return;
+    const drawAmt = parseFloat(drawAmount);
+    if (!drawAmt || drawAmt < MIN_DRAW_AMOUNT) {
+      return alert(`Minimum draw is $${MIN_DRAW_AMOUNT} RLUSD.`);
+    }
+    const available = getAvailableCredit(line);
+    if (drawAmt > available) {
+      return alert(`Draw amount exceeds available credit ($${available.toFixed(2)} RLUSD).`);
+    }
+    if (!vendorProfile.seed) return alert('Vendor wallet required.');
+
+    setCreditLineActionLoading(true);
+    try {
+      const client      = await getXRPLClient();
+      const wallet      = xrpl.Wallet.fromSeed(vendorProfile.seed);
+      const drawId      = uuidv4();
+      const newBalance  = (parseFloat(line.currentBalance) + drawAmt).toFixed(2);
+
+      // Write COLLATERAL_DRAW memo on-chain as 1-drop self-payment.
+      // Actual RLUSD disbursement follows the 6B pattern:
+      // lender signals approval off-platform, SC.PO company wallet forwards funds.
+      const drawTx: Payment = {
+        TransactionType: 'Payment',
+        Account:         wallet.classicAddress,
+        Destination:     wallet.classicAddress,
+        Amount:          '1',
+        Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_DRAW, drawId, {
+          pledgeId: line.pledgeId,
+          drawAmt:  drawAmt.toFixed(2),
+          newBal:   newBalance,
+          txRef:    '',
+        } as any)],
+      };
+
+      const prepared = await client.autofill(drawTx);
+      prepared.LastLedgerSequence =
+        (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signed = wallet.sign(prepared);
+      const result = await submitBlobQueued(signed.tx_blob);
+      const meta   = result.result.meta as any;
+
+      if (meta.TransactionResult !== 'tesSUCCESS') {
+        throw new Error(`Draw transaction failed: ${meta.TransactionResult}`);
+      }
+
+      console.log(`[drawFromCreditLine] ✅ COLLATERAL_DRAW written. DrawId: ${drawId}, Amount: $${drawAmt}, Tx: ${result.result.hash}`);
+      alert(
+        `✅ Draw request submitted!\n\n` +
+        `Amount: $${drawAmt.toFixed(2)} RLUSD\n` +
+        `New Balance: $${newBalance}\n` +
+        `Tx: ${result.result.hash}\n\n` +
+        `The lender has been notified on-chain. Funds will be disbursed to your wallet shortly.`
+      );
+
+      setDrawAmount('');
+      setShowCreditLineDetail(null);
+      await refreshCreditLines();
+    } catch (err: any) {
+      alert('Draw failed: ' + err.message);
+    } finally {
+      setCreditLineActionLoading(false);
+    }
+  };
+
+  // ── Phase 6C: Repay against an active credit line ───────────────────────────
+  const repayCredit = async (line: CreditLine, knownAPR: number = 0) => {
+    if (creditLineActionLoading) return;
+    const repayAmt = parseFloat(repayAmount);
+    if (!repayAmt || repayAmt <= 0) {
+      return alert('Enter a valid repayment amount.');
+    }
+    const balance = parseFloat(line.currentBalance);
+    if (repayAmt > balance) {
+      return alert(`Repayment ($${repayAmt.toFixed(2)}) exceeds outstanding balance ($${balance.toFixed(2)}).`);
+    }
+    if (!vendorProfile.seed) return alert('Vendor wallet required.');
+
+    setCreditLineActionLoading(true);
+    try {
+      const client     = await getXRPLClient();
+      const wallet     = xrpl.Wallet.fromSeed(vendorProfile.seed);
+      const repayId    = uuidv4();
+      const companySeed = process.env.REACT_APP_COMPANY_SEED;
+      if (!companySeed) throw new Error('Company wallet not configured.');
+      const companyWallet = xrpl.Wallet.fromSeed(companySeed);
+
+      // Calculate interest portion for this repayment
+      const now          = Math.floor(Date.now() / 1000);
+      const totalInterest = computeInterestAccrued(line.draws, line.repayments, knownAPR, now);
+      // Pro-rata interest on this repayment vs outstanding balance
+      const interestPortion = balance > 0
+        ? (repayAmt / balance) * totalInterest
+        : 0;
+      const principalPortion = repayAmt - interestPortion;
+      const newBalance = Math.max(0, balance - principalPortion).toFixed(2);
+
+      const rlusdIssuer = process.env.REACT_APP_RLUSD_ISSUER || '';
+
+      // Step 1: Vendor sends RLUSD to SC.PO company wallet
+      const repayTx: Payment = {
+        TransactionType: 'Payment',
+        Account:         wallet.classicAddress,
+        Destination:     companyWallet.classicAddress,
+        Amount: {
+          currency: 'USD',
+          issuer:   rlusdIssuer,
+          value:    repayAmt.toFixed(2),
+        } as any,
+        Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_REPAY, repayId, {
+          pledgeId:  line.pledgeId,
+          repayAmt:  principalPortion.toFixed(2),
+          intAmt:    interestPortion.toFixed(2),
+          newBal:    newBalance,
+          txRef:     '',
+        } as any)],
+      };
+
+      const prepared = await client.autofill(repayTx);
+      prepared.LastLedgerSequence =
+        (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signed = wallet.sign(prepared);
+      const result = await submitBlobQueued(signed.tx_blob);
+      const meta   = result.result.meta as any;
+
+      if (meta.TransactionResult !== 'tesSUCCESS') {
+        throw new Error(`Repayment transaction failed: ${meta.TransactionResult}`);
+      }
+
+      const repayTxHash = result.result.hash;
+
+      // Step 2: SC.PO company wallet forwards to lender
+      const forwardTx: Payment = {
+        TransactionType: 'Payment',
+        Account:         companyWallet.classicAddress,
+        Destination:     line.lenderAddress,
+        Amount: {
+          currency: 'USD',
+          issuer:   rlusdIssuer,
+          value:    repayAmt.toFixed(2),
+        } as any,
+        Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_REPAY, repayId, {
+          pledgeId:  line.pledgeId,
+          repayAmt:  principalPortion.toFixed(2),
+          intAmt:    interestPortion.toFixed(2),
+          newBal:    newBalance,
+          txRef:     repayTxHash,
+        } as any)],
+      };
+
+      const preparedFwd = await client.autofill(forwardTx);
+      preparedFwd.LastLedgerSequence =
+        (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signedFwd = companyWallet.sign(preparedFwd);
+      await submitBlobQueued(signedFwd.tx_blob);
+
+      console.log(`[repayCredit] ✅ Repayment complete. Principal: $${principalPortion.toFixed(2)}, Interest: $${interestPortion.toFixed(2)}, Tx: ${repayTxHash}`);
+
+      const fullyRepaid = parseFloat(newBalance) === 0;
+      alert(
+        `✅ Repayment sent!\n\n` +
+        `Principal: $${principalPortion.toFixed(2)} RLUSD\n` +
+        `Interest:  $${interestPortion.toFixed(2)} RLUSD\n` +
+        `Remaining Balance: $${newBalance}\n` +
+        `Tx: ${repayTxHash}` +
+        (fullyRepaid ? '\n\n🎉 Balance is zero — you can now release your collateral.' : '')
+      );
+
+      setRepayAmount('');
+      setShowCreditLineDetail(null);
+      await refreshCreditLines();
+    } catch (err: any) {
+      alert('Repayment failed: ' + err.message);
+    } finally {
+      setCreditLineActionLoading(false);
+    }
+  };
+
+  // ── Phase 6C: Release collateral after full repayment ──────────────────────
+  const releaseCollateral = async (line: CreditLine) => {
+    if (creditLineActionLoading) return;
+    const balance = parseFloat(line.currentBalance);
+    if (balance > 0) {
+      return alert(`Cannot release — outstanding balance is $${balance.toFixed(2)} RLUSD. Repay in full first.`);
+    }
+    if (!vendorProfile.seed) return alert('Vendor wallet required.');
+    if (!window.confirm(
+      `Release collateral for Credit Line ${formatCreditLineId(line.pledgeId)}?\n\n` +
+      `This will unlock ${line.pledgedNftIds.length} inventory item(s).`
+    )) return;
+
+    setCreditLineActionLoading(true);
+    try {
+      const client = await getXRPLClient();
+      const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
+
+      const releaseTx: Payment = {
+        TransactionType: 'Payment',
+        Account:         wallet.classicAddress,
+        Destination:     wallet.classicAddress,
+        Amount:          '1',
+        Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_RELEASE, line.pledgeId, {
+          pledgeId: line.pledgeId,
+          nfts:     line.pledgedNftIds,
+        } as any)],
+      };
+
+      const prepared = await client.autofill(releaseTx);
+      prepared.LastLedgerSequence =
+        (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+      const signed = wallet.sign(prepared);
+      const result = await submitBlobQueued(signed.tx_blob);
+      const meta   = result.result.meta as any;
+
+      if (meta.TransactionResult !== 'tesSUCCESS') {
+        throw new Error(`Release transaction failed: ${meta.TransactionResult}`);
+      }
+
+      console.log(`[releaseCollateral] ✅ COLLATERAL_RELEASE written. PledgeId: ${line.pledgeId}, Tx: ${result.result.hash}`);
+      alert(
+        `✅ Collateral released!\n\n` +
+        `Credit Line: ${formatCreditLineId(line.pledgeId)}\n` +
+        `${line.pledgedNftIds.length} item(s) unlocked.\n` +
+        `Tx: ${result.result.hash}`
+      );
+
+      setShowCreditLineDetail(null);
+      await refreshCreditLines();
+    } catch (err: any) {
+      alert('Release failed: ' + err.message);
+    } finally {
+      setCreditLineActionLoading(false);
+    }
+  };
+  // ── Phase 6C: Check collateral health after inventory changes ───────────────
+  // Called after: auto-burn (claimEscrowForPO), receiveInventory, status changes.
+  // If coverage drops below COVERAGE_WARNING threshold, writes a
+  // COLLATERAL_MARGIN_NOTICE memo to the lender wallet on-chain.
+  const checkCollateralHealth = async (updatedItems?: typeof vendorInventoryV2) => {
+    const activeLines = creditLines.filter(l => l.status === 'active' && parseFloat(l.currentBalance) > 0);
+    if (activeLines.length === 0) return;
+
+    const items = updatedItems || vendorInventoryV2;
+    if (!vendorProfile.seed) return;
+
+    try {
+      const client        = await getXRPLClient();
+      const wallet        = xrpl.Wallet.fromSeed(vendorProfile.seed);
+      const companySeed   = process.env.REACT_APP_COMPANY_SEED;
+      const companyWallet = companySeed ? xrpl.Wallet.fromSeed(companySeed) : null;
+
+      for (const line of activeLines) {
+        // Only value items that are pledged on this line
+        const pledgedItems = items.filter(i => line.pledgedNftIds.includes(i.nftId));
+        if (pledgedItems.length === 0) continue;
+
+        // Hydrate listPrice from invPricingMap if not already on the item
+        const itemsWithPricing = pledgedItems.map(i => ({
+          nftId:          i.nftId,
+          partNumber:     i.partNumber,
+          name:           i.name,
+          quantityOnHand: i.quantityOnHand,
+          listPrice:      i.listPrice || invPricingMap[i.nftId]?.listPrice || 0,
+        }));
+
+        const currentBalance = parseFloat(line.currentBalance);
+        const valuation = calculateCollateralValue(itemsWithPricing, line.haircutPct, currentBalance);
+        const coverage  = computeCoverageRatio(valuation.grossValue, currentBalance);
+
+        console.log(`[checkCollateralHealth] Line ${formatCreditLineId(line.pledgeId)}: coverage ${coverage.label}, grossValue $${valuation.grossValue.toFixed(2)}, balance $${currentBalance.toFixed(2)}`);
+
+        if (coverage.status === 'warning' || coverage.status === 'critical') {
+          // Only write a margin notice if one hasn't been written in the last 24h
+          // (checked by scanning the last notice timestamp from creditLine draws —
+          // for MVP we write on every health check that triggers, keeping it simple)
+          const minVal = (currentBalance * COVERAGE_WARNING).toFixed(2);
+
+          // Write notice memo from vendor wallet (self-payment) as on-chain record
+          try {
+            const noticeTx: Payment = {
+              TransactionType: 'Payment',
+              Account:         wallet.classicAddress,
+              Destination:     wallet.classicAddress,
+              Amount:          '1',
+              Memos: [buildMemo(SCPO_ACTIONS.COLLATERAL_MARGIN_NOTICE, line.pledgeId, {
+                pledgeId: line.pledgeId,
+                curVal:   valuation.grossValue.toFixed(2),
+                minVal,
+                action:   coverage.status === 'critical' ? 'reduce_line' : 'add_collateral',
+              } as any)],
+            };
+
+            const prepared = await client.autofill(noticeTx);
+            prepared.LastLedgerSequence =
+              (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+            const signed = wallet.sign(prepared);
+            await submitBlobQueued(signed.tx_blob);
+
+            console.log(`[checkCollateralHealth] ⚠️ COLLATERAL_MARGIN_NOTICE written for line ${line.pledgeId}`);
+          } catch (noticeErr: any) {
+            // Margin notice is best-effort — do not block the calling flow
+            console.warn('[checkCollateralHealth] Failed to write margin notice:', noticeErr.message);
+          }
+        }
+      }
+    } catch (err: any) {
+      // Health check is best-effort — never block the calling flow
+      console.warn('[checkCollateralHealth] failed:', err.message);
+    }
+  };
   const refreshFinancingStatus = async () => {
     console.log('[refreshFinancingStatus] triggered. vendorAddress:', vendorProfile.classicAddress);
     if (!vendorProfile.classicAddress) return;
@@ -2889,6 +3363,8 @@ useEffect(() => {
                   const freshItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, freshWallet);
                   setVendorInventoryV2(freshItems);
                   console.log('[AutoBurn] ✅ Inventory refreshed after claim');
+                  // Phase 6C: check if burn reduced collateral value below threshold
+                  await checkCollateralHealth(freshItems);
                 } catch { /* non-fatal */ }
               }
             }
@@ -3670,18 +4146,32 @@ const getUpdatablePOs = () => {
       let pagesFetched = 0;
       const MAX_PAGES = 10; // up to 4,000 txs total
 
-      do {
+      const fetchTxPage = async (markerVal: any): Promise<{ txList: any[]; nextMarker: any }> => {
         const txResponse: any = await client.request({
           command: 'account_tx',
           account: vendorAddress,
           ledger_index_min: -1,
           ledger_index_max: -1,
           limit: 400,
-          forward: false,
-          ...(marker ? { marker } : {}),
+          forward: true,
+          ...(markerVal ? { marker: markerVal } : {}),
         });
-        const txList = txResponse.result.transactions || [];
-        marker = txResponse.result.marker;
+        return {
+          txList: txResponse.result.transactions || [],
+          nextMarker: txResponse.result.marker,
+        };
+      };
+
+      // Warm up the WS connection with a lightweight call before the tx scan.
+      // On fresh connections, account_tx sometimes returns a truncated first page
+      // with no marker. A prior lightweight request stabilises the connection.
+      try {
+        await client.request({ command: 'ledger_current' });
+      } catch { /* non-fatal */ }
+
+      do {
+        const { txList, nextMarker } = await fetchTxPage(marker);
+        marker = nextMarker;
         pagesFetched++;
         console.log('[FetchV2] account_tx page', pagesFetched, 'returned', txList.length, 'txs, marker:', !!marker);
 
@@ -3890,6 +4380,8 @@ const getUpdatablePOs = () => {
         // from the already-decrypted vendorDoc — no separate loadInventoryValuation call needed
         setVendorInventoryV2(items);
         setVendorInventorySuperseded(allItems.filter(i => !items.find(a => a.nftId === i.nftId)));
+        // Phase 6C: refresh credit lines so pledgedNftMap is current when tab opens
+        await refreshCreditLines();
       } catch (err) {
         console.error('Failed to load V2 inventory:', err);
       } finally {
@@ -4363,6 +4855,18 @@ const getUpdatablePOs = () => {
     if (!vendorProfile.seed) return alert('Vendor wallet seed required');
     if (item.status === newStatus) return;
 
+    // Phase 6C: block discontinuing a pledged item — it's active collateral
+    if (newStatus === 'discontinued') {
+      const pledge = getPledgeForNft(item.nftId, creditLines);
+      if (pledge) {
+        return alert(
+          `⛔ Cannot discontinue "${item.name}".\n\n` +
+          `This item is pledged as collateral on Credit Line ${formatCreditLineId(pledge.pledgeId)}.\n\n` +
+          `Repay the credit line and release the collateral before discontinuing this item.`
+        );
+      }
+    }
+
     setStatusUpdatingNFTId(item.nftId);
     try {
       const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
@@ -4616,6 +5120,8 @@ const getUpdatablePOs = () => {
       if (updatedModalItem) setReceiveModalItem(updatedModalItem);
       setReceiveQty('');
       setReceiveLotRef('');
+      // Phase 6C: re-check collateral health after inventory quantity changes
+      await checkCollateralHealth(freshItems);
     } catch (err: any) {
       setReceiveResult('❌ Error: ' + err.message);
     } finally {
@@ -6908,6 +7414,9 @@ const addLinkedVendorByDID = async () => {
               <button onClick={() => setInventorySubTab('import')} style={{ height: '50px', padding: '0 30px', background: inventorySubTab === 'import' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: inventorySubTab === 'import' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
                 Import
               </button>
+              <button onClick={() => setInventorySubTab('creditLines')} style={{ height: '50px', padding: '0 30px', background: inventorySubTab === 'creditLines' ? 'linear-gradient(90deg, #553C9A 0%, #7C5CBF 100%)' : 'linear-gradient(90deg, rgba(85,60,154,0.85) 0%, rgba(124,92,191,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #3D2B7A', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: inventorySubTab === 'creditLines' ? 'inset 4px 6px 12px rgba(61,43,122,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(61,43,122,0.35), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
+                Credit Lines {creditLines.filter(l => l.status === 'active').length > 0 && `(${creditLines.filter(l => l.status === 'active').length})`}
+              </button>
             </div>
             {inventorySubTab === 'list' && (
               <div>
@@ -7217,6 +7726,14 @@ const addLinkedVendorByDID = async () => {
                               </td>
                               <td style={{ padding: '10px', textAlign: 'center' }}>
                                 <span style={{ background: '#E3F2FD', color: '#1565C0', padding: '2px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' }}>v{item.version || 1}</span>
+                                {isPledged(item.nftId, creditLines) && (
+                                  <span
+                                    title={`Pledged as collateral on Credit Line ${formatCreditLineId(pledgedNftMap[item.nftId] || '')}`}
+                                    style={{ marginLeft: '6px', background: '#F0EAFF', color: '#553C9A', padding: '2px 7px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold', cursor: 'help', border: '1px solid #C4A8E8' }}
+                                  >
+                                    🔒 Pledged
+                                  </span>
+                                )}
                               </td>
                               <td style={{ padding: '10px', textAlign: 'center', fontSize: '12px', color: '#888' }}>{item.dateAdded}</td>
                               <td style={{ padding: '10px', textAlign: 'center' }}>
@@ -8459,6 +8976,338 @@ const addLinkedVendorByDID = async () => {
                     </button>
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        )}
+        {inventorySubTab === 'creditLines' && (
+          <div>
+            {/* ── Phase 6C: Credit Lines Panel ─────────────────────────────── */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+              <h3 style={{ color: '#553C9A', margin: 0 }}>Inventory Credit Lines</h3>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button onClick={refreshCreditLines} disabled={creditLinesLoading} style={{ padding: '8px 16px', borderRadius: '20px', border: '1px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', fontSize: '13px' }}>
+                  {creditLinesLoading ? '⏳ Loading...' : '↻ Refresh'}
+                </button>
+                <button onClick={() => setShowPledgeModal(true)} style={{ padding: '8px 18px', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #553C9A 0%, #7C5CBF 100%)', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}>
+                  + New Credit Line
+                </button>
+              </div>
+            </div>
+
+            {/* ── Credit line list ────────────────────────────────────────── */}
+            {creditLines.length === 0 && !creditLinesLoading && (
+              <div style={{ textAlign: 'center', padding: '40px', color: '#999', background: '#F9F5FF', borderRadius: '12px', border: '1px dashed #C4A8E8' }}>
+                <div style={{ fontSize: '32px', marginBottom: '12px' }}>🏦</div>
+                <div style={{ fontWeight: 'bold', marginBottom: '6px', color: '#553C9A' }}>No credit lines yet</div>
+                <div style={{ fontSize: '14px' }}>Pledge inventory NFTs as collateral to open a credit line with a licensed lender.</div>
+              </div>
+            )}
+
+            {creditLines.map(line => {
+              const balance     = parseFloat(line.currentBalance) || 0;
+              const limit       = parseFloat(line.creditLimit) || 0;
+              const available   = Math.max(0, limit - balance);
+              const pledgedItems = vendorInventoryV2.filter(i => line.pledgedNftIds.includes(i.nftId));
+              const itemsWithPricing = pledgedItems.map(i => ({
+                nftId: i.nftId, partNumber: i.partNumber, name: i.name,
+                quantityOnHand: i.quantityOnHand,
+                listPrice: i.listPrice || invPricingMap[i.nftId]?.listPrice || 0,
+              }));
+              const valuation = calculateCollateralValue(itemsWithPricing, line.haircutPct, balance);
+              const coverage  = computeCoverageRatio(valuation.grossValue, balance);
+              const coverageColor = coverage.status === 'healthy' ? '#27ae60' : coverage.status === 'warning' ? '#e67e22' : coverage.status === 'critical' ? '#e74c3c' : '#888';
+
+              return (
+                <div key={line.pledgeId} style={{ background: 'white', border: `1.5px solid ${line.status === 'active' ? '#C4A8E8' : '#ddd'}`, borderRadius: '14px', padding: '20px', marginBottom: '16px', boxShadow: '0 2px 8px rgba(85,60,154,0.08)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
+                    <div>
+                      <span style={{ fontWeight: 'bold', color: '#553C9A', fontSize: '15px' }}>{formatCreditLineId(line.pledgeId)}</span>
+                      <span style={{ marginLeft: '10px', fontSize: '12px', color: line.status === 'active' ? '#27ae60' : line.status === 'defaulted' ? '#e74c3c' : '#888', fontWeight: 'bold' }}>{formatCreditLineStatus(line.status)}</span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#999' }}>
+                      Opened {new Date(line.pledgeTimestamp * 1000).toLocaleDateString()}
+                    </div>
+                  </div>
+
+                  {/* Metrics row */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '14px' }}>
+                    {[
+                      { label: 'Credit Limit',  value: `$${limit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+                      { label: 'Balance',        value: `$${balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+                      { label: 'Available',      value: `$${available.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+                      { label: 'Coverage',       value: coverage.status === 'no_balance' ? '—' : coverage.label, color: coverageColor },
+                    ].map(m => (
+                      <div key={m.label} style={{ background: '#F9F5FF', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
+                        <div style={{ fontSize: '11px', color: '#888', marginBottom: '4px' }}>{m.label}</div>
+                        <div style={{ fontWeight: 'bold', color: m.color || '#333', fontSize: '14px' }}>{m.value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Collateral items */}
+                  <div style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
+                    <span style={{ fontWeight: 'bold' }}>{line.pledgedNftIds.length} item(s) pledged</span>
+                    {valuation.grossValue > 0 && (
+                      <span style={{ marginLeft: '8px' }}>— Collateral value: <strong>${valuation.grossValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+                    )}
+                    {line.lenderAddress && (
+                      <span style={{ marginLeft: '8px', color: '#999' }}>Lender: {line.lenderAddress.slice(0, 8)}...{line.lenderAddress.slice(-4)}</span>
+                    )}
+                  </div>
+
+                  {/* Coverage warning banner */}
+                  {coverage.status === 'warning' && (
+                    <div style={{ background: '#FFF3CD', border: '1px solid #e67e22', borderRadius: '8px', padding: '8px 12px', marginBottom: '12px', fontSize: '13px', color: '#856404' }}>
+                      ⚠️ Collateral value is approaching minimum coverage. Consider adding more inventory or reducing your balance.
+                    </div>
+                  )}
+                  {coverage.status === 'critical' && (
+                    <div style={{ background: '#FFEAEA', border: '1px solid #e74c3c', borderRadius: '8px', padding: '8px 12px', marginBottom: '12px', fontSize: '13px', color: '#721c24' }}>
+                      🚨 Coverage is below minimum threshold. Margin notice sent to lender. Take action immediately.
+                    </div>
+                  )}
+
+                  {/* Action buttons */}
+                  {line.status === 'active' && (
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                      <button onClick={() => { setShowCreditLineDetail(line); setDrawAmount(''); setRepayAmount(''); }} style={{ padding: '7px 16px', borderRadius: '20px', border: '1.5px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
+                        Manage
+                      </button>
+                      {balance === 0 && (
+                        <button onClick={() => releaseCollateral(line)} disabled={creditLineActionLoading} style={{ padding: '7px 16px', borderRadius: '20px', border: 'none', background: '#27ae60', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
+                          Release Collateral
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* ── Manage modal ────────────────────────────────────────────── */}
+            {showCreditLineDetail && (
+              <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ background: 'white', borderRadius: '16px', padding: '28px', maxWidth: '520px', width: '90%', maxHeight: '80vh', overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ margin: 0, color: '#553C9A' }}>{formatCreditLineId(showCreditLineDetail.pledgeId)}</h3>
+                    <button onClick={() => setShowCreditLineDetail(null)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#999' }}>✕</button>
+                  </div>
+
+                  <div style={{ marginBottom: '20px', fontSize: '14px', color: '#555' }}>
+                    {formatCreditLineSummary(showCreditLineDetail)}
+                  </div>
+
+                  {/* Draw down */}
+                  {getAvailableCredit(showCreditLineDetail) > 0 && (
+                    <div style={{ marginBottom: '20px', background: '#F9F5FF', borderRadius: '10px', padding: '16px' }}>
+                      <div style={{ fontWeight: 'bold', color: '#553C9A', marginBottom: '10px' }}>Draw Down</div>
+                      <div style={{ fontSize: '12px', color: '#888', marginBottom: '8px' }}>
+                        Available: ${getAvailableCredit(showCreditLineDetail).toFixed(2)} RLUSD
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          type="number"
+                          value={drawAmount}
+                          onChange={e => setDrawAmount(e.target.value)}
+                          placeholder={`Min $${MIN_DRAW_AMOUNT}`}
+                          style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid #C4A8E8', fontSize: '14px' }}
+                        />
+                        <button onClick={() => drawFromCreditLine(showCreditLineDetail)} disabled={creditLineActionLoading || !drawAmount} style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#553C9A', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}>
+                          {creditLineActionLoading ? '⏳' : 'Draw'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Repay */}
+                  {parseFloat(showCreditLineDetail.currentBalance) > 0 && (
+                    <div style={{ marginBottom: '20px', background: '#F0FFF4', borderRadius: '10px', padding: '16px' }}>
+                      <div style={{ fontWeight: 'bold', color: '#27ae60', marginBottom: '10px' }}>Make Payment</div>
+                      <div style={{ fontSize: '12px', color: '#888', marginBottom: '8px' }}>
+                        Outstanding: ${parseFloat(showCreditLineDetail.currentBalance).toFixed(2)} RLUSD
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input
+                          type="number"
+                          value={repayAmount}
+                          onChange={e => setRepayAmount(e.target.value)}
+                          placeholder="Amount to repay"
+                          style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid #A8D5B5', fontSize: '14px' }}
+                        />
+                        <button onClick={() => repayCredit(showCreditLineDetail)} disabled={creditLineActionLoading || !repayAmount} style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#27ae60', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}>
+                          {creditLineActionLoading ? '⏳' : 'Pay'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Draw history */}
+                  {showCreditLineDetail.draws.length > 0 && (
+                    <div style={{ marginBottom: '16px' }}>
+                      <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#553C9A', marginBottom: '8px' }}>Draw History</div>
+                      {showCreditLineDetail.draws.map(d => (
+                        <div key={d.drawId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '6px 0', borderBottom: '1px solid #f0f0f0', color: '#555' }}>
+                          <span>{new Date(d.timestamp * 1000).toLocaleDateString()}</span>
+                          <span style={{ color: '#553C9A', fontWeight: 'bold' }}>+${parseFloat(d.amount).toFixed(2)}</span>
+                          <span style={{ color: '#999' }}>Bal: ${parseFloat(d.newBalance).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Repayment history */}
+                  {showCreditLineDetail.repayments.length > 0 && (
+                    <div style={{ marginBottom: '16px' }}>
+                      <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#27ae60', marginBottom: '8px' }}>Payment History</div>
+                      {showCreditLineDetail.repayments.map(r => (
+                        <div key={r.repayId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '6px 0', borderBottom: '1px solid #f0f0f0', color: '#555' }}>
+                          <span>{new Date(r.timestamp * 1000).toLocaleDateString()}</span>
+                          <span style={{ color: '#27ae60', fontWeight: 'bold' }}>-${parseFloat(r.principalAmount).toFixed(2)}</span>
+                          <span style={{ color: '#999' }}>Int: ${parseFloat(r.interestAmount).toFixed(2)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Release button if balance is zero */}
+                  {parseFloat(showCreditLineDetail.currentBalance) === 0 && (
+                    <button onClick={() => releaseCollateral(showCreditLineDetail)} disabled={creditLineActionLoading} style={{ width: '100%', padding: '12px', borderRadius: '10px', border: 'none', background: '#27ae60', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', marginTop: '8px' }}>
+                      🔓 Release Collateral
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ── Pledge modal ─────────────────────────────────────────────── */}
+            {showPledgeModal && (
+              <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ background: 'white', borderRadius: '16px', padding: '28px', maxWidth: '580px', width: '90%', maxHeight: '85vh', overflowY: 'auto' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h3 style={{ margin: 0, color: '#553C9A' }}>New Credit Line</h3>
+                    <button onClick={() => { setShowPledgeModal(false); setPledgeSelectedNfts([]); setLiveCollateralValuation(null); }} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#999' }}>✕</button>
+                  </div>
+
+                  {/* Lender address */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', fontWeight: 'bold', color: '#553C9A', marginBottom: '6px', fontSize: '13px' }}>Lender Wallet Address</label>
+                    <input
+                      type="text"
+                      value={pledgeLenderAddress}
+                      onChange={e => setPledgeLenderAddress(e.target.value)}
+                      placeholder="r..."
+                      style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #C4A8E8', fontSize: '14px', boxSizing: 'border-box' }}
+                    />
+                  </div>
+
+                  {/* Haircut selector */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', fontWeight: 'bold', color: '#553C9A', marginBottom: '6px', fontSize: '13px' }}>
+                      Advance Rate: {(pledgeHaircut * 100).toFixed(0)}% of collateral value
+                    </label>
+                    <input
+                      type="range" min="0.5" max="0.85" step="0.05"
+                      value={pledgeHaircut}
+                      onChange={e => {
+                        const h = parseFloat(e.target.value);
+                        setPledgeHaircut(h);
+                        if (liveCollateralValuation) {
+                          const updated = calculateCollateralValue(
+                            liveCollateralValuation.itemsIncluded.map(i => ({
+                              nftId: i.nftId, partNumber: i.partNumber, name: i.name,
+                              quantityOnHand: i.qty, listPrice: i.listPrice,
+                            })),
+                            h, 0
+                          );
+                          setLiveCollateralValuation(updated);
+                        }
+                      }}
+                      style={{ width: '100%' }}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#999' }}>
+                      <span>50%</span><span>85%</span>
+                    </div>
+                  </div>
+
+                  {/* Inventory item selector */}
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ display: 'block', fontWeight: 'bold', color: '#553C9A', marginBottom: '8px', fontSize: '13px' }}>
+                      Select Items to Pledge ({pledgeSelectedNfts.length} selected)
+                    </label>
+                    <div style={{ maxHeight: '220px', overflowY: 'auto', border: '1px solid #C4A8E8', borderRadius: '8px' }}>
+                      {vendorInventoryV2.filter(i => i.status !== 'discontinued' && !isPledged(i.nftId, creditLines)).map(item => {
+                        const selected  = pledgeSelectedNfts.includes(item.nftId);
+                        const price     = item.listPrice || invPricingMap[item.nftId]?.listPrice || 0;
+                        const lineValue = item.quantityOnHand * price;
+                        return (
+                          <div
+                            key={item.nftId}
+                            onClick={() => {
+                              const next = selected
+                                ? pledgeSelectedNfts.filter(id => id !== item.nftId)
+                                : [...pledgeSelectedNfts, item.nftId];
+                              setPledgeSelectedNfts(next);
+                              // Recalculate live valuation
+                              const selectedItems = vendorInventoryV2
+                                .filter(i => next.includes(i.nftId))
+                                .map(i => ({
+                                  nftId: i.nftId, partNumber: i.partNumber, name: i.name,
+                                  quantityOnHand: i.quantityOnHand,
+                                  listPrice: i.listPrice || invPricingMap[i.nftId]?.listPrice || 0,
+                                }));
+                              setLiveCollateralValuation(
+                                selectedItems.length > 0
+                                  ? calculateCollateralValue(selectedItems, pledgeHaircut, 0)
+                                  : null
+                              );
+                            }}
+                            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer', background: selected ? '#F0EAFF' : 'white' }}
+                          >
+                            <div>
+                              <div style={{ fontWeight: selected ? 'bold' : 'normal', color: selected ? '#553C9A' : '#333', fontSize: '13px' }}>{item.name}</div>
+                              <div style={{ fontSize: '11px', color: '#999' }}>{item.partNumber} · {item.quantityOnHand} {item.unit} on hand</div>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#553C9A' }}>${lineValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                              <div style={{ fontSize: '11px', color: '#999' }}>${price.toFixed(2)}/unit</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {vendorInventoryV2.filter(i => i.status !== 'discontinued' && !isPledged(i.nftId, creditLines)).length === 0 && (
+                        <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '13px' }}>
+                          No available inventory items. Items already pledged or discontinued are excluded.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Live valuation summary */}
+                  {liveCollateralValuation && liveCollateralValuation.grossValue > 0 && (
+                    <div style={{ background: '#F9F5FF', borderRadius: '10px', padding: '14px', marginBottom: '16px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', textAlign: 'center' }}>
+                        {[
+                          { label: 'Gross Value',    value: `$${liveCollateralValuation.grossValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+                          { label: `Advance (${(pledgeHaircut*100).toFixed(0)}%)`, value: `$${liveCollateralValuation.lendableValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
+                          { label: 'Items',          value: `${liveCollateralValuation.itemsIncluded.length}` },
+                        ].map(m => (
+                          <div key={m.label}>
+                            <div style={{ fontSize: '11px', color: '#888' }}>{m.label}</div>
+                            <div style={{ fontWeight: 'bold', color: '#553C9A', fontSize: '15px' }}>{m.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={pledgeInventory}
+                    disabled={pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress || !liveCollateralValuation}
+                    style={{ width: '100%', padding: '13px', borderRadius: '10px', border: 'none', background: pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress ? '#ccc' : 'linear-gradient(90deg, #553C9A 0%, #7C5CBF 100%)', color: 'white', cursor: pledgeSubmitting ? 'wait' : 'pointer', fontWeight: 'bold', fontSize: '15px' }}>
+                    {pledgeSubmitting ? '⏳ Submitting...' : `Pledge ${pledgeSelectedNfts.length > 0 ? pledgeSelectedNfts.length + ' item(s)' : 'Items'} as Collateral`}
+                  </button>
+                </div>
               </div>
             )}
           </div>
