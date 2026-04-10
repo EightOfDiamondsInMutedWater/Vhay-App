@@ -4922,7 +4922,6 @@ const getUpdatablePOs = () => {
         setYieldLoading(false);
       }).catch((e) => { console.error('[YieldDashboard] scan error:', e); setYieldLoading(false); });
     }
-    if (auditLog.length > 0) return;
     const addr = mode === 'customer' ? customerProfile.classicAddress : vendorProfile.classicAddress;
     if (!addr) return;
     setAuditLogLoading(true);
@@ -4975,7 +4974,7 @@ const getUpdatablePOs = () => {
     };
 
     loadAuditLog();
-  }, [activeTab]);
+  }, [activeTab, savedPOs]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('createItems', JSON.stringify(items)); }, [items, hydrated]);
 
   // ===== ECDH KEY EXCHANGE (Task 1.5) =====
