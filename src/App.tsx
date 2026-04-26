@@ -76,6 +76,15 @@ import {
   CREDIT_LINE_SCPO_FEE,
 } from './utils/inventoryFinanceHelpers';
 
+import { TopBar } from './components/TopBar';
+import { Sidebar } from './components/Sidebar';
+import type { InternalTab } from './components/navMapping';
+import {
+  Page, Card, Chip, Btn, StepLabel, Field, SelectBox, Toggle, SumRow,
+  inpStyle, fieldLabel, fmt as formatNumber,
+  StackedAreaChart, LegendSwatch, Table,
+} from './components/primitives';
+import { IconPlus, IconX, IconCheck, IconSend, IconSpark, IconFile, IconLayer, IconSearch, IconWallet, IconUser, IconBox, IconCalendar, IconRefresh, IconArrowRight } from './components/icons';
 const getOrGenerateUUID = (key: string): string => {
   let uuid = localStorage.getItem(key);
   if (!uuid) {
@@ -429,6 +438,7 @@ interface InventoryItemV2 {
   // ── Local metadata ──
   /** ISO date string when item was first added */
   dateAdded: string;
+  sku?: string;
   /** ISO date string when item was last updated locally */
   dateUpdated: string;
 }
@@ -913,7 +923,7 @@ const YieldDashboard: React.FC<{
 
 export default function App() {
   const [mode, setMode] = useState<'customer' | 'vendor'>('customer');
-  const [activeTab, setActiveTab] = useState<'create' | 'view' | 'scpoAction' | 'inventoryCatalog' | 'customerProfile' | 'vendorProfile' | 'admin' | 'accounting'>('create');
+  const [activeTab, setActiveTab] = useState<InternalTab>('create');
   const [inputVendorWalletAddress, setInputVendorWalletAddress] = useState('');
   const [inputCustomerWalletAddress, setInputCustomerWalletAddress] = useState('');
   const [customerProfileSubTab, setCustomerProfileSubTab] = useState<'profile' | 'links'>('profile');
@@ -930,6 +940,80 @@ export default function App() {
   const [deliveryTerms, setDeliveryTerms] = useState('FOB');
   const [result, setResult] = useState('');
   const [items, setItems] = useState<Item[]>([]);
+  const [existingAttachments, setExistingAttachments] = useState<Attachment[]>([]);
+  const [scpoSubmitting, setScpoSubmitting] = useState(false);
+  const [updateSubmitting, setUpdateSubmitting] = useState(false);
+  const [actionStageFilter, setActionStageFilter] = useState<'open' | 'accepted'>('open');
+  const [actionSearchQuery, setActionSearchQuery] = useState('');
+  const [actionMode, setActionMode] = useState<'view' | 'update'>('view');
+  const [actionDetailTab, setActionDetailTab] = useState<'overview' | 'profile' | 'inventory'>('overview');
+  const [vendorActionStageFilter, setVendorActionStageFilter] = useState<'open' | 'funded'>('open');
+  const [vendorActionSearchQuery, setVendorActionSearchQuery] = useState('');
+  const [vendorActionDetailTab, setVendorActionDetailTab] = useState<'overview' | 'profile' | 'inventory'>('overview');
+  const [claimJustCelebrated, setClaimJustCelebrated] = useState<string | null>(null);
+  const [claimSubmitting, setClaimSubmitting] = useState<string | null>(null);
+  // Holds the tab + issuanceId of whichever PO has its financing drawer open, or null if none.
+  // Tab-scoped so opening the drawer in Sell · Action doesn't also open it in Sell · Financing.
+  type FinancingDrawerScope = { tab: 'action' | 'financing'; poId: string };
+  const [financingDrawerForPO, setFinancingDrawerForPO] = useState<FinancingDrawerScope | null>(null);
+  const [overviewMix, setOverviewMix] = useState<'category' | 'supplier'>('category');
+  const [overviewPoFilter, setOverviewPoFilter] = useState<string>('All');
+  const [overviewPoQuery, setOverviewPoQuery] = useState<string>('');
+  const [overviewSelectedPO, setOverviewSelectedPO] = useState<SavedPO | null>(null);
+  const [overviewHistoryAnchor, setOverviewHistoryAnchor] = useState<SavedPO | null>(null);
+  const [overviewHistoryOpen, setOverviewHistoryOpen] = useState<boolean>(false);
+  const [overviewViewedPOData, setOverviewViewedPOData] = useState<POData | null>(null);
+  const [overviewPoLoadError, setOverviewPoLoadError] = useState<string | null>(null);
+  const [vOvwMix, setVOvwMix] = useState<'category' | 'buyer' | 'stage'>('category');
+  const [vOvwPoFilter, setVOvwPoFilter] = useState<string>('All');
+  const [vOvwPoQuery, setVOvwPoQuery] = useState<string>('');
+  const [vOvwSelectedPO, setVOvwSelectedPO] = useState<SavedPO | null>(null);
+  const [vOvwHistoryAnchor, setVOvwHistoryAnchor] = useState<SavedPO | null>(null);
+  const [vOvwHistoryOpen, setVOvwHistoryOpen] = useState<boolean>(false);
+  const [vOvwViewedPOData, setVOvwViewedPOData] = useState<POData | null>(null);
+  const [vOvwPoLoadError, setVOvwPoLoadError] = useState<string | null>(null);
+  const [invTab, setInvTab] = useState<'stock' | 'intake'>('stock');
+  const [invStockQuery, setInvStockQuery] = useState('');
+  const [invStockDept, setInvStockDept] = useState('All');
+  const [invStockCategory, setInvStockCategory] = useState('All');
+  const [invStockStatus, setInvStockStatus] = useState('All');
+  const [invStockSelectedNftId, setInvStockSelectedNftId] = useState<string | null>(null);
+  const [invStockVersionsOpen, setInvStockVersionsOpen] = useState(false);
+  const [invStockReceiveOpen, setInvStockReceiveOpen] = useState(false);
+  const [invStockEditOpen, setInvStockEditOpen] = useState(false);
+  const [invStockReceiveQty, setInvStockReceiveQty] = useState('');
+  const [invStockReceiveRef, setInvStockReceiveRef] = useState('');
+  const [invStockDeleteConfirm, setInvStockDeleteConfirm] = useState(false);
+
+  // Wrapper around createSCPO that drives the new Create button's
+  // three visual states: idle → creating (shimmer) → created (green).
+  // The "created" state is owned by the existing scpoSuccess flag.
+  const handleCreateSCPO = async () => {
+    if (scpoSubmitting || scpoSuccess || !selectedVendorUUID) return;
+    setScpoSubmitting(true);
+    try {
+      await createSCPO();
+    } catch (err) {
+      console.error('[createSCPO] failed', err);
+    } finally {
+      setScpoSubmitting(false);
+    }
+  };
+
+  // Same three-state wrapper for updateSCPO. Success is detected by
+  // checking whether updateResult contains "Successfully" after submit.
+  const handleUpdateSCPO = async () => {
+    if (updateSubmitting) return;
+    setUpdateSubmitting(true);
+    try {
+      await updateSCPO();
+    } catch (err) {
+      console.error('[updateSCPO] failed', err);
+    } finally {
+      setUpdateSubmitting(false);
+    }
+  };
+
   const [newItemNum, setNewItemNum] = useState('');
   const [newQty, setNewQty] = useState('');
   const [newPiecePrice, setNewPiecePrice] = useState('');
@@ -965,6 +1049,10 @@ export default function App() {
   const [yieldOptInLoading, setYieldOptInLoading] = useState(false);
   const [yieldEstimatedReturn, setYieldEstimatedReturn] = useState<string | null>(null);
   const [selectedPartnerId] = useState<string>('stub_v1');
+
+  // ── Buy · Financing — sortable positions table + activity search ──
+  const [buyFinPosSortKey, setBuyFinPosSortKey] = useState<'days' | 'value' | 'earned' | 'apy'>('days');
+  const [buyFinActivitySearch, setBuyFinActivitySearch] = useState<string>('');
   const yieldPartnerRegistry = React.useMemo(
     () => buildYieldPartnerRegistry(process.env.REACT_APP_COMPANY_WALLET || ''),
     []
@@ -982,6 +1070,30 @@ export default function App() {
   const [financingLenderAPR, setFinancingLenderAPR] = useState<number>(0.12);
   const [financingSubmitting, setFinancingSubmitting] = useState(false);
   const [financingStatusMap, setFinancingStatusMap] = useState<Record<string, FinancingRequest>>({});
+
+  // ── Financing tab sub-tab state (Sell mode only — Buy mode is a single page) ─
+  const [financingSubTab, setFinancingSubTab] = useState<'po' | 'inventory'>('po');
+
+  // ── Inventory Financing — Counterparty selector + Configure card state ─────
+  // TODO: replace LENDERS placeholder with live lender registry once partner directory ships on-chain.
+  const [selectedLenderId, setSelectedLenderId] = useState<string>('helix');
+  const [lenderPickerOpen, setLenderPickerOpen] = useState<boolean>(false);
+  const [pledgeExplorePct, setPledgeExplorePct] = useState<number>(60);
+  const [advanceExplorePct, setAdvanceExplorePct] = useState<number>(70);
+
+  // ── PO Financing — search filters per section ──
+  const [poFinEligibleSearch, setPoFinEligibleSearch] = useState<string>('');
+  const [poFinActiveSearch, setPoFinActiveSearch] = useState<string>('');
+  const [poFinActivitySearch, setPoFinActivitySearch] = useState<string>('');
+  // Master-detail selection: which PO is shown in the right pane.
+  const [selectedFinancingPO, setSelectedFinancingPO] = useState<string | null>(null);
+  // Detail-tab selection independent of Sell · Action's vendorActionDetailTab.
+  const [financingDetailTab, setFinancingDetailTab] = useState<'overview' | 'profile' | 'inventory'>('overview');
+  // IPFS-loaded PO doc for the right-pane detail tabs (independent of Sell · Action's state).
+  const [financingViewedPO, setFinancingViewedPO] = useState<POData | null>(null);
+  const [financingPoLoadError, setFinancingPoLoadError] = useState<string | null>(null);
+
+  // ── Phase 6C: Inventory Financing ──────────────────────────────────────────
 
   // ── Phase 6C: Inventory Financing ──────────────────────────────────────────
   const [creditLines, setCreditLines] = useState<CreditLine[]>([]);
@@ -1098,7 +1210,7 @@ export default function App() {
   const [customerViewPoLoadError, setCustomerViewPoLoadError] = useState<string | null>(null);
   const [vendorViewViewedPO, setVendorViewViewedPO] = useState<POData | null>(null);
   const [vendorViewPoLoadError, setVendorViewPoLoadError] = useState<string | null>(null);
-  const [inventorySubTab, setInventorySubTab] = useState<'list' | 'add' | 'import' | 'creditLines'>('list');
+  const [inventorySubTab, setInventorySubTab] = useState<'list' | 'add' | 'import'>('list');
   const [invResult, setInvResult] = useState('');
   const [invName, setInvName] = useState('');
   const [invDepartment, setInvDepartment] = useState('');
@@ -1123,12 +1235,15 @@ export default function App() {
   const [csvProgress, setCsvProgress] = useState<{ current: number; total: number; currentName: string }>({ current: 0, total: 0, currentName: '' });
   const [csvErrors, setCsvErrors] = useState<{ row: number; partNumber: string; error: string }[]>([]);
   const [csvImportDone, setCsvImportDone] = useState(false);
+  const [csvFileName, setCsvFileName] = useState('');
+  const [csvFileSize, setCsvFileSize] = useState(0);
   const [csvImportedCount, setCsvImportedCount] = useState(0);
   const [csvSkippedCount, setCsvSkippedCount] = useState(0);
   const [vendorInventories, setVendorInventories] = useState<{ [vendorAddress: string]: InventoryItem[] }>({});
   const [selectedInventoryItem, setSelectedInventoryItem] = useState<string>('custom');
  // Add alongside existing inventory state variables
   const [invPartNumber, setInvPartNumber] = useState('');
+  const [invSku, setInvSku] = useState('');
   const [invCategory, setInvCategory] = useState('');
   const [invFamilyCode, setInvFamilyCode] = useState('');
   const [invBrand, setInvBrand] = useState('');
@@ -1187,6 +1302,19 @@ export default function App() {
   const [receiveLotRef, setReceiveLotRef] = useState('');
   const [receiveResult, setReceiveResult] = useState('');
   const [receiveLoading, setReceiveLoading] = useState(false);
+  // Sell · Inventory · Stock — auto-close Receive drawer after success rise
+  useEffect(() => {
+    if (!receiveLoading && typeof receiveResult === 'string' && receiveResult.startsWith('✅') && invStockReceiveOpen) {
+      const t = setTimeout(() => {
+        setInvStockReceiveOpen(false);
+        setInvStockReceiveQty('');
+        setInvStockReceiveRef('');
+        setReceiveResult('');
+        setReceiveQty('');
+      }, 1800);
+      return () => clearTimeout(t);
+    }
+  }, [receiveLoading, receiveResult, invStockReceiveOpen]);
   // Warehouse wallet: a second vendor-controlled account that HOLDS inventory MPTs.
   // The issuer (vendor main wallet) pays tokens TO this address — increasing
   // OutstandingAmount. Balance of this wallet = units physically on hand.
@@ -1200,6 +1328,12 @@ export default function App() {
   const [showWarehouseSetup, setShowWarehouseSetup] = useState(false);
   const [warehouseSetupInput, setWarehouseSetupInput] = useState('');
   const [warehouseSetupSeedInput, setWarehouseSetupSeedInput] = useState('');
+  const [warehouseWalletName, setWarehouseWalletName] = useState<string>(
+    typeof window !== 'undefined' ? (localStorage.getItem('scpo_warehouse_name') || '') : ''
+  );
+  const [warehouseSetupNameInput, setWarehouseSetupNameInput] = useState('');
+  const [warehouseSaveState, setWarehouseSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [warehouseSeedRevealed, setWarehouseSeedRevealed] = useState(false);
   // 3.1d — V2 inventory for a linked vendor (customer view, sharedUri decrypted)
   const [linkedVendorInventoryV2, setLinkedVendorInventoryV2] = useState<{ [vendorAddress: string]: InventoryItemV2[] }>({});
   // 3.1f — Vendor inventory detail modal
@@ -1211,6 +1345,61 @@ export default function App() {
   const [showEditPricing, setShowEditPricing] = useState(false);
   const [editPricingResult, setEditPricingResult] = useState('');
   const [editPricingSaving, setEditPricingSaving] = useState(false);
+  // Sell · Inventory · Stock — auto-close Edit drawer after successful save
+  useEffect(() => {
+    if (!editPricingSaving && typeof editPricingResult === 'string' && editPricingResult.startsWith('✅') && invStockEditOpen) {
+      const t = setTimeout(() => {
+        setInvStockEditOpen(false);
+        setEditPricingResult('');
+      }, 1800);
+      return () => clearTimeout(t);
+    }
+  }, [editPricingSaving, editPricingResult, invStockEditOpen]);
+  // Sell · Inventory · Intake — clear Manual Add form after a successful generate
+  useEffect(() => {
+    if (typeof invResult === 'string' && invResult.startsWith('✅')) {
+      const t = setTimeout(() => {
+        // Reset all manual-add fields to their initial empty state
+        setInvPartNumber('');
+        setInvSku('');
+        setInvName('');
+        setInvShortDesc('');
+        setInvCategory('');
+        setInvDepartment('');
+        setInvFamilyCode('');
+        setInvBrand('');
+        setInvPlant('');
+        setInvWeight('');
+        setInvCompetitiveFlag(false);
+        setInvUnitCost('');
+        setInvUnitPrice('');
+        setInvPriceCurrency('USD');
+        setInvCostCurrency('USD');
+        setInvEffectiveDate('');
+        setInvExpiresDate('');
+        setInvUseVolumePricing(false);
+        setInvVolumeTiers([]);
+        setInvSupplierCode('');
+        setInvSupplierName('');
+        setInvInitialQty('');
+        setInvUnit('ea');
+        setInvImageFile(null);
+        setInvPricingFile(null);
+        setInvDesignFile(null);
+        setInvBomFile(null);
+        setInvUsageFile(null);
+        setInvResult('');
+      }, 2400);
+      return () => clearTimeout(t);
+    }
+  }, [invResult]);
+  // Sell · Inventory · Intake — hydrate warehouse form buffers from saved values once
+  useEffect(() => {
+    if (!warehouseSetupInput && warehouseWalletAddress) setWarehouseSetupInput(warehouseWalletAddress);
+    if (!warehouseSetupSeedInput && warehouseWalletSeed) setWarehouseSetupSeedInput(warehouseWalletSeed);
+    if (!warehouseSetupNameInput && warehouseWalletName) setWarehouseSetupNameInput(warehouseWalletName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Full edit form fields
   const [editName, setEditName] = useState('');
   const [editPartNumber, setEditPartNumber] = useState('');
@@ -1259,6 +1448,47 @@ export default function App() {
   const [profilesModalPO, setProfilesModalPO] = useState<SavedPO | null>(null);
   const [profilesModalIndex, setProfilesModalIndex] = useState(0);
   const [updateResult, setUpdateResult] = useState('');
+
+  // After a successful Update, show the success state for ~4 seconds,
+  // then clear all shared form state so stale data doesn't leak back
+  // into the Create PO sub-tab on return.
+  useEffect(() => {
+    if (!updateResult.includes('Successfully') || updateSubmitting) return;
+    const t = setTimeout(() => {
+      setUpdateResult('');
+      setPoName('');
+      setDesc('');
+      setDepartment('');
+      setItems([]);
+      setExistingAttachments([]);
+      setSelectedFiles(null);
+      setNewItemNum('');
+      setNewQty('');
+      setNewPiecePrice('');
+      setNewTotal('');
+      setVendor('');
+      setVendor('');
+      setSelectedVendorUUID('');
+      setActionMode('view');
+      setSelectedOpenPO(null);
+      setCustomerScpoActionViewedPO(null);
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [updateResult, updateSubmitting]);
+
+  // After Claim Escrow success, celebrate for 3 seconds, then clear
+  // the selection so the right panel returns to the empty state.
+  useEffect(() => {
+    if (!claimJustCelebrated) return;
+    const t = setTimeout(() => {
+      setClaimJustCelebrated(null);
+      setSelectedOpenPO(null);
+      setSelectedFundedPO(null);
+      setVendorScpoActionViewedPO(null);
+      setVendorScpoActionPoLoadError(null);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [claimJustCelebrated]);
   const [isLoadingEditPO, setIsLoadingEditPO] = useState(false);
   const [escrowCurrency, setEscrowCurrency] = useState<'XRP' | 'RLUSD'>(isRLUSDConfigured() ? 'RLUSD' : 'XRP');
   const linkedVendors = customerLinkedVendorUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
@@ -1362,6 +1592,353 @@ export default function App() {
       setFinancingSubmitting(false);
     }
   };
+  // ── Reusable financing drawer (called from Sell · Action and Sell · Financing > PO Financing) ──
+  // Caller is responsible for setting financingModalPO + financingEscrowDetails before opening.
+  // Drawer reads its open state from financingDrawerForPO === po.issuanceId.
+  // tab parameter scopes the drawer: drawer only renders when caller's tab + po match the open state.
+  const renderFinancingDrawer = (po: SavedPO, tab: 'action' | 'financing') => {
+    if (!financingDrawerForPO) return null;
+    if (financingDrawerForPO.tab !== tab) return null;
+    if (financingDrawerForPO.poId !== po.issuanceId) return null;
+    if (!financingModalPO) return null;
+    const poTotal = parseFloat(po.total) || 0;
+    const amount = poTotal * financingAdvanceRate;
+    const ratePct = Math.round(financingAdvanceRate * 100);
+    const daysUntil = financingEscrowDetails?.daysUntilCancel;
+    const unsafeWindow = typeof daysUntil === 'number' && daysUntil <= MIN_DAYS_UNTIL_CANCEL;
+    const tightWindow = typeof daysUntil === 'number' && daysUntil <= 7 && !unsafeWindow;
+    return (
+      <div className="rise" style={{
+        padding: 18, borderRadius: 14, marginBottom: 18,
+        background: 'rgba(245, 248, 255, 0.6)',
+        border: '1px solid rgba(120, 140, 200, 0.25)',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+          <div>
+            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>
+              Request advance · working capital
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>Borrow against funded escrow</div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+              {financingModalPO.poName} · escrow ${po.total} RLUSD
+            </div>
+          </div>
+          {financingEscrowLoading
+            ? <Chip tone="neutral">Checking escrow…</Chip>
+            : typeof daysUntil === 'number'
+              ? <Chip tone={unsafeWindow ? 'red' : tightWindow ? 'gold' : 'green'}>
+                  {daysUntil.toFixed(1)} days until cancel
+                </Chip>
+              : null}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 14 }}>
+          <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <span className="mono" style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Advance rate</span>
+              <span className="mono" style={{ fontSize: 16, fontWeight: 600 }}>{ratePct}%</span>
+            </div>
+            <input type="range" min={50} max={95} step={1} value={ratePct}
+              onChange={(e) => setFinancingAdvanceRate(Number(e.target.value) / 100)}
+              style={{
+                width: '100%', height: 5, borderRadius: 999, WebkitAppearance: 'none', appearance: 'none', outline: 'none',
+                background: `linear-gradient(90deg, oklch(0.78 0.14 78) 0%, oklch(0.78 0.14 78) ${(ratePct-50)/45*100}%, rgba(180,140,60,0.15) ${(ratePct-50)/45*100}%, rgba(180,140,60,0.15) 100%)`,
+              }}/>
+            <div className="mono" style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--ink-3)' }}>
+              <span>50%</span><span>95%</span>
+            </div>
+          </div>
+
+          <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+            <label className="mono" style={{ display: 'block', fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+              Lender wallet address
+            </label>
+            <input value={financingLenderAddress} onChange={(e) => setFinancingLenderAddress(e.target.value)}
+              placeholder="rLenderAddressHere…"
+              className="mono"
+              style={{
+                width: '100%', padding: '8px 10px', borderRadius: 8,
+                border: '1px solid rgba(180, 140, 60, 0.18)',
+                background: 'rgba(255, 253, 240, 0.7)',
+                fontSize: 13, outline: 'none', boxSizing: 'border-box',
+              }}/>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 6 }}>
+              Paste or select from permissioned lenders
+            </div>
+          </div>
+        </div>
+
+        <div className="etched" style={{
+          padding: 14, borderRadius: 12, marginBottom: 14,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 14,
+        }}>
+          <div>
+            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>You'll receive (est.)</div>
+            <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+              {ratePct}% of ${po.total} escrow
+            </div>
+          </div>
+          <div className="mono" style={{ fontSize: 26, fontWeight: 600, letterSpacing: '-0.02em', color: 'oklch(0.45 0.14 240)' }}>
+            ${amount.toFixed(2)}
+          </div>
+        </div>
+
+        {unsafeWindow && (
+          <div style={{
+            padding: 12, borderRadius: 10, marginBottom: 14,
+            background: 'rgba(220, 140, 120, 0.15)', border: '1px solid rgba(220, 140, 120, 0.35)',
+            fontSize: 12, color: '#6a2a10',
+          }}>
+            Escrow expires in {daysUntil!.toFixed(1)} days — too soon to request financing safely.
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <Btn variant="ghost" onClick={() => setFinancingDrawerForPO(null)}>Cancel</Btn>
+          <button type="button"
+            onClick={async () => {
+              await requestFinancing();
+              setFinancingDrawerForPO(null);
+            }}
+            disabled={!financingLenderAddress || financingEscrowLoading || unsafeWindow}
+            style={{
+              padding: '12px 20px', borderRadius: 12, fontSize: 14, fontWeight: 600,
+              background: (!financingLenderAddress || unsafeWindow)
+                ? 'linear-gradient(180deg, oklch(0.88 0.04 240), oklch(0.82 0.06 240))'
+                : 'linear-gradient(180deg, oklch(0.72 0.14 240), oklch(0.5 0.16 240))',
+              color: '#f9efd2',
+              border: 0,
+              cursor: (!financingLenderAddress || unsafeWindow) ? 'not-allowed' : 'pointer',
+              opacity: (!financingLenderAddress || unsafeWindow) ? 0.6 : 1,
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 14px -4px oklch(0.5 0.16 240 / 0.4)',
+              transition: 'all 0.3s ease',
+              display: 'flex', alignItems: 'center', gap: 8,
+              fontFamily: 'inherit',
+            }}>
+            <IconArrowRight size={14}/>
+            Request ${amount.toFixed(0)} advance
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // ── Reusable PO detail tabs (Overview / Profile / Inventory) ──
+  // Called from Sell · Action and Sell · Financing > PO Financing right pane.
+  // Caller is responsible for passing the IPFS-loaded PO + tab state.
+  const renderActionDetailTabs = (
+    viewedPO: POData | null,
+    loadError: string | null,
+    chainPO: SavedPO | null,
+    currentTab: 'overview' | 'profile' | 'inventory',
+    onTabChange: (t: 'overview' | 'profile' | 'inventory') => void
+  ) => {
+    if (!viewedPO) {
+      return (
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>
+          {loadError ? `Load error: ${loadError}` : 'Loading PO details from IPFS…'}
+        </div>
+      );
+    }
+    return (
+      <>
+        {/* Inline pill tabs */}
+        <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 12, background: 'rgba(255, 248, 222, 0.4)', border: '1px solid rgba(180,140,60,0.12)', marginBottom: 20, width: 'fit-content' }}>
+          {[
+            { k: 'overview' as const,  l: 'Overview',  I: IconFile },
+            { k: 'profile' as const,   l: 'Profile',   I: IconUser },
+            { k: 'inventory' as const, l: 'Inventory', I: IconBox },
+          ].map(t => {
+            const active = currentTab === t.k;
+            const I = t.I;
+            return (
+              <button key={t.k} type="button" onClick={() => onTabChange(t.k)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '7px 14px', borderRadius: 9,
+                  background: active ? '#2a1f08' : 'transparent',
+                  color: active ? '#f9efd2' : 'var(--ink-2)',
+                  fontSize: 12.5, fontWeight: 600, border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                  transition: 'all 0.2s ease',
+                }}>
+                <I size={13}/> {t.l}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* OVERVIEW TAB */}
+        {currentTab === 'overview' && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
+              {[
+                { label: 'Department', v: viewedPO.department || '—' },
+                { label: 'Payment',    v: viewedPO.paymentTerms || '—' },
+                { label: 'Delivery',   v: viewedPO.deliveryTerms || '—' },
+                { label: 'Escrow ccy', v: viewedPO.escrowCurrency || 'XRP', mono: true },
+              ].map(f => (
+                <div key={f.label} className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</div>
+                  <div className={f.mono ? 'mono' : ''} style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>{f.v}</div>
+                </div>
+              ))}
+            </div>
+
+            {viewedPO.description && (
+              <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 18 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
+                <div style={{ fontSize: 13, lineHeight: 1.5 }}>{viewedPO.description}</div>
+              </div>
+            )}
+
+            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+              Line items · {viewedPO.items?.length || 0}
+            </div>
+            <div style={{ border: '1px solid rgba(180,140,60,0.15)', borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10, padding: '10px 14px', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace", background: 'rgba(255, 248, 222, 0.5)', borderBottom: '1px solid rgba(180,140,60,0.15)' }}>
+                <div>Item #</div>
+                <div style={{ textAlign: 'right' }}>Qty</div>
+                <div style={{ textAlign: 'right' }}>Unit</div>
+                <div style={{ textAlign: 'right' }}>Total</div>
+              </div>
+              {(viewedPO.items || []).map((item, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10, padding: '10px 14px', alignItems: 'center', fontSize: 13, borderBottom: '1px solid rgba(180,140,60,0.08)' }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.num}</span>
+                  <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                  <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
+                  <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
+                </div>
+              ))}
+            </div>
+
+            {viewedPO.attachments && viewedPO.attachments.length > 0 && (
+              <>
+                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10, marginTop: 18 }}>
+                  Attachments · {viewedPO.attachments.length}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                  {viewedPO.attachments.map((att, i) => (
+                    <div key={i} className="etched" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10 }}>
+                      <div style={{ padding: 6, borderRadius: 6, background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <IconFile size={14}/>
+                      </div>
+                      <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`Open ${att.name} on IPFS`}>
+                        {att.name}
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12, paddingTop: 12, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
+              <div className="mono" style={{ fontSize: 13 }}>
+                <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
+                <span style={{ fontWeight: 600, fontSize: 16 }}>${chainPO?.total ?? '0'}</span>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* PROFILE TAB */}
+        {currentTab === 'profile' && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            {[
+              { title: 'Seller', data: vendorProfile, tone: 'gold' as const },
+              { title: 'Buyer',  data: (chainPO ? linkedCustomers.find(c => c.classicAddress === chainPO.buyerAddress) : null) || ({} as any), tone: 'blue' as const },
+            ].map(({ title, data, tone }) => (
+              <div key={title} className="etched" style={{ padding: 16, borderRadius: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{title}</div>
+                  {data.uniqueID && <Chip tone={tone}>{data.uniqueID}</Chip>}
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 2 }}>
+                  {data.company || data.name || '—'}
+                </div>
+                {data.name && data.company && (
+                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 12 }}>{data.name}</div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                  {[
+                    { k: 'Email',   v: data.email,   mono: false },
+                    { k: 'Phone',   v: data.phone,   mono: false },
+                    { k: 'Address', v: data.address, mono: false },
+                    { k: 'Wallet',  v: data.classicAddress, mono: true },
+                    { k: 'ID',      v: data.uniqueID, mono: true },
+                  ].filter(r => r.v).map(r => (
+                    <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, minWidth: 0 }}>
+                      <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>{r.k}</span>
+                      <span className={r.mono ? 'mono' : ''} style={{ fontWeight: 500, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.v}>
+                        {r.mono && r.v.length > 18 ? `${r.v.slice(0, 8)}…${r.v.slice(-6)}` : r.v}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* INVENTORY TAB */}
+        {currentTab === 'inventory' && (() => {
+          const lines = viewedPO.items || [];
+          const totalUnits = lines.reduce((s, l) => s + (parseFloat(l.qty as any) || 0), 0);
+          const v2 = vendorInventoryV2 || [];
+          return (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
+                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Line items</div>
+                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>{lines.length}</div>
+                </div>
+                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total units</div>
+                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>{totalUnits}</div>
+                </div>
+                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Order value</div>
+                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>${chainPO?.total ?? '0'}</div>
+                </div>
+              </div>
+
+              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                Items on this order
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {lines.map((l, i) => {
+                  const match = v2.find(x => x.nftId === l.invNFTId || x.partNumber === l.num || x.name === l.num);
+                  const desc = match?.shortDescription || `Custom item — ${l.num}`;
+                  const category = match?.category || '';
+                  return (
+                    <div key={i} className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'start' }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{l.num}</span>
+                            {category && (
+                              <span style={{ fontSize: 10, color: 'var(--ink-3)', padding: '1px 6px', borderRadius: 4, background: 'rgba(180, 140, 60, 0.1)' }}>{category}</span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>{match?.name || l.num}</div>
+                          <div style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.45 }}>{desc}</div>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{l.qty} units</div>
+                          <div className="mono" style={{ fontSize: 16, fontWeight: 600, marginTop: 2 }}>${l.total}</div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          );
+        })()}
+      </>
+    );
+  };
+
   // ── Phase 6B Session 2: Poll vendor wallet for lender responses ──────────────
   // ── Phase 6C: Refresh credit lines from on-chain memos ─────────────────────
   const refreshCreditLines = async () => {
@@ -2550,6 +3127,7 @@ useEffect(() => {
     let loadedPayTerms = po.metadata?.pt || po.paymentTerms || '';
     let loadedDelTerms = 'FOB';
     let loadedItems: Item[] = [];
+    let loadedAttachments: Attachment[] = [];
 
     if (po.ipfsUri) {
       try {
@@ -2569,12 +3147,20 @@ useEffect(() => {
               loadedPayTerms = poData.paymentTerms || '';
               loadedDelTerms = poData.deliveryTerms || 'FOB';
               loadedItems = poData.items || [];
+              loadedAttachments = poData.attachments || [];
             }
           }
         }
       } catch (e) {
         console.error('Failed to load PO details from IPFS for edit:', e);
       }
+    }
+
+    // Fallback: if IPFS didn't yield attachments, try the metadata copy
+    // saved at creation time. buildPOMetadata always writes attachments as
+    // an array, so this catches POs whose IPFS payload omitted the field.
+    if (loadedAttachments.length === 0 && po.metadata?.attachments?.length > 0) {
+      loadedAttachments = po.metadata.attachments;
     }
 
     // Set all fields at once — no double refresh
@@ -2585,6 +3171,10 @@ useEffect(() => {
     setDeliveryTerms(loadedDelTerms);
     setEscrowCurrency(po.escrowCurrency || (isRLUSDConfigured() ? 'RLUSD' : 'XRP'));
     setItems(loadedItems);
+    setExistingAttachments(loadedAttachments);
+    setVendor(po.vendorAddress || '');
+    setSelectedVendorUUID(po.vendorUUID || '');
+    setSelectedFiles(null);
     setIsLoadingEditPO(false);
   };
 
@@ -2722,7 +3312,7 @@ useEffect(() => {
     if (items.length === 0) return alert('Add at least one item');
     const password = getPOEncryptionKey(selectedUpdatePO.vendorUUID || '') || '';
     if (!password) return alert('Vendor password missing');
-    let attachments: Attachment[] = [];
+    let attachments: Attachment[] = [...existingAttachments];
     if (selectedFiles && selectedFiles.length > 0) {
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
@@ -3732,7 +4322,6 @@ const getUpdatablePOs = () => {
     </div>
   );
 
-  const tabs = mode === 'customer' ? [{ label: 'Create', key: 'create' }, { label: 'Action', key: 'scpoAction' }, { label: 'Overview', key: 'view' }, { label: 'Profile', key: 'customerProfile' }, { label: 'Accounting', key: 'accounting' }, { label: 'Admin', key: 'admin' }] : [{ label: 'Overview', key: 'view' }, { label: 'Action', key: 'scpoAction' }, { label: 'Inventory', key: 'inventoryCatalog' }, { label: 'Profile', key: 'vendorProfile' }, { label: 'Accounting', key: 'accounting' }, { label: 'Admin', key: 'admin' }];
   // ── Task 3.9 — CSV parse utility ─────────────────────────────────────────
   // Handles quoted fields and commas inside quotes.
   const parseCSV = (text: string): { headers: string[]; rows: string[][] } => {
@@ -3866,6 +4455,14 @@ const getUpdatablePOs = () => {
       v: 1,
       vu: vendorUri,
       su: sharedUri,
+      // Phase 5 — persist creation/update dates + vendor-assigned SKU in on-chain
+      // memo envelope. Spread + `as any` so we don't need to touch the
+      // InventoryNFTMeta interface. Fetch reads them via metaMemo.da/du/sk.
+      ...({
+        da: new Date().toLocaleDateString(),
+        du: new Date().toLocaleDateString(),
+        sk: fields.sku || '',
+      } as any),
     };
 
     const nftTx: any = {
@@ -4023,11 +4620,10 @@ const getUpdatablePOs = () => {
     if (!vendorProfile.seed) return alert('Vendor wallet seed required');
     if (csvRows.length === 0) return alert('No rows to import');
 
-    const requiredMapped = ['partNumber', 'name'].every(f =>
+    const hasRequired = ['sku', 'partNumber', 'name'].every(f =>
       Object.values(csvMapping).includes(f)
     );
-    if (!requiredMapped) return alert('You must map at least Part Number and Name columns before importing.');
-
+    if (!hasRequired) return alert('You must map SKU, Part Number, and Name columns before importing.');
     setCsvImporting(true);
     setCsvImportDone(false);
     setCsvErrors([]);
@@ -4381,8 +4977,15 @@ const getUpdatablePOs = () => {
             unitCost,
             pricingCurrency,
             productImageUri, // Task 3.8
-            dateAdded: new Date().toLocaleDateString(),
-            dateUpdated: new Date().toLocaleDateString(),
+            // dateAdded/dateUpdated are NOT reliably stored in the memo envelope
+            // today. Read if present (forward-compat for items minted after we
+            // start writing `da`/`du`); otherwise empty so UI falls back to '—'
+            // instead of lying with today's date.
+            dateAdded: (metaMemo as any).da || '',
+            dateUpdated: (metaMemo as any).du || '',
+            // Vendor-assigned SKU stored in memo as `sk`. Items minted before
+            // SKU support show '' here; ledger falls back to deriving from nftId.
+            sku: (metaMemo as any).sk || '',
           };
           allBuiltItems.push(item);
           if (!isSuperseded) items.push(item);
@@ -4399,9 +5002,12 @@ const getUpdatablePOs = () => {
     }
   };
 
-  // Load V2 inventory when vendor opens Inventory tab — auto-syncs with chain
+  // Load V2 inventory when vendor opens Inventory tab OR Inventory Financing — auto-syncs with chain
   useEffect(() => {
-    if (mode !== 'vendor' || activeTab !== 'inventoryCatalog') return;
+    if (mode !== 'vendor') return;
+    const onInventoryTab     = activeTab === 'inventoryCatalog';
+    const onInventoryFinTab  = activeTab === 'financing' && financingSubTab === 'inventory';
+    if (!onInventoryTab && !onInventoryFinTab) return;
     if (!vendorProfile.classicAddress || !vendorProfile.seed) return;
     if (editPricingSaving) return; // block reload while a save is in progress
     // Task 3.5: Check catalog DID endpoint status whenever tab is opened
@@ -4441,17 +5047,96 @@ const getUpdatablePOs = () => {
       }
     };
     load();
-  }, [mode, activeTab, vendorProfile.classicAddress]);
+  }, [mode, activeTab, financingSubTab, vendorProfile.classicAddress]);
 
-  // Reset credit line modals and sub-tab when leaving inventory tab
+  // Reset Inventory sub-tab when leaving Sell · Inventory
   useEffect(() => {
     if (mode !== 'vendor' || activeTab !== 'inventoryCatalog') {
-      setShowCreditLineDetail(null);
-      setShowPledgeModal(false);
       setInventorySubTab('list');
     }
   }, [mode, activeTab]);
 
+  // Reset Financing modals when leaving Sell · Financing > Inventory Financing
+  useEffect(() => {
+    const onInventoryFinancing = mode === 'vendor' && activeTab === 'financing' && financingSubTab === 'inventory';
+    if (!onInventoryFinancing) {
+      setShowCreditLineDetail(null);
+      setShowPledgeModal(false);
+    }
+  }, [mode, activeTab, financingSubTab]);
+
+  // Auto-select first eligible PO when entering PO Financing or when eligible list refreshes.
+  // Only runs when there's NO current selection (preserves user clicks).
+  useEffect(() => {
+    if (mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
+    if (selectedFinancingPO) return; // user already picked something
+    const fundedRLUSD = savedPOs.filter(p => p.status === 'funded' && p.escrowCurrency === 'RLUSD');
+    const firstEligible = fundedRLUSD.find(p => {
+      const fr = financingStatusMap[p.issuanceId];
+      return !fr || fr.status === 'denied';
+    });
+    if (firstEligible) {
+      setSelectedFinancingPO(firstEligible.issuanceId);
+    }
+  }, [mode, activeTab, financingSubTab, selectedFinancingPO, savedPOs, financingStatusMap]);
+
+  // Sync the always-on financing drawer to the selected PO when on PO Financing.
+  // Only runs for eligible POs (where the request form should be active).
+  useEffect(() => {
+    if (mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
+    if (!selectedFinancingPO) return;
+    const po = savedPOs.find(p => p.issuanceId === selectedFinancingPO);
+    if (!po) return;
+    const fr = financingStatusMap[po.issuanceId];
+    const isEligible = !fr || fr.status === 'denied';
+    if (!isEligible) {
+      // Non-eligible selection — clear any previously open drawer to avoid stale form
+      if (financingDrawerForPO?.tab === 'financing') {
+        setFinancingDrawerForPO(null);
+      }
+      return;
+    }
+    // Already pointing at this PO? skip
+    if (financingDrawerForPO?.tab === 'financing'
+        && financingDrawerForPO.poId === po.issuanceId) return;
+    // Open drawer for this eligible PO
+    setFinancingModalPO(po);
+    setFinancingAdvanceRate(0.80);
+    setFinancingEscrowDetails(null);
+    setFinancingDrawerForPO({ tab: 'financing', poId: po.issuanceId });
+    setFinancingEscrowLoading(true);
+    if (po.escrowSequence) {
+      fetchEscrowDetails(po.buyerAddress, po.escrowSequence)
+        .then(d => setFinancingEscrowDetails(d))
+        .catch(e => console.warn('[POFinancing] escrow fetch failed:', e))
+        .finally(() => setFinancingEscrowLoading(false));
+    } else {
+      setFinancingEscrowLoading(false);
+    }
+    // Note: we do NOT auto-set financingLenderAddress here, so user changes to lender input persist
+    // across PO selections. To force-reset to selected counterparty, user clicks Counterparty again.
+  }, [mode, activeTab, financingSubTab, selectedFinancingPO, savedPOs, financingStatusMap, financingDrawerForPO]);
+
+  // Load PO IPFS details for the Financing right-pane detail tabs whenever selection changes.
+  // Independent of Sell · Action's state — selecting a PO here doesn't affect Action and vice versa.
+  useEffect(() => {
+    if (mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
+    if (!selectedFinancingPO) {
+      setFinancingViewedPO(null);
+      setFinancingPoLoadError(null);
+      return;
+    }
+    const po = savedPOs.find(p => p.issuanceId === selectedFinancingPO);
+    if (!po) return;
+    // Reset and reload whenever selection changes (effect deps already gate against re-runs).
+    setFinancingViewedPO(null);
+    setFinancingPoLoadError(null);
+    if (po.ipfsUri) {
+      viewPOFromUri(po.ipfsUri, po, setFinancingViewedPO, setFinancingPoLoadError);
+    } else {
+      setFinancingPoLoadError('No IPFS URI on this PO');
+    }
+  }, [mode, activeTab, financingSubTab, selectedFinancingPO, savedPOs]);
   // Load vendor inventory for customer Create tab (V2 only)
   useEffect(() => {
     if (mode !== 'customer' || activeTab !== 'create' || !vendor) return;
@@ -4558,9 +5243,18 @@ const getUpdatablePOs = () => {
   //   4. Mint initial quantity to self
   //   5. Save InventoryItemV2 to state
   const generateInventoryV2 = async () => {
-    if (!invName) return alert('Name required');
+    if (!invSku || !invSku.trim()) return alert('SKU is required');
     if (!invPartNumber) return alert('Part Number required');
+    if (!invName) return alert('Name required');
+    if (!invUnitCost || parseFloat(invUnitCost) <= 0) return alert('Unit Cost is required (must be greater than 0)');
+    if (!invInitialQty || parseInt(invInitialQty) < 1) return alert('Initial Quantity is required (must be at least 1)');
     if (!vendorProfile.seed) return alert('Vendor wallet seed required');
+    // Uniqueness — case-insensitive against current chain heads
+    const skuNorm = invSku.trim().toUpperCase();
+    const dupe = (vendorInventoryV2 || []).find(i =>
+      (i as any).sku && String((i as any).sku).trim().toUpperCase() === skuNorm
+    );
+    if (dupe) return alert(`SKU "${invSku.trim()}" already exists on "${dupe.name || dupe.partNumber}". Choose a unique SKU.`);
 
     // ── 3.2d — Volume tier validation ────────────────────────────────────────
     if (invUseVolumePricing) {
@@ -4709,13 +5403,18 @@ const getUpdatablePOs = () => {
         cf: invCompetitiveFlag,
         wt: invWeight,
         dept: invDepartment,
-        plant: invPlant,
+       plant: invPlant,
         st: 'active',
         tm: 'bulk',
         parent: '',
         v: 1,
         vu: vendorUri,
         su: sharedUri,
+        ...({
+          da: new Date().toLocaleDateString(),
+          du: new Date().toLocaleDateString(),
+          sk: invSku || '',
+        } as any),
       };
 
       const nftTx: any = {
@@ -5270,6 +5969,162 @@ const getUpdatablePOs = () => {
       setReceiveLoading(false);
     }
   };
+
+  // ── Task 3.11 — Save Inventory Version Edit (extracted) ──────────────────
+  // Mints a new NFT version with parent = old NFT, preserves MPT issuance
+  // (same token continues to track qty), uploads fresh IPFS docs, and refreshes
+  // state. Reads from `edit*` state + `inventoryDetailItem/Doc` — both the
+  // legacy detail modal and the new Stock inline Edit drawer populate those
+  // before calling. Body is verbatim-lifted from the legacy modal's inline
+  // onClick; can be deduped when the legacy modal is sunset.
+  const saveInventoryVersionEdit = async () => {
+    if (!editName) return alert('Name is required');
+    if (!editUnitPrice || parseFloat(editUnitPrice) <= 0) return alert('List price must be greater than 0');
+    if (editUseVolumeTiers) {
+      const filled = editVolumeTiers.filter(t => t.minQty && t.price);
+      if (filled.length < 2) return alert('Volume pricing requires at least 2 tiers.');
+      if (parseInt(filled[0].minQty) !== 1) return alert('First tier must start at Min Qty = 1.');
+    }
+    if (!window.confirm('This will mint a new NFT version on-chain with all changes. The old NFT remains as version history. Continue?')) return;
+    setEditPricingSaving(true);
+    try {
+      const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
+      const client = await getXRPLClient();
+      const todayStr = new Date().toISOString().split('T')[0];
+      const now = Math.floor(Date.now() / 1000);
+      const newVersion = (inventoryDetailDoc!.version || 1) + 1;
+      const newTiers = editUseVolumeTiers
+        ? editVolumeTiers.filter(t => t.minQty && t.price).map(t => ({ minQty: parseInt(t.minQty), price: t.price }))
+        : [];
+      setEditPricingResult('Step 1/3: Uploading updated data to IPFS...');
+      const editedImageAttachment = editImageFile
+        ? { name: editImageFile.name, uri: await uploadFileToIPFS(editImageFile) }
+        : inventoryDetailDoc!.attachments?.productImage;
+      const updatedVendorDoc: VendorInventoryDoc = {
+        ...inventoryDetailDoc!,
+        partNumber: editPartNumber,
+        partName: editName,
+        fullDescription: editFullDesc,
+        category: editCategory,
+        familyCode: editFamilyCode,
+        productBrand: editBrand,
+        department: editDepartment,
+        productionPlant: editPlant,
+        weight: editWeight,
+        competitiveFlag: editCompetitiveFlag,
+        status: editStatus,
+        cost: { unitCost: editUnitCost, currency: editCostCurrency, costBreaks: inventoryDetailDoc!.cost.costBreaks || [] },
+        pricing: { listPrice: editUnitPrice, currency: editPriceCurrency, volumeTiers: newTiers, effectiveDate: editEffectiveDate, expiresDate: editExpiresDate },
+        supplierCode: editSupplierCode,
+        supplierName: editSupplierName,
+        attachments: {
+          ...inventoryDetailDoc!.attachments,
+          productImage: editedImageAttachment,
+        },
+        updatedAt: now,
+        lastUpdated: todayStr,
+        version: newVersion,
+        nftId: '',
+      };
+      const updatedSharedDoc: SharedInventoryDoc = {
+        partNumber: editPartNumber,
+        partName: editName,
+        description: editShortDesc,
+        category: editCategory,
+        productBrand: editBrand,
+        weight: editWeight,
+        productImageUri: editedImageAttachment?.uri,
+        pricing: { unitPrice: editUnitPrice, currency: editPriceCurrency, volumeTiers: newTiers, effectiveDate: editEffectiveDate, expiresDate: editExpiresDate },
+        usageDocuments: inventoryDetailDoc!.attachments?.usageGuide ? [inventoryDetailDoc!.attachments.usageGuide] : [],
+        nftId: '',
+        version: newVersion,
+      };
+      const newVendorUri = await uploadVendorInventoryDoc(updatedVendorDoc, wallet);
+      const newSharedUri = await uploadSharedInventoryDoc(updatedSharedDoc, wallet);
+      setEditPricingResult('Step 2/3: Minting updated NFT on XRPL...');
+      const oldNFTId = inventoryDetailItem!.nftId;
+      const newNFTMeta: InventoryNFTMeta = {
+        t: INV_META_TYPE,
+        pn: editPartNumber,
+        nm: editName,
+        desc: editShortDesc,
+        cat: editCategory,
+        fc: editFamilyCode,
+        brand: editBrand,
+        cf: editCompetitiveFlag,
+        wt: editWeight,
+        dept: editDepartment,
+        plant: editPlant,
+        st: editStatus,
+        tm: inventoryDetailItem!.trackingMode,
+        parent: oldNFTId,
+        v: newVersion,
+        vu: newVendorUri,
+        su: newSharedUri,
+        ...({
+          da: (inventoryDetailItem as any)?.dateAdded || new Date().toLocaleDateString(),
+          du: new Date().toLocaleDateString(),
+        } as any),
+      };
+      const preservedMptIssuanceId = inventoryDetailItem!.mptIssuanceId;
+      const preservedQty = inventoryDetailItem!.quantityOnHand;
+      const preservedUnit = inventoryDetailItem!.unit;
+      const mintTx: any = {
+        TransactionType: 'NFTokenMint',
+        Account: wallet.classicAddress,
+        URI: xrpl.convertStringToHex(newVendorUri),
+        Flags: 8,
+        NFTokenTaxon: INV_NFT_TAXON,
+        Memos: [{ Memo: { MemoType: xrpl.convertStringToHex(INV_MEMO_TYPE), MemoData: xrpl.convertStringToHex(JSON.stringify(newNFTMeta)) } }],
+      };
+      const prepared = await client.autofill(mintTx);
+      const signed = wallet.sign(prepared);
+      const mintResult = await submitBlobQueued(signed.tx_blob);
+      if (typeof mintResult.result.meta === 'object' && mintResult.result.meta.TransactionResult !== 'tesSUCCESS') {
+        setEditPricingResult(`❌ NFT mint failed: ${mintResult.result.meta.TransactionResult}`);
+        return;
+      }
+      const newNFTId = extractNFTokenID(mintResult.result.meta) || 'unknown';
+      setEditPricingResult('Step 3/3: Finalizing on IPFS...');
+      updatedVendorDoc.nftId = newNFTId;
+      updatedSharedDoc.nftId = newNFTId;
+      await uploadVendorInventoryDoc(updatedVendorDoc, wallet);
+      await uploadSharedInventoryDoc(updatedSharedDoc, wallet);
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const refreshedItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, wallet);
+      const allItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, wallet, true);
+      const patchedItems = refreshedItems.map(i => {
+        if (i.nftId !== newNFTId) return i;
+        return {
+          ...i,
+          mptIssuanceId: i.mptIssuanceId || preservedMptIssuanceId,
+          quantityOnHand: i.quantityOnHand > 0 ? i.quantityOnHand : preservedQty,
+          unit: i.unit || preservedUnit,
+          listPrice: i.listPrice > 0 ? i.listPrice : parseFloat(editUnitPrice) || 0,
+          unitCost: i.unitCost > 0 ? i.unitCost : parseFloat(editUnitCost) || 0,
+          pricingCurrency: i.pricingCurrency || editPriceCurrency || 'USD',
+          productImageUri: i.productImageUri || editedImageAttachment?.uri,
+        };
+      });
+      setVendorInventoryV2(patchedItems);
+      setVendorInventorySuperseded(allItems.filter(i => !patchedItems.find(a => a.nftId === i.nftId)));
+      const refreshed = patchedItems.find(i => i.nftId === newNFTId);
+      if (refreshed) {
+        setInventoryDetailItem(refreshed);
+        // Auto-jump the Stock tab selection to the new head so the panel shows
+        // the fresh version when the drawer closes.
+        setInvStockSelectedNftId(refreshed.nftId);
+      }
+      setInventoryDetailDoc({ ...updatedVendorDoc, nftId: newNFTId });
+      setEditPricingResult(`✅ Version ${newVersion} minted!\nNew NFT: ${newNFTId}\nParent: ${oldNFTId}`);
+      setShowEditPricing(false);
+      setEditImageFile(null);
+    } catch (err: any) {
+      setEditPricingResult(`❌ Failed: ${err.message}`);
+    } finally {
+      setEditPricingSaving(false);
+    }
+  };
   // Fetches and decrypts each item's vendorUri IPFS doc to extract listPrice
   // and unitCost. Results stored in invPricingMap keyed by nftId.
   // Called after vendorInventoryV2 loads. Runs in background — UI stays live.
@@ -5558,9 +6413,14 @@ const getUpdatablePOs = () => {
   useEffect(() => { if (!hydrated) return; localStorage.setItem('activeTab', activeTab); }, [activeTab, hydrated]);
 
   useEffect(() => {
-    if (activeTab !== 'accounting') return;
+    // Yield loading fires on Buy · Accounting OR Buy · Financing.
+    // Audit log loading fires only on Accounting (both modes).
+    const onAccounting = activeTab === 'accounting';
+    const onBuyFinancing = mode === 'customer' && activeTab === 'financing';
+    if (!onAccounting && !onBuyFinancing) return;
+
     // ── Phase 6A: Load yield positions for customer mode ──────────────────────
-    if (mode === 'customer' && customerProfile.classicAddress) {
+    if (mode === 'customer' && customerProfile.classicAddress && (onAccounting || onBuyFinancing)) {
       setYieldLoading(true);
       scanYieldPositions(customerProfile.classicAddress).then(positions => {
         // Filter out positions with no principal (created before amt was added to memo)
@@ -5570,6 +6430,9 @@ const getUpdatablePOs = () => {
         setYieldLoading(false);
       }).catch((e) => { console.error('[YieldDashboard] scan error:', e); setYieldLoading(false); });
     }
+
+    // Audit log only on Accounting (existing behavior preserved).
+    if (!onAccounting) return;
     const addr = mode === 'customer' ? customerProfile.classicAddress : vendorProfile.classicAddress;
     if (!addr) return;
     setAuditLogLoading(true);
@@ -6486,2497 +7349,6214 @@ const addLinkedVendorByDID = async () => {
     );
   };
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: '#f5f5f5', fontFamily: 'Helvetica, Arial, sans-serif' }}>
+    <>
       {EscrowRecoveryBanner}
-      
-      
-      {isMobile && (
-        <button onClick={() => setSidebarOpen(v => !v)} style={{ display: 'block', position: 'fixed', top: '12px', left: sidebarOpen ? '232px' : '12px', zIndex: 200, background: '#D88F2E', border: 'none', borderRadius: '8px', padding: '8px 12px', cursor: 'pointer', fontSize: '20px', color: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.2)', transition: 'left 0.3s ease' }}>☰</button>
-      )}
-      <div style={{ position: 'fixed', left: isMobile && !sidebarOpen ? '-220px' : '0', top: 0, width: isMobile ? '220px' : '190px', height: '100vh', background: 'linear-gradient(90deg, #D88F2E 0%, #FBC85F 55%, #FFEBB8 100%)', padding: '20px', borderTopRightRadius: '28px', borderBottomRightRadius: '28px', overflow: 'visible', zIndex: 10, display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', transition: 'left 0.3s ease', boxSizing: 'border-box' }} onClick={() => { if (isMobile) setSidebarOpen(false); }}>
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '16px' }}>
-          <span style={{ color: '#FFFFFF', fontWeight: 'bold', marginRight: '10px' }}>{mode === 'customer' ? 'Customer' : 'Vendor'}</span>
-          <div style={{ position: 'relative', width: '60px', height: '30px', background: 'linear-gradient(to right, #D88F2E, #FBC85F)', borderRadius: '999px', boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.1)', border: '1px solid rgba(255,255,255,0.55)' }}>
-            <span onClick={() => setMode(mode === 'customer' ? 'vendor' : 'customer')} style={{ position: 'absolute', left: mode === 'customer' ? '0' : '30px', width: '30px', height: '30px', background: '#FFF6DC', borderRadius: '50%', transition: 'left 0.3s ease', boxShadow: '0 2px 4px rgba(0,0,0,0.1)', cursor: 'pointer' }} />
-          </div>
-        </div>
-        {/* Notification strip */}
-        <div style={{ marginBottom: '24px', position: 'relative' }}>
-          <button onClick={() => { setShowNotifications(v => !v); setNotifications(prev => prev.map(n => ({ ...n, read: true }))); }}
-            style={{ width: '100%', background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)', borderRadius: '10px', padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ color: 'white', fontSize: '13px', fontWeight: '500' }}>🔔 Notifications</span>
-            {unreadCount > 0 && (
-              <span style={{ background: '#e74c3c', color: 'white', borderRadius: '10px', padding: '1px 7px', fontSize: '11px', fontWeight: 'bold' }}>{unreadCount > 9 ? '9+' : unreadCount}</span>
-            )}
-          </button>
-          {showNotifications && (
-            <div style={{ position: 'fixed', left: '200px', top: '60px', width: '300px', background: 'white', borderRadius: '15px', boxShadow: '0 8px 30px rgba(0,0,0,0.15)', border: '1px solid #FFE0B2', zIndex: 9999, maxHeight: '400px', overflowY: 'auto' }}>
-              <div style={{ padding: '12px 16px', borderBottom: '1px solid #FFE0B2', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontWeight: 'bold', color: '#D88F2E' }}>Notifications</span>
-                <button onClick={() => setNotifications([])} style={{ background: 'none', border: 'none', color: '#999', cursor: 'pointer', fontSize: '12px' }}>Clear all</button>
-              </div>
-              {notifications.length === 0 ? (
-                <p style={{ padding: '20px', textAlign: 'center', color: '#999', margin: 0 }}>No notifications</p>
-              ) : (
-                notifications.map(n => (
-                  <div key={n.id} style={{ padding: '12px 16px', borderBottom: '1px solid #FFF3E0', background: n.read ? 'white' : '#FFFDF8' }}>
-                    <p style={{ margin: 0, fontSize: '14px', color: n.type === 'warning' ? '#e67e22' : n.type === 'success' ? '#27ae60' : '#333' }}>{n.message}</p>
-                    <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#999' }}>{new Date(n.timestamp).toLocaleTimeString()}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '26px', marginBottom: '40px' }}>
-          {tabs.map(tab => (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key as any)} style={{ height: '62px', padding: '0 28px', background: activeTab === tab.key ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', marginRight: '-20px', zIndex: 2, opacity: 1, filter: activeTab === tab.key ? 'none' : 'brightness(1.1) saturate(0.8)', boxShadow: activeTab === tab.key ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)', transform: activeTab === tab.key ? 'translateX(1px)' : 'none' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-              {tab.label}
-            </button>
-          ))}
-        </div>
-        <div style={{ marginTop: 'auto', textAlign: 'center', paddingBottom: '20px' }}>
-          <img src="/logo.png" alt="Your Logo" style={{ width: '100px', height: 'auto' }} />
-        </div>
-      </div>
-      <div style={{ marginLeft: isMobile ? '0' : '190px', flex: 1, padding: isMobile ? '16px' : '40px', paddingTop: isMobile ? '56px' : '40px', background: '#FFF2D6', minHeight: '100vh', overflowY: 'auto' }}>
-        <h1 style={{ color: '#F2B04A', textAlign: 'center', fontSize: '36px', marginBottom: '30px' }}>
-          Vhay<sup style={{ fontSize: '14px', verticalAlign: 'super', lineHeight: '0' }}>™</sup>
-        </h1>
-        {activeTab === 'create' && mode === 'customer' && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '40px' }}>Create / Update SC.PO (MPT)</h2>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '40px' }}>
-              <button onClick={() => { setCreateSubTab('creation'); setSelectedUpdatePO(null); }} style={{ height: '50px', padding: '0 30px', background: createSubTab === 'creation' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: createSubTab === 'creation' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Creation
-              </button>
-              <button onClick={() => setCreateSubTab('update')} style={{ height: '50px', padding: '0 30px', background: createSubTab === 'update' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: createSubTab === 'update' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Update
-              </button>
-            </div>
-            {createSubTab === 'creation' && (
-              <div>
-                <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>PO Name (for tracking)</label>
-                <input style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 50px auto', display: 'block' }} placeholder="e.g. Widget Order Dec 2025" value={poName} onChange={(e) => setPoName(e.target.value)} />
-                <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Description</label>
-                <textarea style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 60px auto', display: 'block', height: '120px', resize: 'vertical' }} placeholder="Enter description (optional)" value={desc} onChange={(e) => setDesc(e.target.value)} />
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '50px', maxWidth: '900px', margin: '0 auto 60px auto' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold' }}>Customer Link</label>
-                    <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', background: '#f0f0f0' }} value="Linked" readOnly />
-                    <label style={{ display: 'block', margin: '40px 0 10px', color: '#F2B04A', fontWeight: 'bold' }}>Department</label>
-                    <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={department} onChange={(e) => setDepartment(e.target.value)} />
-                    <label style={{ display: 'block', margin: '40px 0 10px', color: '#F2B04A', fontWeight: 'bold' }}>Vendor Link</label>
-                    <select style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} onChange={(e) => { const selectedOption = e.target.options[e.target.selectedIndex]; setVendor(selectedOption.value); setSelectedVendorUUID(selectedOption.dataset.uuid || ''); }}>
-                      <option value="">Select Linked Vendor</option>
-                      {linkedVendors.map(v => <option key={v.profileUUID} value={v.classicAddress} data-uuid={v.profileUUID}>{v.uniqueID} - {v.name}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold' }}>RFP Link</label>
-                    <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', background: '#f0f0f0' }} value="Linked" readOnly />
-                    <label style={{ display: 'block', margin: '40px 0 10px', color: '#F2B04A', fontWeight: 'bold' }}>Payment Terms</label>
-                    <select style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)}>
-                      <option value="">Select Terms</option>
-                      <option value="0 Days">0 Days (Immediate)</option>
-                      <option value="15 Days">15 Days</option>
-                      <option value="30 Days">30 Days</option>
-                      <option value="60 Days">60 Days</option>
-                    </select>
-                    {isRLUSDConfigured() && (
-                      <>
-                        <label style={{ display: 'block', margin: '40px 0 10px', color: '#F2B04A', fontWeight: 'bold' }}>Escrow Currency</label>
-                        <select style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={escrowCurrency} onChange={(e) => setEscrowCurrency(e.target.value as 'XRP' | 'RLUSD')}>
-                          <option value="RLUSD">💵 RLUSD (1:1 USD — recommended)</option>
-                          <option value="XRP">⚡ XRP (market rate conversion)</option>
-                        </select>
-                      </>
-                    )}
-                    <label style={{ display: 'block', margin: '40px 0 10px', color: '#F2B04A', fontWeight: 'bold' }}>Delivery Terms</label>
-                    <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={deliveryTerms} onChange={(e) => setDeliveryTerms(e.target.value)} />
 
-                    {/* Phase 6A — Yield Opt-In */}
-                    {escrowCurrency === 'RLUSD' && (
-                      <div style={{ marginTop: '30px', background: '#F0FFF4', border: '1.5px solid #68D391', borderRadius: '14px', padding: '16px' }}>
-                        <label style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', cursor: 'pointer' }}>
-                          <input
-                            type="checkbox"
-                            checked={yieldOptIn}
-                            onChange={async (e) => {
-                              const checked = e.target.checked;
-                              setYieldOptIn(checked);
-                              if (checked) {
-                                setYieldOptInLoading(true);
-                                try {
-                                  const adapter = yieldPartnerRegistry.get(selectedPartnerId);
-                                  if (adapter) {
-                                    const { apr } = await adapter.getCurrentAPR();
-                                    setYieldOptInAPR(apr);
-                                    const daysParsed = parseInt(paymentTerms?.split(' ')[0]);
-                                    const days = isNaN(daysParsed) ? 30 : daysParsed;
-                                    const est = adapter.calculateAccrued(totalEscrowAmount || '0', apr, days);
-                                    const { netToBuyer } = computeYieldDistribution(est, adapter);
-                                    setYieldEstimatedReturn(netToBuyer);
-                                  }
-                                } catch { /* ignore */ }
-                                finally { setYieldOptInLoading(false); }
-                              } else {
-                                setYieldOptInAPR(null);
-                                setYieldEstimatedReturn(null);
-                              }
+      <TopBar
+        mode={mode}
+        setMode={setMode}
+        onAdminClick={() => setActiveTab('admin')}
+        onProfileClick={() => setActiveTab(mode === 'customer' ? 'customerProfile' : 'vendorProfile')}
+        onBellClick={() => {
+          setShowNotifications(v => !v);
+          setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+        }}
+        onClearNotifications={() => setNotifications([])}
+        showNotifications={showNotifications}
+        notifications={notifications}
+        unreadCount={unreadCount}
+        profileName={mode === 'customer' ? customerProfile.name : vendorProfile.name}
+      />
+
+      <div style={{ maxWidth: 1440, margin: '0 auto', padding: '0 8px 40px', position: 'relative', zIndex: 1 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 20, padding: '12px 20px 40px', alignItems: 'flex-start' }}>
+          <Sidebar mode={mode} activeTab={activeTab} setActiveTab={setActiveTab}/>
+          <main key={mode + '-' + activeTab} className="rise">
+        {activeTab === 'create' && mode === 'customer' && (
+          <Page
+            tag="Buy · Purchase orders"
+            title={createSubTab === 'creation' ? 'Create a Purchase Order' : 'Update a Purchase Order'}
+            subtitle={createSubTab === 'creation'
+              ? 'Draft a new PO from scratch — configure terms, add line items, attach documents, and issue.'
+              : 'Edit an existing PO. Changes are versioned and require counter-party re-acceptance.'}
+            actions={
+              <div className="glass-strong" style={{ display: 'flex', padding: 4, borderRadius: 14, position: 'relative' }}>
+                <div style={{
+                  position: 'absolute', top: 4, bottom: 4,
+                  left: createSubTab === 'creation' ? 4 : '50%',
+                  width: 'calc(50% - 4px)',
+                  background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                  borderRadius: 10,
+                  transition: 'left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.5)',
+                }}/>
+                <button type="button"
+                  onClick={() => {
+                    const wasUpdate = createSubTab === 'update';
+                    setCreateSubTab('creation');
+                    setSelectedUpdatePO(null);
+                    if (wasUpdate) {
+                      setUpdateResult('');
+                      setPoName('');
+                      setDesc('');
+                      setDepartment('');
+                      setItems([]);
+                      setExistingAttachments([]);
+                      setSelectedFiles(null);
+                      setNewItemNum('');
+                      setNewQty('');
+                      setNewPiecePrice('');
+                      setNewTotal('');
+                      setVendor('');
+                      setSelectedVendorUUID('');
+                    }
+                  }}
+                  style={{
+                    position: 'relative', zIndex: 1, padding: '8px 18px', minWidth: 120,
+                    fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
+                    color: createSubTab === 'creation' ? '#2a1f08' : 'var(--ink-3)',
+                    background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                  }}>Create PO</button>
+                <button type="button"
+                  onClick={() => setCreateSubTab('update')}
+                  style={{
+                    position: 'relative', zIndex: 1, padding: '8px 18px', minWidth: 120,
+                    fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
+                    color: createSubTab === 'update' ? '#2a1f08' : 'var(--ink-3)',
+                    background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                  }}>Update PO</button>
+              </div>
+            }>
+            {createSubTab === 'creation' && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 380px', gap: 20, alignItems: 'flex-start' }}>
+
+                {/* LEFT — form cards */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+                  {/* 01 · PO overview */}
+                  <Card label={<StepLabel n="01" title="PO overview"/>}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <Field label="PO name" full>
+                        <input value={poName} onChange={(e) => setPoName(e.target.value)}
+                          placeholder="e.g. Widget Order Dec 2025" style={inpStyle}/>
+                      </Field>
+                      <Field label="Department">
+                        <input value={department} onChange={(e) => setDepartment(e.target.value)}
+                          placeholder="e.g. HW-240 / Phoenix plant" style={inpStyle}/>
+                      </Field>
+                      <Field label="RFP link">
+                        <input value="Linked" readOnly
+                          style={{ ...inpStyle, background: 'rgba(240, 200, 100, 0.12)', color: 'var(--ink-3)' }}/>
+                      </Field>
+                      <Field label="Description" full>
+                        <textarea value={desc} onChange={(e) => setDesc(e.target.value)}
+                          placeholder="Purpose of this PO, special notes for counter-party…"
+                          style={{ ...inpStyle, minHeight: 68, resize: 'vertical', lineHeight: 1.5 }}/>
+                      </Field>
+                    </div>
+                  </Card>
+
+                  {/* 02 · Parties */}
+                  <Card label={<StepLabel n="02" title="Parties"/>}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <div>
+                        <div style={fieldLabel}>Buyer</div>
+                        <div className="etched" style={{ padding: 12, borderRadius: 12, marginTop: 6 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>
+                            {customerProfile.company || 'Your company'}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                            {customerProfile.uniqueID
+                              ? `${customerProfile.uniqueID} · ${paymentTerms || 'Net 30'}`
+                              : 'Unique ID pending'}
+                          </div>
+                        </div>
+                      </div>
+                      <div>
+                        <div style={fieldLabel}>Seller</div>
+                        <div className="etched" style={{ padding: 12, borderRadius: 12, marginTop: 6 }}>
+                          <select value={vendor || ''}
+                            onChange={(e) => {
+                              const selectedOption = e.target.options[e.target.selectedIndex];
+                              setVendor(selectedOption.value);
+                              setSelectedVendorUUID(selectedOption.dataset.uuid || '');
                             }}
-                            style={{ marginTop: '3px', accentColor: '#38A169', width: '16px', height: '16px', flexShrink: 0 }}
-                          />
-                          <div>
-                            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#276749' }}>
-                              🌱 Earn yield while this escrow is held
-                            </div>
-                            <div style={{ fontSize: '12px', color: '#48BB78', marginTop: '3px' }}>
+                            style={{
+                              width: '100%', border: 0, background: 'transparent', outline: 'none',
+                              appearance: 'none', fontSize: 13, fontWeight: 600,
+                              color: 'var(--ink)', cursor: 'pointer', fontFamily: 'inherit',
+                            }}>
+                            <option value="">Select Linked Vendor</option>
+                            {linkedVendors.map(v => (
+                              <option key={v.profileUUID} value={v.classicAddress} data-uuid={v.profileUUID}>
+                                {v.company || v.name}
+                              </option>
+                            ))}
+                          </select>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                            {(() => {
+                              const selected = linkedVendors.find(v => v.profileUUID === selectedVendorUUID);
+                              if (!selected) return 'Choose a vendor from your linked profiles';
+                              return `${selected.uniqueID} · ${selected.name}`;
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </Card>
+
+                  {/* 03 · Terms & settlement */}
+                  <Card label={<StepLabel n="03" title="Terms & settlement"/>}>
+                    <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
+                      <Field label="Payment terms">
+                        <SelectBox value={paymentTerms} onChange={setPaymentTerms}
+                          options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
+                      </Field>
+                      {isRLUSDConfigured() && (
+                        <Field label="Escrow currency">
+                          <SelectBox value={escrowCurrency}
+                            onChange={(v) => setEscrowCurrency(v as 'XRP' | 'RLUSD')}
+                            options={['RLUSD', 'XRP']}/>
+                        </Field>
+                      )}
+                      <Field label="Delivery terms">
+                        <SelectBox value={deliveryTerms} onChange={setDeliveryTerms}
+                          options={[
+                            'DDP — Delivered Duty Paid',
+                            'DAP — Delivered at Place',
+                            'FOB — Free on Board',
+                            'EXW — Ex Works',
+                            'CIF — Cost, Insurance & Freight',
+                          ]}/>
+                      </Field>
+                    </div>
+
+                    {escrowCurrency === 'RLUSD' && (
+                      <>
+                        <div className="etched" style={{
+                          marginTop: 14, padding: 14, borderRadius: 14,
+                          display: 'flex', alignItems: 'center', gap: 14,
+                        }}>
+                          <div style={{
+                            width: 36, height: 36, borderRadius: 10,
+                            background: yieldOptIn
+                              ? 'linear-gradient(180deg, oklch(0.88 0.13 82), oklch(0.72 0.14 62))'
+                              : 'rgba(255, 248, 222, 0.6)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            color: yieldOptIn ? '#2a1f08' : 'var(--ink-3)',
+                            boxShadow: yieldOptIn
+                              ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 4px rgba(240, 200, 100, 0.15)'
+                              : 'inset 0 1px 2px rgba(120,80,20,0.08)',
+                            transition: 'all 0.3s ease',
+                          }}>
+                            <IconSpark size={16}/>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>Earn yield on escrow</div>
+                            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
                               Your RLUSD earns interest from the moment the escrow is funded until the vendor claims payment.
                             </div>
-                            {yieldOptIn && !yieldOptInLoading && yieldOptInAPR !== null && (
-                              <div style={{ fontSize: '12px', color: '#276749', marginTop: '6px', fontWeight: 'bold' }}>
-                                Current rate: {formatAPR(yieldOptInAPR)} APY
+                          </div>
+                          <Toggle on={yieldOptIn} onChange={async (checked) => {
+                            setYieldOptIn(checked);
+                            if (checked) {
+                              setYieldOptInLoading(true);
+                              try {
+                                const adapter = yieldPartnerRegistry.get(selectedPartnerId);
+                                if (adapter) {
+                                  const { apr } = await adapter.getCurrentAPR();
+                                  setYieldOptInAPR(apr);
+                                  const daysParsed = parseInt(paymentTerms?.split(' ')[0] || '30');
+                                  const days = isNaN(daysParsed) ? 30 : daysParsed;
+                                  const est = adapter.calculateAccrued(totalEscrowAmount || '0', apr, days);
+                                  const { netToBuyer } = computeYieldDistribution(est, adapter);
+                                  setYieldEstimatedReturn(netToBuyer);
+                                }
+                              } catch { /* ignore */ }
+                              finally { setYieldOptInLoading(false); }
+                            } else {
+                              setYieldOptInAPR(null);
+                              setYieldEstimatedReturn(null);
+                            }
+                          }}/>
+                        </div>
+
+                        {yieldOptIn && (
+                          <div style={{
+                            marginTop: 10, padding: '10px 14px', borderRadius: 12,
+                            background: 'rgba(150, 200, 130, 0.12)',
+                            border: '1px solid rgba(100, 180, 120, 0.25)',
+                            fontSize: 11, color: 'var(--ink-2)', lineHeight: 1.5,
+                          }}>
+                            {yieldOptInLoading && <div>Fetching current rate…</div>}
+                            {!yieldOptInLoading && yieldOptInAPR !== null && (
+                              <div>
+                                <span style={{ color: '#276749', fontWeight: 600 }}>
+                                  Current rate: {formatAPR(yieldOptInAPR)} APY
+                                </span>
                                 {yieldEstimatedReturn && parseFloat(yieldEstimatedReturn) > 0 && totalEscrowAmount !== '0' && (
-                                  <span style={{ marginLeft: '10px', color: '#2F855A', fontWeight: 'normal' }}>
+                                  <span style={{ marginLeft: 10 }}>
                                     Est. net return: <strong>{fmtRLUSD(yieldEstimatedReturn)}</strong> over {paymentTerms || '—'}
                                   </span>
                                 )}
                                 {totalEscrowAmount === '0' && (
-                                  <span style={{ marginLeft: '10px', color: '#999', fontWeight: 'normal' }}>Add items to see estimated return</span>
+                                  <span style={{ marginLeft: 10, color: 'var(--ink-3)' }}>
+                                    Add items to see estimated return
+                                  </span>
                                 )}
                               </div>
                             )}
-                            {yieldOptIn && yieldOptInLoading && (
-                              <div style={{ fontSize: '12px', color: '#68D391', marginTop: '4px' }}>Fetching current rate...</div>
-                            )}
-                            {/* Risk disclosure */}
-                            <div style={{ marginTop: '10px', background: '#FFFBEB', border: '1px solid #F6E05E', borderRadius: '8px', padding: '8px 12px', fontSize: '11px', color: '#92400E' }}>
-                              ⚠️ <strong>Yield involves risk.</strong> Returns are not guaranteed, not FDIC insured, and depend on partner performance. Your principal (the escrow amount) is always returned to complete the PO — only the yield portion carries risk. SC.PO earns a fee on yield generated.
+                            <div style={{ marginTop: 6, color: '#92400E' }}>
+                              ⚠ Yield involves risk. Returns are not guaranteed. Principal always returns to complete the PO — only yield carries risk. SC.PO earns a fee on yield.
                             </div>
                           </div>
-                        </label>
-                      </div>
+                        )}
+                      </>
                     )}
-                  </div>
-                </div>
-                <h3 style={{ color: '#F2B04A', margin: '40px 0 20px', textAlign: 'center' }}>Request</h3>
-                <div style={{ maxWidth: '900px', margin: '0 auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 15px' }}>
-                   <thead>
-                      <tr>
-                        <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0', borderRadius: '30px 0 0 30px' }}>Item #</th>
-                        <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0' }}>Item Link</th>
-                        <th style={{ padding: '15px', background: '#FFF3E0' }}>Piece Price</th>
-                        <th style={{ padding: '15px', background: '#FFF3E0' }}>Qty</th>
-                        <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0', borderRadius: '0 30px 30px 0' }}>Total $</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  </Card>
+
+                  {/* 04 · Order request */}
+                  <Card
+                    label={<StepLabel n="04" title="Order request"/>}
+                    actions={
+                      <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                        {items.length} line{items.length !== 1 ? 's' : ''}
+                      </span>
+                    }>
+                    <div style={{
+                      border: '1px solid rgba(180, 140, 60, 0.15)',
+                      borderRadius: 14, overflow: 'hidden',
+                      background: 'rgba(255, 248, 222, 0.25)',
+                    }}>
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px',
+                        gap: 10, padding: '10px 14px',
+                        fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
+                        color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                        borderBottom: '1px solid rgba(180,140,60,0.15)',
+                        background: 'rgba(255, 248, 222, 0.5)',
+                      }}>
+                        <div>Item #</div>
+                        <div/>
+                        <div style={{ textAlign: 'right' }}>QTY</div>
+                        <div style={{ textAlign: 'right' }}>Piece price</div>
+                        <div style={{ textAlign: 'right' }}>Total</div>
+                        <div/>
+                      </div>
+
                       {items.map((item, index) => {
                         const linkedV2Item = vendor ? (linkedVendorInventoryV2[vendor] || []).find(i => i.nftId === item.invNFTId || i.partNumber === item.num || i.name === item.num) : null;
                         return (
-                        <tr key={index}>
-                          <td style={{ padding: '10px 15px', background: 'white', borderRadius: '30px 0 0 30px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <ProductImage uri={linkedV2Item?.productImageUri} name={item.num} size={36} />
-                              <div>
-                                <div>{item.num}</div>
+                          <div key={index} style={{
+                            display: 'grid',
+                            gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px',
+                            gap: 10, padding: '10px 14px', alignItems: 'center',
+                            fontSize: 13,
+                            borderBottom: '1px solid rgba(180,140,60,0.08)',
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                              <ProductImage uri={linkedV2Item?.productImageUri} name={item.num} size={28}/>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {item.num}
+                                </div>
                                 {linkedV2Item?.status === 'out_of_stock' && (
-                                  <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#92400E', background: '#FFFBEB', border: '1px solid #F59E0B', borderRadius: '8px', padding: '1px 6px', display: 'inline-block', marginTop: '2px' }}>
+                                  <span style={{ fontSize: 10, color: '#92400E', background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.35)', borderRadius: 4, padding: '1px 5px', display: 'inline-block', marginTop: 2 }}>
                                     ⚠ Out of Stock
                                   </span>
                                 )}
                                 {linkedV2Item?.status === 'discontinued' && (
-                                  <span style={{ fontSize: '11px', fontWeight: 'bold', color: '#C62828', background: '#FFF5F5', border: '1px solid #FC8181', borderRadius: '8px', padding: '1px 6px', display: 'inline-block', marginTop: '2px' }}>
+                                  <span style={{ fontSize: 10, color: '#C62828', background: 'rgba(252, 129, 129, 0.1)', border: '1px solid rgba(252, 129, 129, 0.35)', borderRadius: 4, padding: '1px 5px', display: 'inline-block', marginTop: 2 }}>
                                     ⛔ Discontinued
                                   </span>
                                 )}
                               </div>
                             </div>
-                          </td>
-                          <td style={{ padding: '15px', background: 'white' }}>
-                            {linkedV2Item ? (
-                              <button onClick={() => {
-                                const fakePO = { vendorAddress: vendor, buyerAddress: customerProfile.classicAddress } as any;
-                                const fakePOData = { items: [item] } as any;
-                                openPOInventoryModal(fakePO, fakePOData);
-                              }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px' }} title="View inventory details">🔗</button>
-                            ) : <span style={{ color: '#ccc' }}>🔗</span>}
-                          </td>
-                          <td style={{ padding: '15px', background: 'white' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</td>
-                          <td style={{ padding: '15px', background: 'white' }}>{item.qty}</td>
-                          <td style={{ padding: '15px', background: 'white' }}>${item.total}</td>
-                          <td style={{ padding: '15px', background: 'white', borderRadius: '0 30px 30px 0' }}>
-                            <button onClick={() => removeItem(index)} style={{ background: '#e74c3c', color: 'white', padding: '5px 10px', borderRadius: '15px', cursor: 'pointer', transition: 'all 0.2s ease', border: 'none' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Remove
+                            <div>
+                              {linkedV2Item ? (
+                                <button type="button" onClick={() => {
+                                  const fakePO = { vendorAddress: vendor, buyerAddress: customerProfile.classicAddress } as any;
+                                  const fakePOData = { items: [item] } as any;
+                                  openPOInventoryModal(fakePO, fakePOData);
+                                }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 2 }}
+                                  title="View inventory details">
+                                  <IconLayer size={13}/>
+                                </button>
+                              ) : null}
+                            </div>
+                            <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                            <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
+                            <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
+                            <button type="button" onClick={() => removeItem(index)}
+                              style={{ color: 'var(--ink-3)', padding: 4, justifySelf: 'end', background: 'transparent', border: 0, cursor: 'pointer' }}>
+                              <IconX size={13}/>
                             </button>
-                          </td>
-                        </tr>
+                          </div>
                         );
                       })}
-                    </tbody>
-                  </table>
-                </div>
-                <h4 style={{ color: '#F2B04A', margin: '40px 0 10px', textAlign: 'center' }}>Add New Item</h4>
-                <div className="scpo-add-item-row">
-                  {(() => {
-                    const v2items = linkedVendorInventoryV2[vendor] || [];
-                    if (!vendor) {
-                      return <input placeholder="Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />;
-                    }
-                    if (v2items.length === 0) {
-                      return <input placeholder="Loading inventory... or enter Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />;
-                    }
-                    return (
-                      <select value={selectedInventoryItem} onChange={(e) => {
-                        const val = e.target.value;
-                        setSelectedInventoryItem(val);
-                        if (val === 'custom') { setNewItemNum(''); setNewPiecePrice(''); setNewTotal(''); return; }
-                        const v2item = v2items.find(i => i.partNumber === val || i.name === val);
-                        if (v2item) { setNewItemNum(v2item.partNumber || v2item.name); setNewPiecePrice(''); setNewTotal(''); return; }
-                        setNewItemNum(val); setNewPiecePrice(''); setNewTotal('');
-                      }} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }}>
-                        <option value="custom">Custom Item #</option>
-                        {v2items.map(item => (
-                          <option key={item.nftId} value={item.partNumber || item.name}>
-                            {item.partNumber} — {item.name}
-                          </option>
-                        ))}
-                      </select>
-                    );
-                  })()}
-                  {selectedInventoryItem === 'custom' && vendor && linkedVendorInventoryV2[vendor]?.length > 0 && (
-                    <input placeholder="Custom Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />
-                  )}
-                  <input placeholder="Qty" value={newQty} onChange={(e) => setNewQty(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />
-                  <input placeholder={selectedItemPricingLoading ? 'Loading price...' : 'Piece Price $'} value={newPiecePrice} onChange={(e) => { setNewPiecePrice(e.target.value); const qty = parseFloat(newQty); const price = parseFloat(e.target.value); if (qty > 0 && price > 0) setNewTotal((qty * price).toFixed(2)); }} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1, background: selectedItemPricingLoading ? '#f5f5f5' : 'white' }} />
-                  <input placeholder="Total $" value={newTotal} onChange={(e) => setNewTotal(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />
-                  <button onClick={addItem} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 30px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                    Add
-                  </button>
-                </div>
-                {/* Task 3.10 — status warnings */}
-                {(() => {
-                  if (selectedInventoryItem === 'custom' || !vendor) return null;
-                  const v2items = linkedVendorInventoryV2[vendor] || [];
-                  const v2item = v2items.find(i => i.partNumber === selectedInventoryItem || i.name === selectedInventoryItem);
-                  if (!v2item) return null;
-                  if (v2item.status === 'out_of_stock') return (
-                    <div style={{ maxWidth: '900px', margin: '0 auto 10px auto', background: '#FFFBEB', border: '1px solid #F59E0B', borderRadius: '12px', padding: '10px 18px', color: '#92400E', fontSize: '14px', fontWeight: '500' }}>
-                      ⚠ This item is currently out of stock. Delivery times may be longer than usual.
-                    </div>
-                  );
-                  if (v2item.status === 'discontinued') return (
-                    <div style={{ maxWidth: '900px', margin: '0 auto 10px auto', background: '#FFF5F5', border: '1px solid #FC8181', borderRadius: '12px', padding: '10px 18px', color: '#C62828', fontSize: '14px', fontWeight: '500' }}>
-                      ⛔ This item has been discontinued by the vendor. Contact the vendor before submitting this PO.
-                    </div>
-                  );
-                  return null;
-                })()}
-                {pricingExpiryWarning && selectedInventoryItem !== 'custom' && (
-                  <div style={{ maxWidth: '900px', margin: '0 auto 10px auto', background: pricingExpiryWarning.bg, border: `1px solid ${pricingExpiryWarning.color}`, borderRadius: '12px', padding: '10px 18px', color: pricingExpiryWarning.color, fontSize: '14px', fontWeight: '500' }}>
-                    {pricingExpiryWarning.message}
-                  </div>
-                )}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', maxWidth: '900px', margin: '0 auto 60px auto' }}>
-                  <div style={{ background: '#FFF3E0', padding: '20px 40px', borderRadius: '30px', fontSize: '20px', fontWeight: 'bold', color: '#F2B04A' }}>
-                    Sub Total: ${totalEscrowAmount}
-                  </div>
-                </div>
-                <h3 style={{ color: '#F2B04A', margin: '40px 0 20px', textAlign: 'center' }}>Attachments (optional)</h3>
-                <p style={{ textAlign: 'center', marginBottom: '10px', color: '#666', maxWidth: '600px', marginLeft: 'auto', marginRight: 'auto' }}>Add drawings, specs, PDFs, images, etc. (uploaded to IPFS)</p>
-                <input type="file" multiple onChange={(e) => setSelectedFiles(e.target.files)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 40px auto', display: 'block' }} />
-                {selectedFiles && selectedFiles.length > 0 && (
-                  <div style={{ maxWidth: '600px', margin: '0 auto 40px auto' }}>
-                    <strong style={{ color: '#F2B04A' }}>Selected files:</strong>
-                    <ul>{Array.from(selectedFiles).map((file, i) => <li key={i}>{file.name} ({(file.size / 1024).toFixed(1)} KB)</li>)}</ul>
-                  </div>
-                )}
-                <button onClick={createSCPO} disabled={!selectedVendorUUID} style={{ display: 'block', margin: '60px auto', width: '180px', height: '180px', borderRadius: '50%', background: 'linear-gradient(145deg, #F2B04A, #FFD98F)', color: 'white', fontSize: '28px', fontWeight: 'bold', border: '1.5px solid #D88F2E', boxShadow: scpoSuccess ? '0 0 30px #FFD700, 0 0 60px #FFA500, inset 0 0 20px rgba(255,255,255,0.5)' : '0 10px 30px rgba(212,175,55,0.4), inset 0 0 20px rgba(255,255,255,0.3)', cursor: 'pointer', transition: 'all 0.3s ease', animation: scpoSuccess ? 'scpoPulse 2s infinite' : 'none', opacity: !selectedVendorUUID ? 0.5 : 1 }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  SC.PO
-                </button>
-                {result && (
-                  <div style={{ marginTop: '40px', maxWidth: '900px', marginLeft: 'auto', marginRight: 'auto' }}>
-                    <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', border: '1px solid #ddd', borderRadius: '15px' }}>{result}</pre>
-                  </div>
-                )}
-              </div>
-            )}
-            {createSubTab === 'update' && (
-              <div>
-                <h3 style={{ color: '#F2B04A', marginBottom: '20px' }}>Select Open or Accepted PO to Update</h3>
-                <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                        <th style={{ padding: '10px', textAlign: 'left' }}>PO Name</th>
-                        <th style={{ padding: '10px', textAlign: 'left' }}>Date Issued</th>
-                        <th style={{ padding: '10px', textAlign: 'left' }}>Total $</th>
-                        <th style={{ padding: '10px', textAlign: 'left' }}>Status</th>
-                        <th style={{ padding: '10px' }}></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {getUpdatablePOs().map(po => (
-                          <tr key={po.issuanceId || po.id}>
-                          <td style={{ padding: '10px' }}>{po.poName}</td>
-                          <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                          <td style={{ padding: '10px' }}>${po.total}</td>
-                          <td style={{ padding: '10px' }}>{po.status} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                          <td style={{ padding: '10px' }}>
-                            <button onClick={async () => { setSelectedUpdatePO(po); await prefillFromPO(po); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '20px', cursor: 'pointer', border: 'none' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Edit
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {selectedUpdatePO && (
-                  <div style={{ marginTop: '40px', background: '#f9f9f9', padding: '20px', borderRadius: '20px' }}>
-                    <h3 style={{ color: '#F2B04A' }}>Update PO Form (New MPT Version)</h3>
-                    {isLoadingEditPO && (
-                      <div style={{ textAlign: 'center', padding: '20px', color: '#F2B04A', fontWeight: 'bold' }}>
-                        Loading PO details from IPFS...
-                      </div>
-                    )}
-                    <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>PO Name</label>
-                    <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={poName} onChange={(e) => setPoName(e.target.value)} />
-                    <label style={{ display: 'block', marginBottom: '10px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Description</label>
-                    <textarea style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', height: '120px' }} value={desc} onChange={(e) => setDesc(e.target.value)} />
-                    <div style={{ display: 'flex', gap: '20px', marginTop: '20px' }}>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Department</label>
-                        <input style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={department} onChange={(e) => setDepartment(e.target.value)} />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Payment Terms</label>
-                        <select style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)}>
-                          <option value="">Select Terms</option>
-                          <option value="0 Days">0 Days (Immediate)</option>
-                          <option value="15 Days">15 Days</option>
-                          <option value="30 Days">30 Days</option>
-                          <option value="60 Days">60 Days</option>
-                        </select>
-                      </div>
-                      {isRLUSDConfigured() && (
-                        <div style={{ flex: 1 }}>
-                          <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Escrow Currency</label>
-                          <select style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E' }} value={escrowCurrency} onChange={(e) => setEscrowCurrency(e.target.value as 'XRP' | 'RLUSD')}>
-                            <option value="RLUSD">💵 RLUSD (1:1 USD)</option>
-                            <option value="XRP">⚡ XRP (market rate)</option>
-                          </select>
+
+                      {items.length === 0 && (
+                        <div style={{ padding: '20px 14px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                          No lines yet. Add an item below to start your PO.
                         </div>
                       )}
-                    </div>
-                    <h4 style={{ color: '#F2B04A', margin: '40px 0 20px', textAlign: 'center' }}>Request Items</h4>
-                    <div style={{ maxWidth: '900px', margin: '0 auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 15px' }}>
-                        <thead>
-                      <tr>
-                        <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0', borderRadius: '30px 0 0 30px' }}>Item #</th>
-                        <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0' }}>Item Link</th>
-                        <th style={{ padding: '15px', background: '#FFF3E0' }}>Piece Price</th>
-                        <th style={{ padding: '15px', background: '#FFF3E0' }}>Qty</th>
-                        <th style={{ textAlign: 'left', padding: '15px', background: '#FFF3E0', borderRadius: '0 30px 30px 0' }}>Total $</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {items.map((item, index) => {
-                        const linkedV2Item = selectedUpdatePO?.vendorAddress ? (linkedVendorInventoryV2[selectedUpdatePO.vendorAddress] || []).find(i => i.nftId === item.invNFTId || i.partNumber === item.num || i.name === item.num) : null;
-                        return (
-                        <tr key={index}>
-                          <td style={{ padding: '15px', background: 'white', borderRadius: '30px 0 0 30px' }}>{item.num}</td>
-                          <td style={{ padding: '15px', background: 'white' }}>
-                            {linkedV2Item ? (
-                              <button onClick={() => {
-                                const fakePO = { vendorAddress: selectedUpdatePO?.vendorAddress, buyerAddress: customerProfile.classicAddress } as any;
-                                const fakePOData = { items: [item] } as any;
-                                openPOInventoryModal(fakePO, fakePOData);
-                              }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px' }} title="View inventory details">🔗</button>
-                            ) : <span style={{ color: '#ccc' }}>🔗</span>}
-                          </td>
-                          <td style={{ padding: '15px', background: 'white' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</td>
-                          <td style={{ padding: '15px', background: 'white' }}>{item.qty}</td>
-                          <td style={{ padding: '15px', background: 'white' }}>${item.total}</td>
-                          <td style={{ padding: '15px', background: 'white', borderRadius: '0 30px 30px 0' }}>
-                            <button onClick={() => removeItem(index)} style={{ background: '#e74c3c', color: 'white', padding: '5px 10px', borderRadius: '15px', cursor: 'pointer', transition: 'all 0.2s ease', border: 'none' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                      </table>
-                    </div>
-                    <h4 style={{ color: '#F2B04A', margin: '40px 0 10px', textAlign: 'center' }}>Add New Item</h4>
-                    <div className="scpo-add-item-row">
-                      <input placeholder="Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />
-                      <input placeholder="Qty" value={newQty} onChange={(e) => setNewQty(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />
-                      <input placeholder="Piece Price $" value={newPiecePrice} onChange={(e) => { setNewPiecePrice(e.target.value); const qty = parseFloat(newQty); const price = parseFloat(e.target.value); if (qty > 0 && price > 0) setNewTotal((qty * price).toFixed(2)); }} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />
-                      <input placeholder="Total $" value={newTotal} onChange={(e) => setNewTotal(e.target.value)} style={{ padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', flex: 1 }} />
-                      <button onClick={addItem} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 30px', borderRadius: '30px', border: 'none', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                        Add
-                      </button>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', maxWidth: '900px', margin: '0 auto 60px auto' }}>
-                      <div style={{ background: '#FFF3E0', padding: '20px 40px', borderRadius: '30px', fontSize: '20px', fontWeight: 'bold', color: '#F2B04A' }}>
-                        Sub Total: ${totalEscrowAmount}
-                      </div>
-                    </div>
-                    <h3 style={{ color: '#F2B04A', margin: '40px 0 20px', textAlign: 'center' }}>Attachments (optional)</h3>
-                    <input type="file" multiple onChange={(e) => setSelectedFiles(e.target.files)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 40px auto', display: 'block' }} />
-                    <button onClick={updateSCPO} style={{ display: 'block', margin: '40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      Update PO (New Version)
-                    </button>
-                    {updateResult && (
-                      <div style={{ marginTop: '20px', maxWidth: '900px', marginLeft: 'auto', marginRight: 'auto' }}>
-                        <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', border: '1px solid #ddd', borderRadius: '15px' }}>{updateResult}</pre>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-        {activeTab === 'scpoAction' && mode === 'customer' && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>SC.PO Action</h2>
-            <div style={{ marginBottom: '40px' }}>
-              <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Open SC.PO</h3>
-              {getLatestActivePOs('open').length === 0 ? <p>No open POs</p> : (
-                <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(openExpanded ? sortPOsNewestFirst(getLatestActivePOs('open')) : sortPOsNewestFirst(getLatestActivePOs('open').slice(0, 2))).map(po => (
-                          <tr key={po.issuanceId || po.id}>
-                          <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                          <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                          <td style={{ padding: '10px' }}>${po.total}</td>
-                          <td style={{ padding: '10px', display: 'flex', gap: '5px' }}>
-                            <button onClick={async () => { setSelectedOpenPO(po); await viewPOFromUri(po.ipfsUri, po, setCustomerScpoActionViewedPO, setCustomerScpoActionPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              View PO
-                            </button>
-                            <button onClick={() => recallPO(po)} style={{ background: '#e74c3c', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Recall
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {getLatestActivePOs('open').length > 2 && (
-                    <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                      <button onClick={() => setOpenExpanded(!openExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                        {openExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div style={{ marginBottom: '40px' }}>
-              <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Accepted SC.PO (Not Funded)</h3>
-              {getLatestActivePOs('accepted').filter(p => !p.escrowSequence).length === 0 ? <p>No accepted POs to fund</p> : (
-                <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '35%' }}>PO Name</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Date Issued</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Total $</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(acceptedExpanded ? sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence)) : sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence).slice(0, 2))).map(po => (
-                          <tr key={po.issuanceId || po.id}>
-                          <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                          <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                          <td style={{ padding: '10px' }}>${po.total}</td>
-                          <td style={{ padding: '10px', display: 'flex', gap: '5px' }}>
-                            <button onClick={() => fundEscrow(po)} style={{ background: po.escrowCurrency === 'RLUSD' ? '#2e86de' : '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Fund Escrow
-                            </button>
-                            <button onClick={async () => { setSelectedOpenPO(po); await viewPOFromUri(po.ipfsUri, po, setCustomerScpoActionViewedPO, setCustomerScpoActionPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              View PO
-                            </button>
-                            <button onClick={() => recallPO(po)} style={{ background: '#e74c3c', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Recall
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {getLatestActivePOs('accepted').filter(p => !p.escrowSequence).length > 2 && (
-                    <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                      <button onClick={() => setAcceptedExpanded(!acceptedExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                        {acceptedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            {customerScpoActionViewedPO && (
-              <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
-                <h3 style={{ color: '#F2B04A' }}>Purchase Order Details</h3>
-                <p><strong style={{ color: '#F2B04A' }}>PO Name:</strong> {customerScpoActionViewedPO.poName}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {customerScpoActionViewedPO.description || 'N/A'}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {customerScpoActionViewedPO.department}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {customerScpoActionViewedPO.paymentTerms}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {customerScpoActionViewedPO.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {customerScpoActionViewedPO.deliveryTerms}</p>
-                <h4 style={{ color: '#F2B04A' }}>Items</h4>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ background: '#e0e0e0' }}>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {customerScpoActionViewedPO.items.map((item, i) => (
-                      <tr key={i}>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {customerScpoActionViewedPO.attachments && customerScpoActionViewedPO.attachments.length > 0 && (
-                  <>
-                    <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Attachments</h4>
-                    <ul>
-                      {customerScpoActionViewedPO.attachments.map((att, i) => (
-                        <li key={i}>
-                          <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                            {att.name}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-                <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
-                  <button onClick={() => openProfilesModal(selectedOpenPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                    Profiles
-                  </button>
-                  {getPOHistory(selectedOpenPO || customerScpoActionViewedPO as any).length > 0 && (
-                    <button onClick={() => openHistoryModal(selectedOpenPO, customerScpoActionViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      View History
-                    </button>
-                  )}
-                  <button onClick={() => openPOInventoryModal(selectedOpenPO, customerScpoActionViewedPO)}
-                    style={{ background: 'linear-gradient(90deg, #27ae60 0%, #2ecc71 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                    Inventory
-                  </button>
-                </div>
-                <button onClick={() => setCustomerScpoActionViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Close
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        {activeTab === 'scpoAction' && mode === 'vendor' && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>SC.PO Action</h2>
-            <div style={{ marginBottom: '40px' }}>
-              <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Open SC.PO</h3>
-              {getLatestActivePOs('open').length === 0 ? <p>No open POs</p> : (
-                <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(openExpanded ? sortPOsNewestFirst(getLatestActivePOs('open')) : sortPOsNewestFirst(getLatestActivePOs('open').slice(0, 2))).map(po => (
-                          <tr key={po.issuanceId || po.id}>
-                          <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                          <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                          <td style={{ padding: '10px' }}>${po.total}</td>
-                          <td style={{ padding: '10px', display: 'flex', gap: '5px' }}>
-                            <button onClick={() => acceptMPTOfferForPO(po)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Accept
-                            </button>
-                            <button onClick={async () => { setSelectedOpenPO(po); await viewPOFromUri(po.ipfsUri, po, setVendorScpoActionViewedPO, setVendorScpoActionPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              View PO
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {getLatestActivePOs('open').length > 2 && (
-                    <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                      <button onClick={() => setOpenExpanded(!openExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                        {openExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div style={{ marginBottom: '40px' }}>
-              <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Funded SC.PO</h3>
-              {getLatestActivePOs('funded').length === 0 ? <p>No funded POs</p> : (
-                <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>PO Name</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Date Issued</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Total $</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Time Remaining</th>
-                        <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>
-                          Action
-                          <button onClick={refreshFinancingStatus} title="Refresh financing status" style={{ marginLeft: '6px', fontSize: '10px', padding: '1px 6px', borderRadius: '8px', border: '1px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', verticalAlign: 'middle' }}>↻</button>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(fundedExpanded ? sortPOsNewestFirst(getLatestActivePOs('funded')) : sortPOsNewestFirst(getLatestActivePOs('funded').slice(0, 2))).map(po => (
-                          <tr key={po.issuanceId || po.id}>
-                          <td style={{ padding: '10px' }}>
-                             {po.poName}
-                             <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span>
-                             <YieldBadge poIssuanceId={po.issuanceId} positions={yieldPositions} />
-                             {(() => {
-                               const fr = financingStatusMap[po.issuanceId];
-                               if (!fr) return null;
-                               const badges: Record<string, { label: string; bg: string }> = {
-                                 pending_lender: { label: '⏳ Pending Lender', bg: '#B7791F' },
-                                 approved:       { label: '✅ Approved',        bg: '#276749' },
-                                 denied:         { label: '❌ Denied',          bg: '#9B2C2C' },
-                                 disbursed:      { label: '💸 Disbursed',       bg: '#553C9A' },
-                                 repaid:         { label: '🔁 Repaid',          bg: '#2C7A7B' },
-                               };
-                               const b = badges[fr.status];
-                               if (!b) return null;
-                               return <span style={{ background: b.bg, color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '6px' }}>{b.label}</span>;
-                               })()}
-                           </td>
-                          <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                          <td style={{ padding: '10px' }}>${po.total}</td>
-                          <td style={{ padding: '10px' }}>{getTimeRemaining(po)}</td>
-                          <td style={{ padding: '10px', display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                            <button onClick={() => claimEscrowForPO(po)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              Claim Escrow
-                            </button>
-                            <button onClick={async () => { setSelectedFundedPO(po); await viewPOFromUri(po.ipfsUri, po, setVendorScpoActionViewedPO, setVendorScpoActionPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              View PO
-                            </button>
-                            {(() => {
-                              const fr = financingStatusMap[po.issuanceId];
-                              if (fr?.status === 'approved') {
-                                return (
-                                  <button
-                                    onClick={() => disburseAdvance(fr)}
-                                    disabled={disbursing}
-                                    style={{ background: disbursing ? '#ccc' : '#276749', color: 'white', padding: '8px', borderRadius: '20px', cursor: disbursing ? 'not-allowed' : 'pointer' }}
-                                    onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                                  >
-                                    {disbursing ? 'Disbursing...' : '💸 Disburse Advance'}
-                                  </button>
-                                );
-                              }
-                              return null;
-                            })()}
-                            {po.escrowCurrency === 'RLUSD' && !financingStatusMap[po.issuanceId] && (
-                              <button
-                                onClick={async () => {
-                                  setFinancingModalPO(po);
-                                  setFinancingAdvanceRate(0.80);
-                                  setFinancingLenderAddress('');
-                                  setFinancingEscrowDetails(null);
-                                  setShowFinancingModal(true);
-                                  // Fetch escrow details for the modal
-                                  setFinancingEscrowLoading(true);
-                                  try {
-                                    const details = await fetchEscrowDetails(po.buyerAddress, po.escrowSequence!);
-                                    setFinancingEscrowDetails(details);
-                                  } catch (e) {
-                                    console.warn('[FinancingModal] Could not fetch escrow details:', e);
-                                  } finally {
-                                    setFinancingEscrowLoading(false);
-                                  }
-                                }}
-                                style={{ background: '#553C9A', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }}
-                                onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                              >
-                                💰 Get Advance
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {getLatestActivePOs('funded').length > 2 && (
-                    <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                      <button onClick={() => setFundedExpanded(!fundedExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                        {fundedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            {/* Phase 6B — Financing Request Modal */}
-            {showFinancingModal && financingModalPO && (
-              <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1001, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowFinancingModal(false)}>
-                <div style={{ background: '#FFF9E6', borderRadius: '20px', padding: '30px', width: '90%', maxWidth: '600px', maxHeight: '90vh', overflowY: 'auto', position: 'relative', boxShadow: '0 10px 40px rgba(0,0,0,0.3)' }} onClick={e => e.stopPropagation()}>
-                  <button onClick={() => setShowFinancingModal(false)} style={{ position: 'absolute', top: '15px', right: '15px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '50%', width: '35px', height: '35px', fontSize: '18px', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
 
-                  <h2 style={{ color: '#553C9A', textAlign: 'center', marginBottom: '4px' }}>💰 Request Advance</h2>
-                  <p style={{ textAlign: 'center', color: '#666', fontSize: '13px', marginBottom: '20px' }}>
-                    Get paid early against your funded PO. Repayment is automatic at claim time.
-                  </p>
-
-                  {/* PO Summary */}
-                  <div style={{ background: '#F3F0FF', border: '1px solid #B794F4', borderRadius: '12px', padding: '14px 16px', marginBottom: '16px' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#553C9A', marginBottom: '8px' }}>📋 {financingModalPO.poName}</div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', fontSize: '12px', color: '#666' }}>
-                      <span>Escrow Amount:</span><span style={{ fontWeight: 'bold', color: '#333' }}>${financingModalPO.total} RLUSD</span>
-                      <span>Payment Terms:</span><span style={{ fontWeight: 'bold', color: '#333' }}>{financingModalPO.paymentTerms}</span>
-                      {financingEscrowLoading ? (
-                        <><span>Days Until Expiry:</span><span style={{ color: '#999' }}>Loading...</span></>
-                      ) : financingEscrowDetails ? (
-                        <><span>Days Until Expiry:</span>
-                        <span style={{ fontWeight: 'bold', color: financingEscrowDetails.daysUntilCancel <= MIN_DAYS_UNTIL_CANCEL ? '#e74c3c' : financingEscrowDetails.daysUntilCancel <= 7 ? '#E65100' : '#27ae60' }}>
-                          {financingEscrowDetails.daysUntilCancel.toFixed(1)} days
-                        </span></>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {/* Advance Rate Slider */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#553C9A', marginBottom: '8px' }}>
-                      Advance Rate: {(financingAdvanceRate * 100).toFixed(0)}%
-                      <span style={{ fontWeight: 'normal', color: '#666', marginLeft: '8px' }}>
-                        = ${(parseFloat(financingModalPO.total) * financingAdvanceRate).toFixed(2)} RLUSD
-                      </span>
-                    </label>
-                    <input
-                      type="range"
-                      min={0.50} max={MAX_ADVANCE_RATE} step={0.05}
-                      value={financingAdvanceRate}
-                      onChange={e => setFinancingAdvanceRate(parseFloat(e.target.value))}
-                      style={{ width: '100%', accentColor: '#553C9A' }}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#999' }}>
-                      <span>50%</span><span>Max {(MAX_ADVANCE_RATE * 100).toFixed(0)}%</span>
-                    </div>
-                  </div>
-
-                  {/* Lender Address */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#553C9A', marginBottom: '8px' }}>
-                      Lender Wallet Address
-                    </label>
-                    <input
-                      type="text"
-                      placeholder="Lender wallet address (r...)"
-                      value={financingLenderAddress}
-                      onChange={e => setFinancingLenderAddress(e.target.value)}
-                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1.5px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }}
-                    />
-                    <p style={{ fontSize: '11px', color: '#999', marginTop: '4px' }}>
-                      Must be a registered lender with an Institutional credential in the SC.PO domain.
-                    </p>
-                  </div>
-
-                  {/* Lender APR (for display/estimate only) */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 'bold', color: '#553C9A', marginBottom: '8px' }}>
-                      Lender's Published APR (for estimate only)
-                    </label>
-                    <input
-                      type="number"
-                      min={0} max={100} step={0.1}
-                      value={(financingLenderAPR * 100).toFixed(1)}
-                      onChange={e => setFinancingLenderAPR(parseFloat(e.target.value) / 100)}
-                      style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1.5px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }}
-                    />
-                  </div>
-
-                  {/* Terms Preview */}
-                  {financingEscrowDetails && financingLenderAddress && (() => {
-                    const terms = formatFinancingTerms(
-                      financingModalPO.total,
-                      financingAdvanceRate,
-                      financingLenderAPR,
-                      financingEscrowDetails.daysUntilCancel
-                    );
-                    return (
-                      <div style={{ background: terms.isEligible ? '#F3F0FF' : '#FFF5F5', border: `1px solid ${terms.isEligible ? '#B794F4' : '#FC8181'}`, borderRadius: '12px', padding: '14px 16px', marginBottom: '16px' }}>
-                        <div style={{ fontSize: '12px', fontWeight: 'bold', color: terms.isEligible ? '#553C9A' : '#C53030', marginBottom: '10px' }}>
-                          {terms.isEligible ? '📊 Estimated Terms' : `⚠️ ${terms.ineligibleReason}`}
+                      {pricingExpiryWarning && selectedInventoryItem !== 'custom' && (
+                        <div style={{
+                          padding: '8px 14px', fontSize: 11,
+                          background: pricingExpiryWarning.bg,
+                          color: pricingExpiryWarning.color,
+                          borderTop: `1px solid ${pricingExpiryWarning.color}`,
+                        }}>
+                          {pricingExpiryWarning.message}
                         </div>
-                        {terms.isEligible && (
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '12px' }}>
-                            {[
-                              ['Advance Amount', terms.advanceAmount],
-                              ['SC.PO Fee (1%)', `-${terms.scpoFee}`],
-                              ['Net to You Now', terms.netToVendor],
-                              ['Est. Interest', `-${terms.estimatedInterest}`],
-                              ['Total Repayment', terms.totalRepayment],
-                              ['Remainder at Claim', terms.remainderAtClaim],
-                            ].map(([label, value]) => (
-                              <React.Fragment key={label}>
-                                <span style={{ color: '#666' }}>{label}:</span>
-                                <span style={{ fontWeight: 'bold', color: label === 'Net to You Now' || label === 'Remainder at Claim' ? '#276749' : '#333' }}>{value}</span>
-                              </React.Fragment>
-                            ))}
-                          </div>
-                        )}
-                        <p style={{ fontSize: '11px', color: '#999', margin: '10px 0 0' }}>
-                          ⚠️ Estimates only. Actual terms set by lender. Interest accrues until escrow is claimed. Repayment is automatic at claim time.
-                        </p>
-                      </div>
-                    );
-                  })()}
+                      )}
 
-                  {/* Proof of Funds Package */}
-                  {financingEscrowDetails && financingLenderAddress && financingModalPO.escrowSequence && (
-                    <div style={{ marginBottom: '16px' }}>
-                      <button
-                        onClick={async () => {
-                          if (showProofPackage) { setShowProofPackage(false); return; }
-                          setProofPackageLoading(true);
-                          try {
-                            const pkg = await assembleFinancingPackage(
-                              { ...financingModalPO, escrowSequence: financingModalPO.escrowSequence! },
-                              'preview',
-                              (parseFloat(financingModalPO.total) * financingAdvanceRate).toFixed(2),
-                              financingLenderAddress,
-                              'basic',
-                              'basic',
-                              auditLog.length > 0 ? auditLog : await scanAuditLog(financingModalPO.buyerAddress),
-                              ''
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px',
+                        gap: 10, padding: '12px 14px', alignItems: 'start',
+                        background: 'rgba(255, 248, 222, 0.55)',
+                        borderTop: '1px dashed rgba(180,140,60,0.25)',
+                      }}>
+                        <div style={{ minWidth: 0 }}>
+                          {(() => {
+                            const v2items = vendor ? (linkedVendorInventoryV2[vendor] || []) : [];
+                            if (!vendor) {
+                              return (
+                                <input placeholder="Item #" value={newItemNum}
+                                  onChange={(e) => setNewItemNum(e.target.value)}
+                                  style={{ ...inpStyle, padding: '6px 10px', fontSize: 13 }}/>
+                              );
+                            }
+                            if (v2items.length === 0) {
+                              return (
+                                <input placeholder="Loading inventory…" value={newItemNum}
+                                  onChange={(e) => setNewItemNum(e.target.value)}
+                                  style={{ ...inpStyle, padding: '6px 10px', fontSize: 13 }}/>
+                              );
+                            }
+                            return (
+                              <select value={selectedInventoryItem}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setSelectedInventoryItem(val);
+                                  if (val === 'custom') { setNewItemNum(''); setNewPiecePrice(''); setNewTotal(''); return; }
+                                  const v2item = v2items.find(i => i.partNumber === val || i.name === val);
+                                  if (v2item) { setNewItemNum(v2item.partNumber || v2item.name); setNewPiecePrice(''); setNewTotal(''); return; }
+                                  setNewItemNum(val); setNewPiecePrice(''); setNewTotal('');
+                                }}
+                                style={{ ...inpStyle, padding: '6px 10px', fontSize: 13 }}>
+                                <option value="custom">Custom Item #</option>
+                                {v2items.map(item => (
+                                  <option key={item.nftId} value={item.partNumber || item.name}>
+                                    {item.partNumber} — {item.name}
+                                  </option>
+                                ))}
+                              </select>
                             );
-                            setFinancingPackage(pkg);
-                            setShowProofPackage(true);
-                          } catch (e) {
-                            console.warn('Could not assemble proof package:', e);
-                          } finally {
-                            setProofPackageLoading(false);
-                          }
-                        }}
-                        style={{ width: '100%', padding: '10px', background: 'white', border: '1.5px solid #553C9A', borderRadius: '10px', color: '#553C9A', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer', textAlign: 'left' }}
-                      >
-                        {proofPackageLoading ? '⏳ Loading...' : showProofPackage ? '🔒 Hide Proof of Funds Package ▲' : '🔒 View Proof of Funds Package ▼'}
-                      </button>
-                      {showProofPackage && financingPackage && (
-                        <div style={{ background: '#F8F9FA', border: '1px solid #553C9A', borderRadius: '10px', padding: '14px', marginTop: '8px', fontSize: '12px' }}>
-                          <p style={{ color: '#553C9A', fontWeight: 'bold', margin: '0 0 10px' }}>
-                            🔒 On-Chain Collateral Proof — Lender Verification Package
-                          </p>
-                          <p style={{ color: '#666', fontSize: '11px', margin: '0 0 12px' }}>
-                            All data sourced directly from XRPL. Lender can verify independently at devnet.xrpl.org.
-                          </p>
+                          })()}
+                          {selectedInventoryItem === 'custom' && vendor && (linkedVendorInventoryV2[vendor]?.length ?? 0) > 0 && (
+                            <input placeholder="Custom Item #" value={newItemNum}
+                              onChange={(e) => setNewItemNum(e.target.value)}
+                              style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, marginTop: 6 }}/>
+                          )}
+                        </div>
+                        <div/>
+                        <input placeholder="0" value={newQty}
+                          onChange={(e) => setNewQty(e.target.value)}
+                          className="mono"
+                          style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                        <input placeholder={selectedItemPricingLoading ? 'Loading…' : '0.00'} value={newPiecePrice}
+                          onChange={(e) => {
+                            setNewPiecePrice(e.target.value);
+                            const qty = parseFloat(newQty);
+                            const price = parseFloat(e.target.value);
+                            if (qty > 0 && price > 0) setNewTotal((qty * price).toFixed(2));
+                          }}
+                          className="mono"
+                          style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right', background: selectedItemPricingLoading ? 'rgba(255, 248, 222, 0.2)' : undefined }}/>
+                        <input placeholder="0.00" value={newTotal}
+                          onChange={(e) => setNewTotal(e.target.value)}
+                          className="mono"
+                          style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                        <div/>
+                      </div>
+                    </div>
 
-                          {/* Escrow Proof */}
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>📦 Escrow (Primary Collateral)</div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', color: '#555' }}>
-                              <span>Amount Locked:</span><span style={{ fontWeight: 'bold', color: '#276749' }}>${financingPackage.escrowAmount} {financingPackage.escrowCurrency}</span>
-                              <span>Escrow Sequence:</span><span style={{ fontFamily: 'monospace' }}>#{financingPackage.escrowSequence}</span>
-                              <span>Owner (Buyer):</span><span style={{ fontFamily: 'monospace', fontSize: '11px' }}>{financingPackage.escrowOwner.slice(0,8)}...{financingPackage.escrowOwner.slice(-4)}</span>
-                              <span>Destination (Vendor):</span><span style={{ fontFamily: 'monospace', fontSize: '11px' }}>{financingPackage.escrowDestination.slice(0,8)}...{financingPackage.escrowDestination.slice(-4)}</span>
-                              <span>Claimable After:</span><span>{new Date(financingPackage.finishAfter).toLocaleDateString()}</span>
-                              <span>Expires After:</span><span style={{ color: financingPackage.daysUntilCancel <= 7 ? '#e74c3c' : '#333' }}>{new Date(financingPackage.cancelAfter).toLocaleDateString()} ({financingPackage.daysUntilCancel.toFixed(1)} days)</span>
-                            </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                      <Btn variant="ghost" icon={IconPlus} onClick={addItem}>Add to PO</Btn>
+                    </div>
+                  </Card>
+
+                  {/* 05 · Supporting documents */}
+                    <Card label={<StepLabel n="05" title="Supporting documents"/>}>
+                      {existingAttachments.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                            From original PO · will be kept unless removed
                           </div>
-
-                          {/* PO Proof */}
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>📋 Purchase Order</div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', color: '#555' }}>
-                              <span>PO Name:</span><span style={{ fontWeight: 'bold' }}>{financingPackage.poName}</span>
-                              <span>PO Total:</span><span style={{ fontWeight: 'bold' }}>${financingPackage.poTotal} RLUSD</span>
-                              <span>Payment Terms:</span><span>{financingPackage.paymentTerms}</span>
-                              <span>Issuance ID:</span><span style={{ fontFamily: 'monospace', fontSize: '10px', wordBreak: 'break-all' }}>{financingPackage.poIssuanceId.slice(0,16)}...</span>
-                            </div>
-                          </div>
-
-                          {/* Transaction Chain */}
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>🔗 Transaction Chain</div>
-                            {[
-                              ['PO Created', financingPackage.txHashes.created],
-                              ['PO Accepted', financingPackage.txHashes.accepted],
-                              ['Escrow Funded', financingPackage.txHashes.funded],
-                            ].map(([label, hash]) => (
-                              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                                <span style={{ color: '#555' }}>{label}:</span>
-                                {hash ? (
-                                  <a href={`https://devnet.xrpl.org/transactions/${hash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#553C9A', fontFamily: 'monospace', fontSize: '11px' }}>
-                                    {hash.slice(0,10)}...{hash.slice(-6)} ↗
-                                  </a>
-                                ) : (
-                                  <span style={{ color: '#ccc', fontSize: '11px' }}>Not recorded</span>
-                                )}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {existingAttachments.map((att, i) => (
+                              <div key={i} className="etched" style={{
+                                display: 'flex', alignItems: 'center', gap: 10,
+                                padding: '8px 12px', borderRadius: 10,
+                              }}>
+                                <div style={{
+                                  padding: 6, borderRadius: 6,
+                                  background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                }}>
+                                  <IconFile size={14}/>
+                                </div>
+                                <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`}
+                                  target="_blank" rel="noopener noreferrer"
+                                  style={{
+                                    flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none',
+                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                  }}
+                                  title={`Open ${att.name} on IPFS`}>
+                                  {att.name}
+                                </a>
+                                <button type="button"
+                                  onClick={() => setExistingAttachments(existingAttachments.filter((_, idx) => idx !== i))}
+                                  style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 4 }}
+                                  title="Remove this attachment from the updated PO">
+                                  <IconX size={14}/>
+                                </button>
                               </div>
                             ))}
                           </div>
-
-                          {/* Identity */}
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontWeight: 'bold', color: '#333', marginBottom: '6px', borderBottom: '1px solid #ddd', paddingBottom: '4px' }}>🪪 Identity & Credentials</div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', color: '#555' }}>
-                              <span>Buyer Credential:</span><span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold' }}>{financingPackage.buyerCredTier} ✓</span>
-                              <span>Vendor Credential:</span><span style={{ background: '#e8f5e9', color: '#2e7d32', padding: '1px 6px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold' }}>{financingPackage.vendorCredTier} ✓</span>
-                              <span>Network:</span><span style={{ fontFamily: 'monospace' }}>{financingPackage.networkId}</span>
-                              <span>Package Version:</span><span>v{financingPackage.packageVersion}</span>
-                            </div>
-                          </div>
-
-                          <p style={{ fontSize: '10px', color: '#999', margin: '8px 0 0', textAlign: 'center' }}>
-                            Generated {new Date(financingPackage.assembledAt).toLocaleString()} — Verify at devnet.xrpl.org
-                          </p>
                         </div>
                       )}
+
+                      <input type="file" multiple id="scpo-update-file-input"
+                        onChange={(e) => setSelectedFiles(e.target.files)}
+                        style={{ display: 'none' }}/>
+                      <label htmlFor="scpo-update-file-input" style={{
+                        display: 'flex', alignItems: 'center', gap: 14,
+                        width: '100%', padding: '22px 18px', borderRadius: 14,
+                        border: '1.5px dashed rgba(180, 140, 60, 0.35)',
+                        background: selectedFiles && selectedFiles.length > 0 ? 'rgba(255, 248, 222, 0.55)' : 'rgba(255, 248, 222, 0.25)',
+                        cursor: 'pointer', transition: 'all 0.2s ease',
+                        boxSizing: 'border-box',
+                      }}>
+                        <div style={{
+                          width: 44, height: 44, borderRadius: 10,
+                          background: 'rgba(240, 200, 100, 0.25)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          color: '#6a4a10',
+                        }}>
+                          <IconFile size={18}/>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>
+                            {selectedFiles && selectedFiles.length > 0
+                              ? `${selectedFiles.length} new file${selectedFiles.length === 1 ? '' : 's'} selected`
+                              : existingAttachments.length > 0 ? 'Add more documents' : 'Attach supporting documents'}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                            {selectedFiles && selectedFiles.length > 0
+                              ? 'Click to replace this selection · pinned to IPFS on submit'
+                              : existingAttachments.length > 0 ? 'New uploads will be added to the kept files above' : 'Quote, spec sheet, drawings, contract — multiple files supported'}
+                          </div>
+                        </div>
+                        {selectedFiles && selectedFiles.length > 0
+                          ? <Chip tone="green">New</Chip>
+                          : <Chip tone="neutral">Browse</Chip>}
+                      </label>
+
+                      {selectedFiles && selectedFiles.length > 0 && (
+                        <ul style={{ margin: '12px 0 0', paddingLeft: 16, fontSize: 12, color: 'var(--ink-2)' }}>
+                          {Array.from(selectedFiles).map((file, i) => (
+                            <li key={i} style={{ marginBottom: 2 }}>
+                              {file.name} <span style={{ color: 'var(--ink-3)' }}>({(file.size / 1024).toFixed(1)} KB)</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Card>
+                </div>
+
+                {/* RIGHT — sticky summary + create button */}
+                <div style={{ position: 'sticky', top: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                  <Card strong layered label={
+                    <>
+                      <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+                        Draft · unsaved
+                      </div>
+                      <div style={{ fontSize: 15, fontWeight: 600 }}>Purchase Order value</div>
+                    </>
+                  }>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
+                      <SumRow label="Items" v={`${items.length} line${items.length !== 1 ? 's' : ''}`}/>
+                      <SumRow label="Total quantity" v={items.reduce((s, l) => s + (parseFloat(l.qty) || 0), 0)}/>
+                      <SumRow label="Currency" v={escrowCurrency || 'RLUSD'}/>
+                      <SumRow label="Settlement" v={paymentTerms || '—'}/>
+                      {yieldOptIn && escrowCurrency === 'RLUSD' && yieldOptInAPR !== null && (
+                        <SumRow label="Yield" v={`${formatAPR(yieldOptInAPR)} active`} highlight/>
+                      )}
+                    </div>
+                    <hr style={{ border: 0, borderTop: '1px dashed rgba(180, 140, 60, 0.25)', margin: '16px 0 12px' }}/>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                      <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                        Sub total
+                      </div>
+                      <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
+                        ${totalEscrowAmount}
+                      </div>
+                    </div>
+                  </Card>
+
+                  <button type="button"
+                    onClick={handleCreateSCPO}
+                    disabled={scpoSuccess || scpoSubmitting || !selectedVendorUUID}
+                    style={{
+                      position: 'relative',
+                      padding: '18px 20px', borderRadius: 18, border: 0,
+                      background: scpoSuccess
+                        ? 'linear-gradient(180deg, oklch(0.78 0.16 140), oklch(0.55 0.16 140))'
+                        : 'linear-gradient(180deg, oklch(0.88 0.14 82), oklch(0.65 0.16 58))',
+                      color: scpoSuccess ? '#0e2010' : '#2a1f08',
+                      fontSize: 17, fontWeight: 700, letterSpacing: '-0.01em',
+                      cursor: (scpoSuccess || scpoSubmitting || !selectedVendorUUID) ? 'default' : 'pointer',
+                      opacity: !selectedVendorUUID ? 0.5 : 1,
+                      boxShadow: scpoSuccess
+                        ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 0 0 6px rgba(100, 200, 120, 0.25), 0 0 40px 8px rgba(100, 200, 120, 0.5), 0 10px 30px -10px rgba(60, 140, 80, 0.5)'
+                        : scpoSubmitting
+                          ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 6px rgba(240, 200, 100, 0.35), 0 0 60px 10px rgba(240, 200, 100, 0.7), 0 10px 30px -10px rgba(200, 150, 50, 0.6)'
+                          : 'inset 0 1px 0 rgba(255,255,255,0.8), 0 6px 16px -6px rgba(200,150,50,0.5)',
+                      transition: 'all 0.5s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                      overflow: 'hidden', fontFamily: 'inherit',
+                    }}>
+                    {scpoSubmitting && (
+                      <span style={{
+                        position: 'absolute', inset: 0,
+                        background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)',
+                        backgroundSize: '200% 100%',
+                        animation: 'shimmer 1.2s linear infinite',
+                      }}/>
+                    )}
+                    {scpoSuccess ? <IconCheck size={18}/> : scpoSubmitting ? <IconSpark size={18}/> : <IconSend size={16}/>}
+                    <span style={{ position: 'relative' }}>
+                      {scpoSuccess ? 'Purchase Order Created' : scpoSubmitting ? 'Creating…' : 'Create Purchase Order'}
+                    </span>
+                  </button>
+
+                  {scpoSuccess && (
+                    <div className="glass rise" style={{
+                      padding: 14, borderRadius: 14,
+                      display: 'flex', gap: 10, alignItems: 'flex-start',
+                      border: '1px solid rgba(100, 180, 120, 0.3)',
+                    }}>
+                      <div style={{ padding: 6, borderRadius: 8, background: 'rgba(150, 200, 130, 0.25)', color: '#3d5a22' }}>
+                        <IconCheck size={14}/>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>PO issued</div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.4 }}>
+                          Counter-party notified. Escrow funding pending — ${totalEscrowAmount} {escrowCurrency}.
+                        </div>
+                      </div>
                     </div>
                   )}
 
-                  {/* Risk Disclosure */}
-                  <div style={{ background: '#FFFBEB', border: '1px solid #F6E05E', borderRadius: '8px', padding: '10px 14px', marginBottom: '20px', fontSize: '11px', color: '#92400E' }}>
-                    ⚠️ <strong>Important:</strong> By requesting financing, you agree that the escrow proceeds at claim time will first repay the lender (advance + interest) and SC.PO fee before you receive the remainder. This is a binding on-chain commitment. Consult a financial or legal advisor before proceeding.
-                  </div>
-
-                  {/* Submit Button */}
-                  <button
-                    onClick={requestFinancing}
-                    disabled={financingSubmitting || !financingLenderAddress || (financingEscrowDetails?.daysUntilCancel || 999) <= MIN_DAYS_UNTIL_CANCEL}
-                    style={{ width: '100%', padding: '14px', background: financingSubmitting ? '#ccc' : 'linear-gradient(90deg, #553C9A, #6B46C1)', color: 'white', border: 'none', borderRadius: '12px', fontSize: '15px', fontWeight: 'bold', cursor: financingSubmitting ? 'not-allowed' : 'pointer' }}
-                  >
-                    {financingSubmitting ? 'Submitting Request...' : `Request $${(parseFloat(financingModalPO.total) * financingAdvanceRate).toFixed(2)} Advance`}
-                  </button>
-                </div>
-              </div>
-            )}
-            {vendorScpoActionViewedPO && (
-              <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
-                <h3 style={{ color: '#F2B04A' }}>Purchase Order Details</h3>
-                <p><strong style={{ color: '#F2B04A' }}>PO Name:</strong> {vendorScpoActionViewedPO.poName}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {vendorScpoActionViewedPO.description || 'N/A'}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {vendorScpoActionViewedPO.department}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {vendorScpoActionViewedPO.paymentTerms}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {vendorScpoActionViewedPO.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
-                <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {vendorScpoActionViewedPO.deliveryTerms}</p>
-                <h4 style={{ color: '#F2B04A' }}>Items</h4>
-                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ background: '#e0e0e0' }}>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
-                      <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {vendorScpoActionViewedPO.items.map((item, i) => (
-                      <tr key={i}>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
-                        <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {vendorScpoActionViewedPO.attachments && vendorScpoActionViewedPO.attachments.length > 0 && (
-                  <>
-                    <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Attachments</h4>
-                    <ul>
-                      {vendorScpoActionViewedPO.attachments.map((att, i) => (
-                        <li key={i}>
-                          <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                            {att.name}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                )}
-                <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
-                          <button onClick={() => openProfilesModal(selectedOpenPO || selectedFundedPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                            Profiles
-                          </button>
-                          {getPOHistory(selectedOpenPO || selectedFundedPO || vendorScpoActionViewedPO as any).length > 0 && (
-                            <button onClick={() => openHistoryModal(selectedOpenPO || selectedFundedPO, vendorScpoActionViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              View History
-                            </button>
-                          )}
-                          <button onClick={() => openPOInventoryModal(selectedOpenPO || selectedFundedPO, vendorScpoActionViewedPO)}
-                            style={{ background: 'linear-gradient(90deg, #27ae60 0%, #2ecc71 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                            Inventory
-                          </button>
-                        </div>
-                        <button onClick={() => setVendorScpoActionViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Close
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-        {activeTab === 'inventoryCatalog' && mode === 'vendor' && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>Inventory Catalog</h2>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '40px' }}>
-              <button onClick={() => setInventorySubTab('list')} style={{ height: '50px', padding: '0 30px', background: inventorySubTab === 'list' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: inventorySubTab === 'list' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                List
-              </button>
-              <button onClick={() => setInventorySubTab('add')} style={{ height: '50px', padding: '0 30px', background: inventorySubTab === 'add' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: inventorySubTab === 'add' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Add
-              </button>
-              <button onClick={() => setInventorySubTab('import')} style={{ height: '50px', padding: '0 30px', background: inventorySubTab === 'import' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: inventorySubTab === 'import' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Import
-              </button>
-              <button onClick={() => setInventorySubTab('creditLines')} style={{ height: '50px', padding: '0 30px', background: inventorySubTab === 'creditLines' ? 'linear-gradient(90deg, #553C9A 0%, #7C5CBF 100%)' : 'linear-gradient(90deg, rgba(85,60,154,0.85) 0%, rgba(124,92,191,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #3D2B7A', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: inventorySubTab === 'creditLines' ? 'inset 4px 6px 12px rgba(61,43,122,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(61,43,122,0.35), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Credit Lines {creditLines.filter(l => l.status === 'active').length > 0 && `(${creditLines.filter(l => l.status === 'active').length})`}
-              </button>
-            </div>
-            {inventorySubTab === 'list' && (
-              <div>
-                
-                {/* ── Task 3.7 — Warehouse Wallet Banner ───────────────────── */}
-                {!warehouseWalletAddress && (
-                  <div style={{ background: '#FFF3CD', border: '1px solid #FFD54F', borderRadius: '12px', padding: '12px 18px', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#856404', fontSize: '14px', fontWeight: 'bold' }}>
-                      ⚠ No warehouse wallet configured
-                      <span style={{ display: 'block', fontWeight: 'normal', fontSize: '12px', color: '#555', marginTop: '2px' }}>
-                        A warehouse wallet is required to track on-hand inventory on-chain. Set one up to use Receive Inventory.
-                      </span>
-                    </span>
-                    <button onClick={() => setShowWarehouseSetup(true)}
-                      style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', flexShrink: 0 }}>
-                      Set Up Warehouse Wallet
-                    </button>
-                  </div>
-                )}
-                {warehouseWalletAddress && (
-                  <div style={{ background: '#E6F4EA', border: '1px solid #A5D6A7', borderRadius: '12px', padding: '10px 18px', marginBottom: '16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span style={{ color: '#2E7D32', fontSize: '13px' }}>
-                      🏭 Warehouse wallet: <span style={{ fontFamily: 'monospace' }}>{warehouseWalletAddress}</span>
-                    </span>
-                    <button onClick={() => { setWarehouseSetupInput(warehouseWalletAddress); setShowWarehouseSetup(true); }}
-                      style={{ background: 'transparent', color: '#2E7D32', padding: '4px 12px', borderRadius: '20px', border: '1px solid #A5D6A7', cursor: 'pointer', fontSize: '12px' }}>
-                      Change
-                    </button>
-                  </div>
-                )}
-                {/* ─────────────────────────────────────────────────────────── */}
-                {/* ── Task 3.5 — DID Catalog Endpoint Status Banner ─────────── */}
-                <div style={{
-                  background: catalogDIDStatus === 'registered' ? '#E6F4EA' : catalogDIDStatus === 'not_registered' ? '#FFF3CD' : catalogDIDStatus === 'no_did' ? '#FDE8E8' : '#F5F5F5',
-                  border: `1px solid ${catalogDIDStatus === 'registered' ? '#A5D6A7' : catalogDIDStatus === 'not_registered' ? '#FFD54F' : catalogDIDStatus === 'no_did' ? '#EF9A9A' : '#E0E0E0'}`,
-                  borderRadius: '12px', padding: '12px 18px', marginBottom: '20px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px'
-                }}>
-                  <div>
-                    {catalogDIDStatus === 'checking' && <span style={{ color: '#888', fontSize: '14px' }}>🔍 Checking DID catalog endpoint...</span>}
-                    {catalogDIDStatus === 'registered' && (
-                      <span style={{ color: '#2E7D32', fontSize: '14px', fontWeight: 'bold' }}>
-                        📡 Catalog Endpoint Registered ✓
-                        <span style={{ display: 'block', fontWeight: 'normal', color: '#555', fontSize: '12px', marginTop: '2px' }}>
-                          Buyers can discover your inventory via DID resolution · {catalogDIDUri}
-                        </span>
-                      </span>
-                    )}
-                    {catalogDIDStatus === 'not_registered' && (
-                      <span style={{ color: '#856404', fontSize: '14px', fontWeight: 'bold' }}>
-                        ⚠ Catalog endpoint not in DID
-                        <span style={{ display: 'block', fontWeight: 'normal', color: '#555', fontSize: '12px', marginTop: '2px' }}>
-                          Register your catalog so buyers can discover your inventory through DID resolution.
-                        </span>
-                      </span>
-                    )}
-                    {catalogDIDStatus === 'no_did' && (
-                      <span style={{ color: '#C62828', fontSize: '14px', fontWeight: 'bold' }}>
-                        ❌ No DID found
-                        <span style={{ display: 'block', fontWeight: 'normal', color: '#555', fontSize: '12px', marginTop: '2px' }}>
-                          Save your vendor profile first to create a DID, then register the catalog endpoint.
-                        </span>
-                      </span>
-                    )}
-                    {catalogDIDStatus === null && <span style={{ color: '#888', fontSize: '14px' }}>DID catalog status not checked yet.</span>}
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-                    {catalogDIDStatus === 'not_registered' && (
-                      <button onClick={registerCatalogDIDEndpoint}
-                        style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}
-                        onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                        Register Catalog Endpoint
-                      </button>
-                    )}
-                    {catalogDIDStatus === 'registered' && (
-                      <button onClick={registerCatalogDIDEndpoint}
-                        style={{ background: 'transparent', color: '#2E7D32', padding: '6px 12px', borderRadius: '20px', border: '1px solid #A5D6A7', cursor: 'pointer', fontSize: '12px' }}
-                        onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                        title="Re-register if you recently updated your profile">
-                        Refresh
-                      </button>
-                    )}
-                    <button onClick={checkCatalogDIDEndpoint}
-                      style={{ background: 'transparent', color: '#888', padding: '6px 12px', borderRadius: '20px', border: '1px solid #ccc', cursor: 'pointer', fontSize: '12px' }}>
-                      Re-check
-                    </button>
-                  </div>
-                </div>
-                {/* ─────────────────────────────────────────────────────────── */}
-
-                {/* ── Task 3.6 — Search & Filter Bar ───────────────────────── */}
-                {vendorInventoryV2.length > 0 && !vendorInventoryV2Loading && (() => {
-                  // Derive unique departments and categories for filter dropdowns
-                  const uniqueDepts = Array.from(new Set(vendorInventoryV2.map(i => i.department).filter(Boolean))).sort();
-                  const uniqueCats = Array.from(new Set(vendorInventoryV2.map(i => i.category).filter(Boolean))).sort();
-                  const hasActiveFilters = invSearchText || invFilterDept || invFilterStatus || invFilterCategory || invFilterMinPrice || invFilterMaxPrice;
-                  return (
-                    <div style={{ background: '#FFF3E0', borderRadius: '14px', padding: '16px 20px', marginBottom: '20px', border: '1px solid #FFD98F' }}>
-                      {/* Row 1: text search */}
-                      <input
-                        value={invSearchText}
-                        onChange={e => setInvSearchText(e.target.value)}
-                        placeholder="🔍  Search by name, part number, or description..."
-                        style={{ width: '100%', padding: '10px 16px', borderRadius: '30px', border: '2px solid #D88F2E', fontSize: '14px', marginBottom: '12px', boxSizing: 'border-box' }}
-                      />
-                      {/* Row 2: dropdown filters */}
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr 1fr', gap: '10px', alignItems: 'center' }}>
-                        <select value={invFilterDept} onChange={e => setInvFilterDept(e.target.value)}
-                          style={{ padding: '8px 12px', borderRadius: '20px', border: '1.5px solid #D88F2E', fontSize: '13px', background: 'white' }}>
-                          <option value="">All Departments</option>
-                          {uniqueDepts.map(d => <option key={d} value={d}>{d}</option>)}
-                        </select>
-                        <select value={invFilterCategory} onChange={e => setInvFilterCategory(e.target.value)}
-                          style={{ padding: '8px 12px', borderRadius: '20px', border: '1.5px solid #D88F2E', fontSize: '13px', background: 'white' }}>
-                          <option value="">All Categories</option>
-                          {uniqueCats.map(c => <option key={c} value={c}>{c}</option>)}
-                        </select>
-                        <select value={invFilterStatus} onChange={e => setInvFilterStatus(e.target.value)}
-                          style={{ padding: '8px 12px', borderRadius: '20px', border: '1.5px solid #D88F2E', fontSize: '13px', background: 'white' }}>
-                          <option value="">All Statuses</option>
-                          <option value="active">Active</option>
-                          <option value="discontinued">Discontinued</option>
-                          <option value="out_of_stock">Out of Stock</option>
-                        </select>
-                        <input value={invFilterMinPrice} onChange={e => setInvFilterMinPrice(e.target.value)}
-                          placeholder="Min price $" type="number" min="0"
-                          style={{ padding: '8px 12px', borderRadius: '20px', border: '1.5px solid #D88F2E', fontSize: '13px' }} />
-                        <input value={invFilterMaxPrice} onChange={e => setInvFilterMaxPrice(e.target.value)}
-                          placeholder="Max price $" type="number" min="0"
-                          style={{ padding: '8px 12px', borderRadius: '20px', border: '1.5px solid #D88F2E', fontSize: '13px' }} />
-                      </div>
-                      {/* Row 3: active filter chips + clear */}
-                      {hasActiveFilters && (
-                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginTop: '10px' }}>
-                          <span style={{ fontSize: '12px', color: '#888' }}>Active filters:</span>
-                          {invSearchText && <span style={{ background: '#FFD98F', color: '#7B4F00', padding: '2px 10px', borderRadius: '12px', fontSize: '12px' }}>"{invSearchText}"</span>}
-                          {invFilterDept && <span style={{ background: '#FFD98F', color: '#7B4F00', padding: '2px 10px', borderRadius: '12px', fontSize: '12px' }}>Dept: {invFilterDept}</span>}
-                          {invFilterCategory && <span style={{ background: '#FFD98F', color: '#7B4F00', padding: '2px 10px', borderRadius: '12px', fontSize: '12px' }}>Cat: {invFilterCategory}</span>}
-                          {invFilterStatus && <span style={{ background: '#FFD98F', color: '#7B4F00', padding: '2px 10px', borderRadius: '12px', fontSize: '12px' }}>Status: {invFilterStatus}</span>}
-                          {invFilterMinPrice && <span style={{ background: '#FFD98F', color: '#7B4F00', padding: '2px 10px', borderRadius: '12px', fontSize: '12px' }}>Min: ${invFilterMinPrice}</span>}
-                          {invFilterMaxPrice && <span style={{ background: '#FFD98F', color: '#7B4F00', padding: '2px 10px', borderRadius: '12px', fontSize: '12px' }}>Max: ${invFilterMaxPrice}</span>}
-                          <button onClick={() => { setInvSearchText(''); setInvFilterDept(''); setInvFilterStatus(''); setInvFilterCategory(''); setInvFilterMinPrice(''); setInvFilterMaxPrice(''); }}
-                            style={{ background: 'none', border: '1px solid #D88F2E', color: '#D88F2E', padding: '2px 10px', borderRadius: '12px', fontSize: '12px', cursor: 'pointer', marginLeft: 'auto' }}>
-                            ✕ Clear all
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-                {/* ─────────────────────────────────────────────────────────── */}
-
-                {/* ── Task 3.7 — Catalog Valuation Summary ─────────────────── */}
-                {(vendorInventoryV2.length > 0) && (() => {
-                  const activeItems = vendorInventoryV2.filter((item, idx, arr) =>
-                    arr.findIndex(x => x.partNumber === item.partNumber) === idx
-                  );
-                  const pricedItems = activeItems.filter(i => i.listPrice > 0 || i.unitCost > 0);
-                  const totalRetailValue = activeItems.reduce((sum, item) =>
-                    sum + (item.listPrice * item.quantityOnHand), 0);
-                  const totalCostValue = activeItems.reduce((sum, item) =>
-                    sum + (item.unitCost * item.quantityOnHand), 0);
-                  const totalUnits = activeItems.reduce((sum, i) => sum + i.quantityOnHand, 0);
-                  const currency = pricedItems.length > 0 ? (pricedItems[0].pricingCurrency || 'USD') : 'USD';
-                  const fmt = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 2 });
-
-                  return (
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-                      <div style={{ background: '#FFF9E6', border: '1px solid #FFD98F', borderRadius: '12px', padding: '14px 16px', textAlign: 'center' }}>
-                        <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>SKUs</div>
-                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#D88F2E' }}>{activeItems.length}</div>
-                      </div>
-                      <div style={{ background: '#FFF9E6', border: '1px solid #FFD98F', borderRadius: '12px', padding: '14px 16px', textAlign: 'center' }}>
-                        <div style={{ fontSize: '11px', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Total Units</div>
-                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#D88F2E' }}>{totalUnits.toLocaleString()}</div>
-                      </div>
-                      <div style={{ background: '#E6F4EA', border: '1px solid #A5D6A7', borderRadius: '12px', padding: '14px 16px', textAlign: 'center' }}>
-                        <div style={{ fontSize: '11px', color: '#555', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Retail Value</div>
-                        <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#2E7D32' }}>
-                          {invValuationLoading ? '...' : pricedItems.length > 0 ? fmt(totalRetailValue) : '—'}
-                        </div>
-                        {!invValuationLoading && pricedItems.length < activeItems.length && (
-                          <div style={{ fontSize: '10px', color: '#888', marginTop: '2px' }}>{pricedItems.length}/{activeItems.length} priced</div>
-                        )}
-                      </div>
-                      <div style={{ background: '#FFF3E0', border: '1px solid #FFCC80', borderRadius: '12px', padding: '14px 16px', textAlign: 'center' }}>
-                        <div style={{ fontSize: '11px', color: '#555', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Cost Basis</div>
-                        <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#E65100' }}>
-                          {invValuationLoading ? '...' : pricedItems.length > 0 ? fmt(totalCostValue) : '—'}
-                        </div>
-                        {!invValuationLoading && totalCostValue > 0 && totalRetailValue > 0 && (
-                          <div style={{ fontSize: '10px', color: '#888', marginTop: '2px' }}>
-                            {((1 - totalCostValue / totalRetailValue) * 100).toFixed(1)}% margin
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()}
-                {/* ─────────────────────────────────────────────────────────── */}
-
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Your Inventory</h3>
-                {vendorInventoryV2Loading && (
-                  <p style={{ color: '#F2B04A', textAlign: 'center', padding: '20px', fontStyle: 'italic' }}>
-                    Loading inventory from chain...
-                  </p>
-                )}
-                {vendorInventoryV2Loading ? null : vendorInventoryV2.length === 0 ? (
-                  <p style={{ color: '#888', marginBottom: '20px' }}>No inventory items found on chain. Use Add to create your first item.</p>
-                ) : (() => {
-                  // ── Task 3.6 — Apply filters client-side ─────────────────
-                  const minPrice = invFilterMinPrice ? parseFloat(invFilterMinPrice) : null;
-                  const maxPrice = invFilterMaxPrice ? parseFloat(invFilterMaxPrice) : null;
-                  const searchLower = invSearchText.toLowerCase();
-
-                  const filtered = [...vendorInventoryV2]
-                    .sort((a, b) => (b.version || 1) - (a.version || 1))
-                    .filter((item, idx, arr) => arr.findIndex(x => x.partNumber === item.partNumber) === idx)
-                    .filter(item => {
-                      if (invFilterDept && item.department !== invFilterDept) return false;
-                      if (invFilterCategory && item.category !== invFilterCategory) return false;
-                      if (invFilterStatus && item.status !== invFilterStatus) return false;
-                      if (searchLower && ![item.name, item.partNumber, item.shortDescription, item.category, item.department]
-                        .some(f => (f || '').toLowerCase().includes(searchLower))) return false;
-                      // Task 3.7: price filter — uses invPricingMap loaded from vendorUri docs
-                      if (minPrice !== null || maxPrice !== null) {
-                        const pricing = invPricingMap[item.nftId];
-                        if (pricing) {
-                          if (minPrice !== null && pricing.listPrice < minPrice) return false;
-                          if (maxPrice !== null && pricing.listPrice > maxPrice) return false;
+                  {result && (
+                    <div style={{ padding: 14, borderRadius: 12, background: 'rgba(255, 248, 222, 0.4)', border: '1px solid rgba(180, 140, 60, 0.15)', fontSize: 12, color: 'var(--ink-2)' }}>
+                      {result.split('\n').map((line, i) => {
+                        const match = line.match(/^(Issuance ID|Tx Hash|IPFS URI):\s*(.+)$/);
+                        if (match) {
+                          const label = match[1];
+                          const value = match[2];
+                          const truncated = value.length > 22
+                            ? `${value.slice(0, 12)}…${value.slice(-8)}`
+                            : value;
+                          return (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', minWidth: 0 }}>
+                              <span style={{ minWidth: 82, color: 'var(--ink-3)', fontSize: 10, letterSpacing: '0.05em', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>{label}</span>
+                              <span className="mono" style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={value}>
+                                {truncated}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  navigator.clipboard?.writeText(value);
+                                  const btn = e.currentTarget;
+                                  const original = btn.textContent;
+                                  btn.textContent = 'Copied';
+                                  setTimeout(() => { btn.textContent = original; }, 1500);
+                                }}
+                                style={{
+                                  background: 'transparent',
+                                  border: '1px solid rgba(180, 140, 60, 0.25)',
+                                  borderRadius: 6,
+                                  padding: '3px 8px',
+                                  cursor: 'pointer',
+                                  fontSize: 10,
+                                  fontWeight: 500,
+                                  color: 'var(--ink-2)',
+                                  fontFamily: 'inherit',
+                                  minWidth: 54,
+                                }}>
+                                Copy
+                              </button>
+                            </div>
+                          );
                         }
-                        // If pricing not yet loaded, don't filter out the item — show it
-                      }
-                      return true;
-                    });
-
-                  if (filtered.length === 0) {
-                    return (
-                      <div style={{ textAlign: 'center', padding: '40px 20px', color: '#888' }}>
-                        <div style={{ fontSize: '32px', marginBottom: '10px' }}>🔍</div>
-                        <p style={{ fontWeight: 'bold', marginBottom: '6px' }}>No items match your filters.</p>
-                        <p style={{ fontSize: '13px' }}>Try broadening your search or clearing filters.</p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <>
-                      <p style={{ fontSize: '13px', color: '#888', marginBottom: '10px' }}>
-                        Showing {filtered.length} of {[...vendorInventoryV2].filter((item, idx, arr) => arr.findIndex(x => x.partNumber === item.partNumber) === idx).length} item{filtered.length !== 1 ? 's' : ''}
-                        {(invSearchText || invFilterDept || invFilterStatus || invFilterCategory) ? ' (filtered)' : ''}
-                      </p>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                        <thead>
-                          <tr style={{ background: '#FFF3E0' }}>
-                            <th style={{ padding: '10px', textAlign: 'center', width: '72px' }}>Img</th>
-                            <th style={{ padding: '10px', textAlign: 'left' }}>Part #</th>
-                            <th style={{ padding: '10px', textAlign: 'left' }}>Name</th>
-                            <th style={{ padding: '10px', textAlign: 'left' }}>Category</th>
-                            <th style={{ padding: '10px', textAlign: 'left' }}>Dept</th>
-                            <th style={{ padding: '10px', textAlign: 'center' }}>Qty</th>
-                            <th style={{ padding: '10px', textAlign: 'center' }}>Status</th>
-                            <th style={{ padding: '10px', textAlign: 'center' }}>Ver</th>
-                            <th style={{ padding: '10px', textAlign: 'center' }}>Added</th>
-                            <th style={{ padding: '10px', textAlign: 'center' }}>Details</th>
-                            <th style={{ padding: '10px', textAlign: 'center' }}>Delete</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filtered.map(item => (
-                            <tr key={item.id} style={{ borderBottom: '1px solid #FFE0A0' }}>
-                              <td style={{ padding: '6px 10px', textAlign: 'center' }}>
-                                <ProductImage uri={item.productImageUri} name={item.name} size={56} />
-                              </td>
-                              <td style={{ padding: '10px', fontFamily: 'monospace', fontSize: '13px' }}>{item.partNumber}</td>
-                              <td style={{ padding: '10px' }}>{item.name}</td>
-                              <td style={{ padding: '10px' }}>{item.category}</td>
-                              <td style={{ padding: '10px' }}>{item.department}</td>
-                              <td style={{ padding: '10px', textAlign: 'center' }}>{item.quantityOnHand} {item.unit}</td>
-                              <td style={{ padding: '10px', textAlign: 'center' }}>
-                                {statusUpdatingNFTId === item.nftId ? (
-                                  <span style={{ fontSize: '12px', color: '#888', fontStyle: 'italic' }}>updating...</span>
-                                ) : (
-                                  <select
-                                    value={item.status}
-                                    onChange={(e) => quickUpdateItemStatus(item, e.target.value as ItemStatus)}
-                                    style={{
-                                      padding: '3px 8px', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold',
-                                      border: '1.5px solid',
-                                      borderColor: item.status === 'active' ? '#A8D5B0' : item.status === 'discontinued' ? '#F5A8A8' : '#FFD98F',
-                                      background: item.status === 'active' ? '#E6F4EA' : item.status === 'discontinued' ? '#FDE8E8' : '#FFF3CD',
-                                      color: item.status === 'active' ? '#2E7D32' : item.status === 'discontinued' ? '#C62828' : '#856404',
-                                      cursor: 'pointer',
-                                      appearance: 'none',
-                                      WebkitAppearance: 'none',
-                                      paddingRight: '20px',
-                                      backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'10\' height=\'6\'%3E%3Cpath d=\'M0 0l5 6 5-6z\' fill=\'%23888\'/%3E%3C/svg%3E")',
-                                      backgroundRepeat: 'no-repeat',
-                                      backgroundPosition: 'right 6px center',
-                                    }}
-                                  >
-                                    <option value="active">active</option>
-                                    <option value="discontinued">discontinued</option>
-                                    <option value="out_of_stock">out_of_stock</option>
-                                  </select>
-                                )}
-                              </td>
-                              <td style={{ padding: '10px', textAlign: 'center' }}>
-                                <span style={{ background: '#E3F2FD', color: '#1565C0', padding: '2px 8px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' }}>v{item.version || 1}</span>
-                                {isPledged(item.nftId, creditLines) && (
-                                  <span
-                                    title={`Pledged as collateral on Credit Line ${formatCreditLineId(pledgedNftMap[item.nftId] || '')}`}
-                                    style={{ marginLeft: '6px', background: '#F0EAFF', color: '#553C9A', padding: '2px 7px', borderRadius: '10px', fontSize: '11px', fontWeight: 'bold', cursor: 'help', border: '1px solid #C4A8E8' }}
-                                  >
-                                    🔒 Pledged
-                                  </span>
-                                )}
-                              </td>
-                              <td style={{ padding: '10px', textAlign: 'center', fontSize: '12px', color: '#888' }}>{item.dateAdded}</td>
-                              <td style={{ padding: '10px', textAlign: 'center' }}>
-                                <button onClick={() => openInventoryDetail(item)}
-                                  style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white',
-                                    padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px' }}
-                                  onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}
-                                  onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                  View Details
-                                </button>
-                              </td>
-                              <td style={{ padding: '10px', textAlign: 'center' }}>
-                                <button onClick={() => {
-                                    setReceiveModalItem(item);
-                                    setReceiveQty('');
-                                    setReceiveLotRef('');
-                                    setReceiveResult('');
-                                    setShowReceiveModal(true);
-                                  }}
-                                  style={{ background: 'linear-gradient(90deg, #27ae60 0%, #2ecc71 100%)', color: 'white',
-                                    padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', marginBottom: '4px', display: 'block', width: '100%' }}
-                                  onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}
-                                  onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                                  title={`Receive new stock for ${item.name}`}>
-                                  + Receive
-                                </button>
-                                <button onClick={() => burnInventoryItemV2(item)}
-                                  style={{ background: 'linear-gradient(90deg, #e74c3c 0%, #ff6b6b 100%)', color: 'white',
-                                    padding: '6px 14px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', display: 'block', width: '100%' }}
-                                  onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}
-                                  onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}
-                                  title={`Permanently delete ${item.name}`}>
-                                  🗑 Delete
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </>
-                  );
-                })()}
-          </div>
-        )}
-        {inventorySubTab === 'add' && (
-          <div>
-        {/* ── Identity ─────────────────────────────────────────── */}
-                <h4 style={{ color: '#D88F2E', marginBottom: '10px' }}>Identity</h4>
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Part Number *</label>
-                <input value={invPartNumber} onChange={(e) => setInvPartNumber(e.target.value)} placeholder="e.g. WDG-1042" style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '15px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Name *</label>
-                <input value={invName} onChange={(e) => setInvName(e.target.value)} placeholder="e.g. Steel Widget Assembly" style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '15px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Short Description <span style={{ fontWeight: 'normal', color: '#aaa' }}>(public, ≤60 chars)</span></label>
-                <input value={invShortDesc} onChange={(e) => setInvShortDesc(e.target.value.substring(0, 60))} placeholder="e.g. Precision steel widget, 4mm" style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '15px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Full Description <span style={{ fontWeight: 'normal', color: '#aaa' }}>(vendor-only)</span></label>
-                <textarea value={invDesc} onChange={(e) => setInvDesc(e.target.value)} style={{ width: '100%', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', height: '80px', marginBottom: '15px' }} />
-
-                {/* ── Classification ───────────────────────────────────── */}
-                <h4 style={{ color: '#D88F2E', marginBottom: '10px', marginTop: '10px' }}>Classification</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginBottom: '15px' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Category</label>
-                    <input value={invCategory} onChange={(e) => setInvCategory(e.target.value)} placeholder="e.g. Fasteners" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Family Code</label>
-                    <input value={invFamilyCode} onChange={(e) => setInvFamilyCode(e.target.value)} placeholder="e.g. WDG" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Brand</label>
-                    <input value={invBrand} onChange={(e) => setInvBrand(e.target.value)} placeholder="e.g. AcmeParts" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Weight</label>
-                    <input value={invWeight} onChange={(e) => setInvWeight(e.target.value)} placeholder="e.g. 0.25kg" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Department</label>
-                    <input value={invDepartment} onChange={(e) => setInvDepartment(e.target.value)} placeholder="e.g. Manufacturing" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Production Plant</label>
-                    <input value={invPlant} onChange={(e) => setInvPlant(e.target.value)} placeholder="e.g. Plant-A" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
+                        if (!line.trim()) return <div key={i} style={{ height: 6 }}/>;
+                        const isHeader = line.includes('Successfully!');
+                        return (
+                          <div key={i} style={{
+                            fontSize: 12,
+                            padding: '2px 0',
+                            fontWeight: isHeader ? 600 : 400,
+                            color: isHeader ? 'var(--ink)' : 'var(--ink-2)',
+                          }}>{line}</div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '15px', color: '#F2B04A', fontWeight: 'bold', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={invCompetitiveFlag} onChange={(e) => setInvCompetitiveFlag(e.target.checked)} style={{ width: '18px', height: '18px' }} />
-                  Competitive / Restricted Item
-                </label>
-
-                {/* ── Pricing (vendor-only) ─────────────────────────────── */}
-                <h4 style={{ color: '#D88F2E', marginBottom: '10px', marginTop: '10px' }}>Pricing <span style={{ fontWeight: 'normal', color: '#aaa', fontSize: '13px' }}>(stored encrypted — vendor only)</span></h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginBottom: '15px' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>List Price</label>
-                    <input value={invUnitPrice} onChange={(e) => setInvUnitPrice(e.target.value)} placeholder="e.g. 7.50" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Currency</label>
-                    <input value={invPriceCurrency} onChange={(e) => setInvPriceCurrency(e.target.value)} placeholder="USD" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Unit Cost</label>
-                    <input value={invUnitCost} onChange={(e) => setInvUnitCost(e.target.value)} placeholder="e.g. 3.50" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Cost Currency</label>
-                    <input value={invCostCurrency} onChange={(e) => setInvCostCurrency(e.target.value)} placeholder="USD" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Effective Date</label>
-                    <input type="date" value={invEffectiveDate} onChange={(e) => setInvEffectiveDate(e.target.value)} style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Expires Date</label>
-                    <input type="date" value={invExpiresDate} onChange={(e) => setInvExpiresDate(e.target.value)} style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                </div>
-
-                {/* ── Volume Pricing (3.2c) ─────────────────────────────── */}
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', marginBottom: '15px', color: '#F2B04A', fontWeight: 'bold', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={invUseVolumePricing} onChange={(e) => {
-                    setInvUseVolumePricing(e.target.checked);
-                    if (e.target.checked && invVolumeTiers.length === 0) {
-                      setInvVolumeTiers([
-                        { minQty: '1', maxQty: '', price: '' },
-                        { minQty: '', maxQty: '', price: '' },
-                      ]);
-                    }
-                  }} style={{ width: '18px', height: '18px' }} />
-                  Enable Volume Pricing (quantity breaks)
-                </label>
-                {invUseVolumePricing && (
-                  <div style={{ background: '#FFF3E0', borderRadius: '15px', padding: '15px', marginBottom: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '10px' }}>
-                      <thead>
-                        <tr style={{ background: '#FFE0A0' }}>
-                          <th style={{ padding: '8px', textAlign: 'left', borderRadius: '8px 0 0 0' }}>Min Qty</th>
-                          <th style={{ padding: '8px', textAlign: 'left' }}>Max Qty</th>
-                          <th style={{ padding: '8px', textAlign: 'left' }}>Unit Price ($)</th>
-                          <th style={{ padding: '8px', textAlign: 'center', borderRadius: '0 8px 0 0' }}>Remove</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {invVolumeTiers.map((tier, i) => (
-                          <tr key={i} style={{ borderBottom: '1px solid #FFE0A0' }}>
-                            <td style={{ padding: '6px' }}>
-                              <input value={tier.minQty} onChange={(e) => {
-                                const updated = [...invVolumeTiers];
-                                updated[i] = { ...updated[i], minQty: e.target.value };
-                                setInvVolumeTiers(updated);
-                              }} placeholder="e.g. 1" style={{ width: '80px', padding: '8px', borderRadius: '20px', border: '2px solid #D88F2E' }} />
-                            </td>
-                            <td style={{ padding: '6px' }}>
-                              {i === invVolumeTiers.length - 1
-                                ? <span style={{ color: '#aaa', fontSize: '13px', paddingLeft: '8px' }}>∞ (unlimited)</span>
-                                : <input value={tier.maxQty} onChange={(e) => {
-                                    const updated = [...invVolumeTiers];
-                                    updated[i] = { ...updated[i], maxQty: e.target.value };
-                                    setInvVolumeTiers(updated);
-                                  }} placeholder="e.g. 99" style={{ width: '80px', padding: '8px', borderRadius: '20px', border: '2px solid #D88F2E' }} />
-                              }
-                            </td>
-                            <td style={{ padding: '6px' }}>
-                              <input value={tier.price} onChange={(e) => {
-                                const updated = [...invVolumeTiers];
-                                updated[i] = { ...updated[i], price: e.target.value };
-                                setInvVolumeTiers(updated);
-                              }} placeholder="e.g. 6.00" style={{ width: '100px', padding: '8px', borderRadius: '20px', border: '2px solid #D88F2E' }} />
-                            </td>
-                            <td style={{ padding: '6px', textAlign: 'center' }}>
-                              {invVolumeTiers.length > 2 && (
-                                <button onClick={() => setInvVolumeTiers(invVolumeTiers.filter((_, idx) => idx !== i))}
-                                  style={{ background: '#e74c3c', color: 'white', border: 'none', borderRadius: '50%', width: '28px', height: '28px', cursor: 'pointer', fontWeight: 'bold' }}>×</button>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <button onClick={() => setInvVolumeTiers([...invVolumeTiers, { minQty: '', maxQty: '', price: '' }])}
-                      style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontSize: '13px' }}>
-                      + Add Tier
-                    </button>
-                    <p style={{ fontSize: '12px', color: '#888', marginTop: '8px', marginBottom: 0 }}>
-                      Last tier always applies to all quantities above its Min Qty. Prices should decrease as quantity increases.
-                    </p>
-                  </div>
-                )}
-
-                {/* ── Supplier (vendor-only) ────────────────────────────── */}
-                <h4 style={{ color: '#D88F2E', marginBottom: '10px', marginTop: '10px' }}>Supplier <span style={{ fontWeight: 'normal', color: '#aaa', fontSize: '13px' }}>(stored encrypted — vendor only)</span></h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginBottom: '15px' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Supplier Code</label>
-                    <input value={invSupplierCode} onChange={(e) => setInvSupplierCode(e.target.value)} placeholder="e.g. SUP-AX-2201" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Supplier Name</label>
-                    <input value={invSupplierName} onChange={(e) => setInvSupplierName(e.target.value)} placeholder="e.g. Axion Materials" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                </div>
-
-                {/* ── Quantity ──────────────────────────────────────────── */}
-                <h4 style={{ color: '#D88F2E', marginBottom: '10px', marginTop: '10px' }}>Initial Quantity</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginBottom: '15px' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Quantity</label>
-                    <input value={invInitialQty} onChange={(e) => setInvInitialQty(e.target.value)} placeholder="e.g. 500" type="number" min="0" style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Unit of Measure</label>
-                    <select value={invUnit} onChange={(e) => setInvUnit(e.target.value as UnitOfMeasure)} style={{ width: '100%', padding: '12px', borderRadius: '30px', border: '2px solid #D88F2E', background: 'white' }}>
-                      <option value="ea">ea (each)</option>
-                      <option value="kg">kg</option>
-                      <option value="lb">lb</option>
-                      <option value="m">m (meters)</option>
-                      <option value="ft">ft (feet)</option>
-                      <option value="box">box</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* ── Documents (vendor-only) ───────────────────────────── */}
-                <h4 style={{ color: '#D88F2E', marginBottom: '10px', marginTop: '10px' }}>Documents <span style={{ fontWeight: 'normal', color: '#aaa', fontSize: '13px' }}>(stored encrypted — vendor only)</span></h4>
-                {/* Task 3.8 — product image */}
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Product Image <span style={{ fontWeight: 'normal', color: '#aaa' }}>(jpg, png, webp — shown in catalog)</span></label>
-                {invImageFile && (
-                  <div style={{ marginBottom: '8px' }}>
-                    <img src={URL.createObjectURL(invImageFile)} alt="preview"
-                      style={{ width: '80px', height: '80px', objectFit: 'cover', borderRadius: '8px', border: '2px solid #D88F2E' }} />
-                  </div>
-                )}
-                <input type="file" accept="image/*" onChange={(e) => setInvImageFile(e.target.files?.[0] || null)}
-                  style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '20px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Pricing Sheet</label>
-                <input type="file" onChange={(e) => setInvPricingFile(e.target.files?.[0] || null)} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '12px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Design File</label>
-                <input type="file" onChange={(e) => setInvDesignFile(e.target.files?.[0] || null)} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '12px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>BOM File</label>
-                <input type="file" onChange={(e) => setInvBomFile(e.target.files?.[0] || null)} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '12px' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>Usage Guide</label>
-                <input type="file" onChange={(e) => setInvUsageFile(e.target.files?.[0] || null)} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '30px' }} />
-
-                <button onClick={generateInventoryV2} style={{ display: 'block', margin: '0 auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Generate Inventory Item
-                </button>
-                {invResult && <pre style={{ background: '#f0f0f0', padding: '15px', whiteSpace: 'pre-wrap', borderRadius: '15px', marginTop: '20px' }}>{invResult}</pre>}
-          </div>
-        )}
-
-        {/* ── Task 3.9 — Import sub-tab ──────────────────────────────────── */}
-        {inventorySubTab === 'import' && (
-          <div>
-            {/* Import type toggle */}
-            <div style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
-              <button
-                onClick={() => setCsvImportSubTab('csv')}
-                style={{ padding: '10px 24px', borderRadius: '20px', border: '2px solid #D88F2E', fontWeight: 'bold', cursor: 'pointer',
-                  background: csvImportSubTab === 'csv' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white',
-                  color: csvImportSubTab === 'csv' ? 'white' : '#D88F2E' }}>
-                📄 CSV Upload
-              </button>
-              <button
-                onClick={() => setCsvImportSubTab('xrpl')}
-                style={{ padding: '10px 24px', borderRadius: '20px', border: '2px solid #D88F2E', fontWeight: 'bold', cursor: 'pointer',
-                  background: csvImportSubTab === 'xrpl' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white',
-                  color: csvImportSubTab === 'xrpl' ? 'white' : '#D88F2E' }}>
-                🔗 From XRPL Address
-              </button>
-            </div>
-
-            {/* ── XRPL Address placeholder ── */}
-            {csvImportSubTab === 'xrpl' && (
-              <div style={{ background: '#F9FAFB', border: '2px dashed #D1D5DB', borderRadius: '16px', padding: '40px', textAlign: 'center' }}>
-                <div style={{ fontSize: '40px', marginBottom: '12px' }}>🔗</div>
-                <h3 style={{ color: '#6B7280', marginBottom: '8px' }}>Import from XRPL Address</h3>
-                <p style={{ color: '#9CA3AF', fontSize: '14px', maxWidth: '400px', margin: '0 auto' }}>
-                  Coming soon. This will let you import inventory NFTs minted by other applications
-                  by providing the vendor's XRPL address and mapping their NFT schema to your catalog format.
-                </p>
               </div>
             )}
+            {createSubTab === 'update' && (
+              <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 20, alignItems: 'flex-start' }}>
 
-            {/* ── CSV Upload flow ── */}
-            {csvImportSubTab === 'csv' && !csvImporting && !csvImportDone && (
-              <div>
-                {/* Step 1 — File upload */}
-                {csvHeaders.length === 0 && (
-                  <div>
-                    <h4 style={{ color: '#D88F2E', marginBottom: '10px' }}>Step 1 — Upload CSV File</h4>
-                    <p style={{ fontSize: '13px', color: '#888', marginBottom: '16px' }}>
-                      Your CSV must have a header row. Only <strong>Part Number</strong> and <strong>Name</strong> columns are required — all other fields are optional.
-                    </p>
-                    <input
-                      type="file"
-                      accept=".csv"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0] || null;
-                        setCsvFile(file);
-                        if (!file) return;
-                        const reader = new FileReader();
-                        reader.onload = (ev) => {
-                          const text = ev.target?.result as string;
-                          const { headers, rows } = parseCSV(text);
-                          setCsvHeaders(headers);
-                          setCsvRows(rows);
-                          // Auto-map headers that closely match known field names
-                          const fieldAliases: { [key: string]: string } = {
-                            'part number': 'partNumber', 'part#': 'partNumber', 'sku': 'partNumber', 'item number': 'partNumber', 'item#': 'partNumber',
-                            'name': 'name', 'product name': 'name', 'item name': 'name', 'description': 'name',
-                            'short description': 'shortDescription', 'short desc': 'shortDescription',
-                            'category': 'category', 'dept': 'department', 'department': 'department',
-                            'price': 'listPrice', 'list price': 'listPrice', 'unit price': 'listPrice',
-                            'cost': 'unitCost', 'unit cost': 'unitCost',
-                            'qty': 'initialQty', 'quantity': 'initialQty', 'stock': 'initialQty',
-                            'unit': 'unit', 'uom': 'unit',
-                            'brand': 'brand', 'supplier': 'supplierName', 'supplier name': 'supplierName',
-                          };
-                          const autoMap: { [h: string]: string } = {};
-                          headers.forEach(h => {
-                            const match = fieldAliases[h.toLowerCase().trim()];
-                            autoMap[h] = match || '__ignore__';
-                          });
-                          setCsvMapping(autoMap);
-                        };
-                        reader.readAsText(file);
-                      }}
-                      style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E', marginBottom: '12px' }}
-                    />
+                {/* LEFT — editable PO picker */}
+                <Card style={{ padding: 10 }} label={
+                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', padding: '6px 6px 2px' }}>
+                    Editable POs
                   </div>
-                )}
-
-                {/* Step 2 — Column mapping */}
-                {csvHeaders.length > 0 && (
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                      <h4 style={{ color: '#D88F2E', margin: 0 }}>Step 2 — Map Columns</h4>
-                      <button onClick={() => { setCsvFile(null); setCsvHeaders([]); setCsvRows([]); setCsvMapping({}); setCsvPreviewRows([]); }}
-                        style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '13px' }}>
-                        ✕ Clear & start over
+                }>
+                  {getUpdatablePOs().length === 0 ? (
+                    <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                      No POs currently eligible for updates.
+                    </div>
+                  ) : getUpdatablePOs().map(po => {
+                    const active = selectedUpdatePO?.issuanceId === po.issuanceId && selectedUpdatePO?.id === po.id;
+                    const vendorProfile = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+                    const displayName = vendorProfile?.company || vendorProfile?.name || (po.vendorAddress ? po.vendorAddress.slice(0, 8) + '…' : 'Vendor');
+                    return (
+                      <button
+                        type="button"
+                        key={po.issuanceId || po.id}
+                        onClick={async () => { setSelectedUpdatePO(po); setUpdateResult(''); await prefillFromPO(po); }}
+                        style={{
+                          width: '100%', textAlign: 'left', padding: 12, borderRadius: 10,
+                          background: active ? 'rgba(255, 248, 220, 0.85)' : 'transparent',
+                          border: active ? '1px solid rgba(180,140,60,0.18)' : '1px solid transparent',
+                          marginBottom: 4, cursor: 'pointer', fontFamily: 'inherit',
+                          transition: 'all 0.15s ease',
+                        }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                          <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                            {po.issuanceId ? po.issuanceId.slice(0, 10) + '…' : (po.id || '').slice(0, 10)}
+                          </span>
+                          <Chip tone={po.status === 'accepted' ? 'green' : po.status === 'funded' ? 'blue' : 'gold'}>
+                            {po.status}
+                          </Chip>
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {po.poName}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {displayName}
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+                          <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                            {po.dateIssued}
+                          </span>
+                          <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>
+                            ${po.total}
+                          </span>
+                        </div>
                       </button>
-                    </div>
-                    <p style={{ fontSize: '13px', color: '#888', marginBottom: '12px' }}>
-                      {csvRows.length} rows detected. Map your CSV columns to inventory fields. Columns set to "Ignore" will not be imported.
-                    </p>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0' }}>
-                          <th style={{ padding: '10px', textAlign: 'left', fontSize: '13px' }}>Your CSV Column</th>
-                          <th style={{ padding: '10px', textAlign: 'left', fontSize: '13px' }}>Maps To</th>
-                          <th style={{ padding: '10px', textAlign: 'left', fontSize: '13px' }}>Sample Value</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {csvHeaders.map((header, idx) => (
-                          <tr key={header} style={{ borderBottom: '1px solid #FFE0A0' }}>
-                            <td style={{ padding: '10px', fontFamily: 'monospace', fontSize: '13px' }}>{header}</td>
-                            <td style={{ padding: '10px' }}>
-                              <select
-                                value={csvMapping[header] || '__ignore__'}
-                                onChange={(e) => setCsvMapping(prev => ({ ...prev, [header]: e.target.value }))}
-                                style={{ width: '100%', padding: '6px', borderRadius: '10px', border: '1px solid #D88F2E', fontSize: '13px' }}>
-                                <option value="__ignore__">— Ignore —</option>
-                                <option value="partNumber">Part Number *</option>
-                                <option value="name">Name *</option>
-                                <option value="shortDescription">Short Description</option>
-                                <option value="category">Category</option>
-                                <option value="department">Department</option>
-                                <option value="brand">Brand</option>
-                                <option value="weight">Weight</option>
-                                <option value="familyCode">Family Code</option>
-                                <option value="productionPlant">Production Plant</option>
-                                <option value="listPrice">List Price ($)</option>
-                                <option value="unitCost">Unit Cost ($)</option>
-                                <option value="initialQty">Initial Quantity</option>
-                                <option value="unit">Unit of Measure</option>
-                                <option value="supplierName">Supplier Name</option>
-                                <option value="supplierCode">Supplier Code</option>
-                              </select>
-                            </td>
-                            <td style={{ padding: '10px', fontSize: '12px', color: '#888' }}>
-                              {csvRows[0]?.[idx] || '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-
-                    {/* Preview */}
-                    <h4 style={{ color: '#D88F2E', marginBottom: '8px' }}>Step 3 — Preview (first 5 rows)</h4>
-                    <div style={{ overflowX: 'auto', marginBottom: '20px' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                        <thead>
-                          <tr style={{ background: '#FFF3E0' }}>
-                            {Object.entries(csvMapping)
-                              .filter(([, v]) => v !== '__ignore__')
-                              .map(([header, field]) => (
-                                <th key={field} style={{ padding: '8px', textAlign: 'left', whiteSpace: 'nowrap' }}>{field}</th>
-                              ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {csvRows.slice(0, 5).map((row, ri) => {
-                            const fields = csvRowToFields(row, csvHeaders, csvMapping);
-                            return (
-                              <tr key={ri} style={{ borderBottom: '1px solid #FFE0A0' }}>
-                                {Object.entries(csvMapping)
-                                  .filter(([, v]) => v !== '__ignore__')
-                                  .map(([, field]) => (
-                                    <td key={field} style={{ padding: '8px', color: '#444' }}>{fields[field] || '—'}</td>
-                                  ))}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Duplicate action */}
-                    <div style={{ background: '#FFF9E6', border: '1px solid #FFD98F', borderRadius: '12px', padding: '14px', marginBottom: '20px' }}>
-                      <p style={{ fontWeight: 'bold', color: '#D88F2E', marginBottom: '8px', fontSize: '14px' }}>If a Part Number already exists in your catalog:</p>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px', cursor: 'pointer', fontSize: '14px' }}>
-                        <input type="radio" name="dupAction" value="skip" checked={csvDuplicateAction === 'skip'} onChange={() => setCsvDuplicateAction('skip')} />
-                        Skip the row (safe — recommended)
-                      </label>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px' }}>
-                        <input type="radio" name="dupAction" value="version" checked={csvDuplicateAction === 'version'} onChange={() => setCsvDuplicateAction('version')} />
-                        Mint as new item anyway (use if updating a catalog from another system)
-                      </label>
-                    </div>
-
-                    <button
-                      onClick={runCSVImport}
-                      style={{ display: 'block', margin: '0 auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white',
-                        padding: '15px 50px', fontSize: '18px', border: 'none', borderRadius: '50px', cursor: 'pointer' }}
-                      onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave}
-                      onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      Start Import ({csvRows.length} rows)
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Progress view ── */}
-            {csvImporting && (
-              <div style={{ textAlign: 'center', padding: '40px 20px' }}>
-                <div style={{ fontSize: '32px', marginBottom: '16px' }}>⚙️</div>
-                <h4 style={{ color: '#D88F2E', marginBottom: '8px' }}>
-                  Minting {csvProgress.current} of {csvProgress.total}
-                </h4>
-                <p style={{ color: '#888', fontSize: '14px', marginBottom: '20px' }}>{csvProgress.currentName}</p>
-                <div style={{ background: '#F3F4F6', borderRadius: '999px', height: '12px', maxWidth: '400px', margin: '0 auto', overflow: 'hidden' }}>
-                  <div style={{
-                    height: '100%', borderRadius: '999px',
-                    background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)',
-                    width: `${csvProgress.total > 0 ? (csvProgress.current / csvProgress.total) * 100 : 0}%`,
-                    transition: 'width 0.3s ease',
-                  }} />
-                </div>
-                <p style={{ fontSize: '12px', color: '#aaa', marginTop: '8px' }}>
-                  Do not close this tab. Each item is minted sequentially on-chain.
-                </p>
-              </div>
-            )}
-
-            {/* ── Results view ── */}
-            {csvImportDone && (
-              <div>
-                <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-                  <div style={{ fontSize: '40px', marginBottom: '8px' }}>✅</div>
-                  <h4 style={{ color: '#2E7D32', marginBottom: '4px' }}>Import Complete</h4>
-                  <p style={{ color: '#555', fontSize: '14px' }}>
-                    <strong>{csvImportedCount}</strong> items minted &nbsp;·&nbsp;
-                    <strong>{csvSkippedCount}</strong> skipped
-                  </p>
-                </div>
-                {csvErrors.length > 0 && (
-                  <div style={{ background: '#FFF5F5', border: '1px solid #FFCDD2', borderRadius: '12px', padding: '16px', marginBottom: '20px' }}>
-                    <p style={{ fontWeight: 'bold', color: '#C62828', marginBottom: '10px', fontSize: '14px' }}>
-                      {csvErrors.length} row{csvErrors.length !== 1 ? 's' : ''} had issues:
-                    </p>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                      <thead>
-                        <tr style={{ background: '#FFEBEE' }}>
-                          <th style={{ padding: '6px 10px', textAlign: 'left' }}>Row</th>
-                          <th style={{ padding: '6px 10px', textAlign: 'left' }}>Part #</th>
-                          <th style={{ padding: '6px 10px', textAlign: 'left' }}>Reason</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {csvErrors.map((e, i) => (
-                          <tr key={i} style={{ borderBottom: '1px solid #FFCDD2' }}>
-                            <td style={{ padding: '6px 10px', color: '#888' }}>{e.row}</td>
-                            <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{e.partNumber}</td>
-                            <td style={{ padding: '6px 10px', color: '#C62828' }}>{e.error}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                <button
-                  onClick={() => {
-                    setCsvFile(null); setCsvHeaders([]); setCsvRows([]);
-                    setCsvMapping({}); setCsvImportDone(false);
-                    setCsvErrors([]); setCsvImportedCount(0); setCsvSkippedCount(0);
-                    setCsvProgress({ current: 0, total: 0, currentName: '' });
-                  }}
-                  style={{ display: 'block', margin: '0 auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white',
-                    padding: '12px 40px', fontSize: '16px', border: 'none', borderRadius: '50px', cursor: 'pointer' }}>
-                  Import Another File
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-          {/* ── Task 3.7 — Warehouse Wallet Setup Modal ──────────────────── */}
-          {showWarehouseSetup && (
-            <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ background: 'white', borderRadius: '20px', padding: '30px', maxWidth: '480px', width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-                <h3 style={{ color: '#F2B04A', marginBottom: '8px' }}>🏭 Warehouse Wallet</h3>
-                <p style={{ color: '#555', fontSize: '14px', marginBottom: '16px' }}>
-                  Enter the XRPL address of a second wallet you control. Inventory tokens will be paid to this address to track on-hand stock. The warehouse wallet must first authorize each MPT issuance before it can receive tokens.
-                </p>
-                <div style={{ background: '#FFF9E6', borderRadius: '10px', padding: '12px', marginBottom: '16px', fontSize: '13px', color: '#856404', border: '1px solid #FFD98F' }}>
-                  <strong>Setup steps:</strong><br/>
-                  1. Create a second XRPL wallet (e.g. on devnet faucet)<br/>
-                  2. Enter its address below<br/>
-                  3. Before receiving each SKU, the warehouse wallet must run MPTokenAuthorize for that issuance (Phase 6 will automate this)
-                </div>
-                <label style={{ display: 'block', marginBottom: '6px', color: '#F2B04A', fontWeight: 'bold' }}>Warehouse Wallet Address</label>
-                <input
-                  value={warehouseSetupInput}
-                  onChange={e => setWarehouseSetupInput(e.target.value)}
-                  placeholder="rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-                  style={{ width: '100%', padding: '12px 16px', borderRadius: '30px', border: '2px solid #D88F2E', fontSize: '14px', marginBottom: '14px', boxSizing: 'border-box', fontFamily: 'monospace' }}
-                />
-                <label style={{ display: 'block', marginBottom: '6px', color: '#F2B04A', fontWeight: 'bold' }}>
-                  Warehouse Wallet Seed <span style={{ fontWeight: 'normal', color: '#aaa', fontSize: '12px' }}>(stored locally — enables auto-authorization)</span>
-                </label>
-                <input
-                  type="password"
-                  value={warehouseSetupSeedInput}
-                  onChange={e => setWarehouseSetupSeedInput(e.target.value)}
-                  placeholder="sXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-                  style={{ width: '100%', padding: '12px 16px', borderRadius: '30px', border: '2px solid #D88F2E', fontSize: '14px', marginBottom: '20px', boxSizing: 'border-box', fontFamily: 'monospace' }}
-                />
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <button onClick={() => {
-                      if (!warehouseSetupInput.startsWith('r') || warehouseSetupInput.length < 25) {
-                        return alert('Enter a valid XRPL address starting with r');
-                      }
-                      setWarehouseWalletAddress(warehouseSetupInput);
-                      localStorage.setItem('scpo_warehouse_wallet', warehouseSetupInput);
-                      if (warehouseSetupSeedInput) {
-                        setWarehouseWalletSeed(warehouseSetupSeedInput);
-                        localStorage.setItem('scpo_warehouse_seed', warehouseSetupSeedInput);
-                      }
-                      setShowWarehouseSetup(false);
-                      alert(`✅ Warehouse wallet configured.\n${warehouseSetupSeedInput ? 'Auto-authorization enabled.' : 'No seed provided — add it to enable auto-authorization.'}`);
-                    }}
-                    style={{ flex: 1, background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '12px', borderRadius: '30px', border: 'none', cursor: 'pointer', fontSize: '15px', fontWeight: 'bold' }}
-                    onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                    Save Warehouse Wallet
-                  </button>
-                  <button onClick={() => setShowWarehouseSetup(false)}
-                    style={{ padding: '12px 20px', borderRadius: '30px', border: '1.5px solid #D88F2E', background: 'white', color: '#D88F2E', cursor: 'pointer', fontSize: '15px' }}
-                    onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-          {/* ── Task 3.7 — Receive Inventory Modal ───────────────────────── */}
-          {showReceiveModal && receiveModalItem && (
-            <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ background: 'white', borderRadius: '20px', padding: '30px', maxWidth: '460px', width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
-                <h3 style={{ color: '#F2B04A', marginBottom: '6px' }}>+ Receive Inventory</h3>
-                <p style={{ color: '#555', fontSize: '14px', marginBottom: '20px' }}>
-                  Record a new shipment or production run arriving in your warehouse.<br/>
-                  This mints tokens on-chain — <strong>OutstandingAmount = units on hand.</strong>
-                </p>
-                <div style={{ background: '#FFF9E6', borderRadius: '12px', padding: '12px 16px', marginBottom: '20px', border: '1px solid #FFD98F' }}>
-                  <div style={{ fontWeight: 'bold', color: '#D88F2E' }}>{receiveModalItem.name}</div>
-                  <div style={{ fontSize: '13px', color: '#888', fontFamily: 'monospace' }}>{receiveModalItem.partNumber}</div>
-                  <div style={{ fontSize: '13px', color: '#555', marginTop: '4px' }}>
-                    Current on hand: <strong>{receiveModalItem.quantityOnHand} {receiveModalItem.unit}</strong>
-                  </div>
-                </div>
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>
-                  Quantity Received *
-                </label>
-                <input
-                  type="number" min="1" value={receiveQty}
-                  onChange={e => setReceiveQty(e.target.value)}
-                  placeholder={`e.g. 100 ${receiveModalItem.unit}`}
-                  style={{ width: '100%', padding: '12px 16px', borderRadius: '30px', border: '2px solid #D88F2E', fontSize: '15px', marginBottom: '15px', boxSizing: 'border-box' }}
-                />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold' }}>
-                  Lot / PO Reference <span style={{ fontWeight: 'normal', color: '#aaa' }}>(optional)</span>
-                </label>
-                <input
-                  type="text" value={receiveLotRef}
-                  onChange={e => setReceiveLotRef(e.target.value)}
-                  placeholder="e.g. LOT-2026-001 or PO#4521"
-                  style={{ width: '100%', padding: '12px 16px', borderRadius: '30px', border: '2px solid #D88F2E', fontSize: '15px', marginBottom: '20px', boxSizing: 'border-box' }}
-                />
-                {receiveResult && (
-                  <pre style={{ background: receiveResult.startsWith('✅') ? '#E6F4EA' : '#FDE8E8', padding: '12px', borderRadius: '12px', fontSize: '12px', whiteSpace: 'pre-wrap', marginBottom: '15px' }}>
-                    {receiveResult}
-                  </pre>
-                )}
-                <div style={{ display: 'flex', gap: '10px' }}>
-                  <button onClick={receiveInventory} disabled={receiveLoading || !receiveQty}
-                    style={{ flex: 1, background: receiveLoading || !receiveQty ? '#ccc' : 'linear-gradient(90deg, #27ae60 0%, #2ecc71 100%)', color: 'white', padding: '12px', borderRadius: '30px', border: 'none', cursor: receiveLoading || !receiveLoading ? 'not-allowed' : 'pointer', fontSize: '15px', fontWeight: 'bold' }}
-                    onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                    {receiveLoading ? 'Processing...' : receiveQty ? `Receive ${receiveQty} ${receiveModalItem.unit}` : '+ Receive'}
-                  </button>
-                  <button onClick={() => { setShowReceiveModal(false); setReceiveResult(''); }}
-                    style={{ padding: '12px 20px', borderRadius: '30px', border: '1.5px solid #D88F2E', background: 'white', color: '#D88F2E', cursor: 'pointer', fontSize: '15px' }}
-                    onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                    Close
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-          </div>
-        )}
-        {activeTab === 'view' && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>Overview</h2>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '40px' }}>
-              <button onClick={() => setOverviewSubTab('summary')} style={{ height: '50px', padding: '0 30px', background: overviewSubTab === 'summary' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: overviewSubTab === 'summary' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Summary
-              </button>
-              <button onClick={() => setOverviewSubTab('details')} style={{ height: '50px', padding: '0 30px', background: overviewSubTab === 'details' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: overviewSubTab === 'details' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Details
-              </button>
-
-              {/* Phase 2 Refresh Button - ONE CLEAN VERSION */}
-              <button 
-                               onClick={async () => {
-                  setIsRefreshing(true);
-                  console.log('🔄 Refreshing POs from XRPL...');
-                  await loadPOsFromLedger();   // Now calls the top-level function
-                  setIsRefreshing(false);
-                }}                 
-                style={{ 
-                  background: '#F2B04A', 
-                  color: 'white', 
-                  padding: '12px 24px', 
-                  borderRadius: '30px', 
-                  border: 'none', 
-                  cursor: 'pointer', 
-                  fontSize: '16px',
-                  alignSelf: 'center'
-                }}
-                disabled={isRefreshing}
-              >
-                {isRefreshing ? 'Refreshing...' : '🔄 Refresh from XRPL'}
-              </button>
-            </div>
-
-            {overviewSubTab === 'summary' && (
-              <div>
-                <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>{mode === 'customer' ? 'Customer SC.PO Summary' : 'Vendor SC.PO Summary'}</h2>
-                <div style={{ display: 'flex', justifyContent: 'space-around', gap: '20px' }}>
-                   {['open', 'accepted', 'funded', 'claimed'].map(statusKey => {
-                    const filteredPOs = getLatestActivePOs(statusKey as SavedPO['status']);
-                    const status = statusKey.charAt(0).toUpperCase() + statusKey.slice(1);
-                    const count = filteredPOs.length;
-                    const totalValue = filteredPOs.reduce((sum, po) => sum + parseFloat(po.total || '0'), 0);
-                    const formattedValue = totalValue >= 1000000 ? `$${Math.round(totalValue / 1000000)}M` : totalValue >= 1000 ? `$${Math.round(totalValue / 1000)}K` : `$${totalValue.toFixed(0)}`;
-                    return (
-                      <div key={statusKey} style={{ textAlign: 'center', flex: 1 }}>
-                        <h4 style={{ color: '#F2B04A', marginBottom: '10px' }}>{status}</h4>
-                        <div style={{ background: 'white', padding: '20px', borderRadius: '10px', border: '2px solid #FFD98F', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', marginBottom: '10px', height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px', fontWeight: 'bold' }}>{count}</div>
-                        <div style={{ background: 'white', padding: '10px 20px', borderRadius: '999px', border: '2px solid #FFD98F', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', fontSize: '20px', fontWeight: 'bold' }}>{formattedValue}</div>
-                      </div>
                     );
                   })}
-                </div>
-                {mode === 'vendor' && getVendorUpdatedPOs().length > 0 && (
-                  <div style={{ marginTop: '40px' }}>
-                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Updated POs (Re-accept Required)</h3>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #D88F2E' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0' }}>
-                          <th style={{ padding: '10px' }}>PO Name</th>
-                          <th style={{ padding: '10px' }}>Updated By</th>
-                          <th style={{ padding: '10px' }}>Date</th>
-                          <th style={{ padding: '10px' }}>View PO</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {getVendorUpdatedPOs().map(po => (
-                            <tr key={po.issuanceId || po.id}>
-                            <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                            <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>Customer</td>
-                            <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{po.dateIssued}</td>
-                            <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>
-                              <button 
-                                onClick={async () => { 
-                                  setSelectedOpenPO(po); 
-                                  await viewPOFromUri(po.ipfsUri, po, setVendorOverviewViewedPO, setVendorOverviewPoLoadError); 
-                                }} 
-                                style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }}
-                              >
-                                View PO
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {mode === 'vendor' && vendorOverviewViewedPO && (
-                      <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
-                        <h3 style={{ color: '#F2B04A' }}>Purchase Order Details (From Notification)</h3>
-                        <p><strong style={{ color: '#F2B04A' }}>PO Name:</strong> {vendorOverviewViewedPO.poName}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {vendorOverviewViewedPO.description || 'N/A'}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {vendorOverviewViewedPO.department}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {vendorOverviewViewedPO.paymentTerms}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {vendorOverviewViewedPO.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {vendorOverviewViewedPO.deliveryTerms}</p>
-                        <h4 style={{ color: '#F2B04A' }}>Items</h4>
-                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                          <thead>
-                            <tr style={{ background: '#e0e0e0' }}>
-                              <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
-                              <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
-                              <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {vendorOverviewViewedPO.items.map((item, i) => (
-                              <tr key={i}>
-                                <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
-                                <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
-                                <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {vendorOverviewViewedPO.attachments && vendorOverviewViewedPO.attachments.length > 0 && (
-                          <>
-                            <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Attachments</h4>
-                            <ul>
-                              {vendorOverviewViewedPO.attachments.map((att, i) => (
-                                <li key={i}>
-                                  <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                                    {att.name}
-                                  </a>
-                                </li>
-                              ))}
-                            </ul>
-                          </>
-                        )}
-                        <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
-                          <button onClick={() => openProfilesModal(selectedOpenPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-                            Profiles
-                          </button>
-                          {getPOHistory(selectedOpenPO || vendorOverviewViewedPO as any).length > 0 && (
-                            <button onClick={() => openHistoryModal(selectedOpenPO, vendorOverviewViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-                              View History
-                            </button>
-                          )}
+                </Card>
+
+                {/* RIGHT — success, empty state, or full edit form */}
+                {updateResult.includes('Successfully') ? (
+                  <Card strong layered style={{ padding: 32 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
+                      <div style={{
+                        width: 44, height: 44, borderRadius: 12,
+                        background: 'linear-gradient(180deg, oklch(0.88 0.18 140), oklch(0.62 0.16 140))',
+                        color: '#0e2010',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        boxShadow: '0 0 0 4px rgba(100, 200, 120, 0.2)',
+                      }}>
+                        <IconCheck size={22}/>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.01em' }}>
+                          PO Updated Successfully
                         </div>
-                        <button onClick={() => setVendorOverviewViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                          Close
-                        </button>
+                        <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                          Vendor notified to re-accept · old version hidden
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ padding: 14, borderRadius: 12, background: 'rgba(255, 248, 222, 0.4)', border: '1px solid rgba(180, 140, 60, 0.15)', fontSize: 12, color: 'var(--ink-2)' }}>
+                      {['New Issuance', 'Tx Hash', 'IPFS URI'].map(label => {
+                        const m = updateResult.match(new RegExp(`${label}:\\s*(\\S+)`));
+                        if (!m) return null;
+                        const value = m[1];
+                        const truncated = value.length > 22 ? `${value.slice(0, 12)}…${value.slice(-8)}` : value;
+                        return (
+                          <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', minWidth: 0 }}>
+                            <span style={{ minWidth: 90, color: 'var(--ink-3)', fontSize: 10, letterSpacing: '0.05em', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>{label}</span>
+                            <span className="mono" style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={value}>
+                              {truncated}
+                            </span>
+                            <button type="button"
+                              onClick={(e) => {
+                                navigator.clipboard?.writeText(value);
+                                const btn = e.currentTarget;
+                                const original = btn.textContent;
+                                btn.textContent = 'Copied';
+                                setTimeout(() => { btn.textContent = original; }, 1500);
+                              }}
+                              style={{
+                                background: 'transparent',
+                                border: '1px solid rgba(180, 140, 60, 0.25)',
+                                borderRadius: 6, padding: '3px 8px',
+                                cursor: 'pointer', fontSize: 10, fontWeight: 500,
+                                color: 'var(--ink-2)', fontFamily: 'inherit', minWidth: 54,
+                              }}>
+                              Copy
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ marginTop: 14, fontSize: 11, color: 'var(--ink-3)', textAlign: 'center' }}>
+                      Clearing in a moment…
+                    </div>
+                  </Card>
+                ) : !selectedUpdatePO ? (
+                  <Card strong layered style={{ padding: 40, textAlign: 'center' }}>
+                    <div style={{ color: 'var(--ink-3)', fontSize: 14 }}>
+                      <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 8 }}>
+                        No PO selected
+                      </div>
+                      <div style={{ maxWidth: 360, margin: '0 auto', lineHeight: 1.5 }}>
+                        Choose a PO from the list on the left to begin editing. Changes create a new MPT version and require counter-party re-acceptance.
+                      </div>
+                    </div>
+                  </Card>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+                    {/* Header card */}
+                    <Card layered>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <Chip tone="gold" style={{ marginBottom: 8 }}>
+                            {selectedUpdatePO.status} · editable
+                          </Chip>
+                          <h2 style={{ margin: 0, fontSize: 24, fontWeight: 500, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {selectedUpdatePO.poName}
+                          </h2>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                            {selectedUpdatePO.issuanceId ? selectedUpdatePO.issuanceId.slice(0, 16) + '…' : selectedUpdatePO.id}
+                            {' · '}{selectedUpdatePO.dateIssued}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                            Current total
+                          </div>
+                          <div className="mono" style={{ fontSize: 24, fontWeight: 500 }}>
+                            ${totalEscrowAmount}
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {isLoadingEditPO && (
+                      <Card>
+                        <div style={{ textAlign: 'center', padding: 20, color: 'var(--ink-3)', fontSize: 13 }}>
+                          Loading PO details from IPFS…
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* 01 · PO overview */}
+                    <Card label={<StepLabel n="01" title="PO overview"/>}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        <Field label="PO name" full>
+                          <input value={poName} onChange={(e) => setPoName(e.target.value)}
+                            placeholder="e.g. Widget Order Dec 2025" style={inpStyle}/>
+                        </Field>
+                        <Field label="Department">
+                          <input value={department} onChange={(e) => setDepartment(e.target.value)}
+                            placeholder="e.g. HW-240 / Phoenix plant" style={inpStyle}/>
+                        </Field>
+                        <Field label="RFP link">
+                          <input value="Linked" readOnly
+                            style={{ ...inpStyle, background: 'rgba(240, 200, 100, 0.12)', color: 'var(--ink-3)' }}/>
+                        </Field>
+                        <Field label="Description" full>
+                          <textarea value={desc} onChange={(e) => setDesc(e.target.value)}
+                            placeholder="Purpose of this PO, special notes for counter-party…"
+                            style={{ ...inpStyle, minHeight: 68, resize: 'vertical', lineHeight: 1.5 }}/>
+                        </Field>
+                      </div>
+                    </Card>
+
+                    {/* 02 · Parties (locked) */}
+                    <Card label={<StepLabel n="02" title="Parties (locked)"/>}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        <div>
+                          <div style={fieldLabel}>Buyer</div>
+                          <div className="etched" style={{ padding: 12, borderRadius: 12, marginTop: 6, opacity: 0.75 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>
+                              {customerProfile.company || 'Your company'}
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                              {customerProfile.uniqueID
+                                ? `${customerProfile.uniqueID} · Bound by original PO`
+                                : 'Bound by original PO'}
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          <div style={fieldLabel}>Seller</div>
+                          <div className="etched" style={{ padding: 12, borderRadius: 12, marginTop: 6, opacity: 0.75 }}>
+                            {(() => {
+                              const v = linkedVendors.find(lv => lv.classicAddress === selectedUpdatePO.vendorAddress);
+                              if (!v) return (
+                                <>
+                                  <div style={{ fontSize: 13, fontWeight: 600 }}>Vendor</div>
+                                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>Bound by original PO</div>
+                                </>
+                              );
+                              return (
+                                <>
+                                  <div style={{ fontSize: 13, fontWeight: 600 }}>{v.company || v.name}</div>
+                                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                                    {v.uniqueID} · {v.name}
+                                  </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* 03 · Terms & settlement */}
+                    <Card label={<StepLabel n="03" title="Terms & settlement"/>}>
+                      <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
+                        <Field label="Payment terms">
+                          <SelectBox value={paymentTerms} onChange={setPaymentTerms}
+                            options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
+                        </Field>
+                        {isRLUSDConfigured() && (
+                          <Field label="Escrow currency">
+                            <SelectBox value={escrowCurrency}
+                              onChange={(v) => setEscrowCurrency(v as 'XRP' | 'RLUSD')}
+                              options={['RLUSD', 'XRP']}/>
+                          </Field>
+                        )}
+                        <Field label="Delivery terms">
+                          <SelectBox value={deliveryTerms} onChange={setDeliveryTerms}
+                            options={[
+                              'DDP — Delivered Duty Paid',
+                              'DAP — Delivered at Place',
+                              'FOB — Free on Board',
+                              'EXW — Ex Works',
+                              'CIF — Cost, Insurance & Freight',
+                            ]}/>
+                        </Field>
+                      </div>
+                    </Card>
+
+                    {/* 04 · Order request */}
+                    <Card
+                      label={<StepLabel n="04" title="Order request"/>}
+                      actions={
+                        <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                          {items.length} line{items.length !== 1 ? 's' : ''}
+                        </span>
+                      }>
+                      <div style={{
+                        border: '1px solid rgba(180, 140, 60, 0.15)',
+                        borderRadius: 14, overflow: 'hidden',
+                        background: 'rgba(255, 248, 222, 0.25)',
+                      }}>
+                        <div style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px',
+                          gap: 10, padding: '10px 14px',
+                          fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
+                          color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                          borderBottom: '1px solid rgba(180,140,60,0.15)',
+                          background: 'rgba(255, 248, 222, 0.5)',
+                        }}>
+                          <div>Item #</div>
+                          <div/>
+                          <div style={{ textAlign: 'right' }}>QTY</div>
+                          <div style={{ textAlign: 'right' }}>Piece price</div>
+                          <div style={{ textAlign: 'right' }}>Total</div>
+                          <div/>
+                        </div>
+
+                        {items.map((item, index) => {
+                          const linkedV2Item = selectedUpdatePO?.vendorAddress
+                            ? (linkedVendorInventoryV2[selectedUpdatePO.vendorAddress] || []).find(i => i.nftId === item.invNFTId || i.partNumber === item.num || i.name === item.num)
+                            : null;
+                          return (
+                            <div key={index} style={{
+                              display: 'grid',
+                              gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px',
+                              gap: 10, padding: '10px 14px', alignItems: 'center',
+                              fontSize: 13,
+                              borderBottom: '1px solid rgba(180,140,60,0.08)',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                <ProductImage uri={linkedV2Item?.productImageUri} name={item.num} size={28}/>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {item.num}
+                                  </div>
+                                </div>
+                              </div>
+                              <div>
+                                {linkedV2Item ? (
+                                  <button type="button" onClick={() => {
+                                    const fakePO = { vendorAddress: selectedUpdatePO?.vendorAddress, buyerAddress: customerProfile.classicAddress } as any;
+                                    const fakePOData = { items: [item] } as any;
+                                    openPOInventoryModal(fakePO, fakePOData);
+                                  }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 2 }}
+                                    title="View inventory details">
+                                    <IconLayer size={13}/>
+                                  </button>
+                                ) : null}
+                              </div>
+                              <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                              <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
+                              <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
+                              <button type="button" onClick={() => removeItem(index)}
+                                style={{ color: 'var(--ink-3)', padding: 4, justifySelf: 'end', background: 'transparent', border: 0, cursor: 'pointer' }}>
+                                <IconX size={13}/>
+                              </button>
+                            </div>
+                          );
+                        })}
+
+                        {items.length === 0 && (
+                          <div style={{ padding: '20px 14px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                            No lines. Add at least one item before submitting.
+                          </div>
+                        )}
+
+                        <div style={{
+                          display: 'grid',
+                          gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px',
+                          gap: 10, padding: '12px 14px', alignItems: 'start',
+                          background: 'rgba(255, 248, 222, 0.55)',
+                          borderTop: '1px dashed rgba(180,140,60,0.25)',
+                        }}>
+                          <div style={{ minWidth: 0 }}>
+                            {(() => {
+                              const vendorAddr = selectedUpdatePO?.vendorAddress;
+                              const v2items = vendorAddr ? (linkedVendorInventoryV2[vendorAddr] || []) : [];
+                              if (!vendorAddr || v2items.length === 0) {
+                                return (
+                                  <input placeholder="Item #" value={newItemNum}
+                                    onChange={(e) => setNewItemNum(e.target.value)}
+                                    style={{ ...inpStyle, padding: '6px 10px', fontSize: 13 }}/>
+                                );
+                              }
+                              return (
+                                <select value={selectedInventoryItem}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setSelectedInventoryItem(val);
+                                    if (val === 'custom') { setNewItemNum(''); setNewPiecePrice(''); setNewTotal(''); return; }
+                                    const v2item = v2items.find(i => i.partNumber === val || i.name === val);
+                                    if (v2item) { setNewItemNum(v2item.partNumber || v2item.name); setNewPiecePrice(''); setNewTotal(''); return; }
+                                    setNewItemNum(val); setNewPiecePrice(''); setNewTotal('');
+                                  }}
+                                  style={{ ...inpStyle, padding: '6px 10px', fontSize: 13 }}>
+                                  <option value="custom">Custom Item #</option>
+                                  {v2items.map(item => (
+                                    <option key={item.nftId} value={item.partNumber || item.name}>
+                                      {item.partNumber} — {item.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              );
+                            })()}
+                            {selectedInventoryItem === 'custom' && selectedUpdatePO?.vendorAddress && (linkedVendorInventoryV2[selectedUpdatePO.vendorAddress]?.length ?? 0) > 0 && (
+                              <input placeholder="Custom Item #" value={newItemNum}
+                                onChange={(e) => setNewItemNum(e.target.value)}
+                                style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, marginTop: 6 }}/>
+                            )}
+                          </div>
+                          <div/>
+                          <input placeholder="0" value={newQty}
+                            onChange={(e) => setNewQty(e.target.value)}
+                            className="mono"
+                            style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                          <input placeholder="0.00" value={newPiecePrice}
+                            onChange={(e) => {
+                              setNewPiecePrice(e.target.value);
+                              const qty = parseFloat(newQty);
+                              const price = parseFloat(e.target.value);
+                              if (qty > 0 && price > 0) setNewTotal((qty * price).toFixed(2));
+                            }}
+                            className="mono"
+                            style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                          <input placeholder="0.00" value={newTotal}
+                            onChange={(e) => setNewTotal(e.target.value)}
+                            className="mono"
+                            style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                          <div/>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                        <div className="mono" style={{ fontSize: 13 }}>
+                          <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
+                          <span style={{ fontWeight: 600, fontSize: 16 }}>${totalEscrowAmount}</span>
+                        </div>
+                        <Btn variant="ghost" icon={IconPlus} onClick={addItem}>Add line</Btn>
+                      </div>
+                    </Card>
+
+                    {/* 05 · Supporting documents */}
+                    <Card label={<StepLabel n="05" title="Supporting documents"/>}>
+                      {existingAttachments.length > 0 && (
+                        <div style={{ marginBottom: 14 }}>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
+                            From original PO · will be kept unless removed
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {existingAttachments.map((att, i) => (
+                              <div key={i} className="etched" style={{
+                                display: 'flex', alignItems: 'center', gap: 10,
+                                padding: '8px 12px', borderRadius: 10,
+                              }}>
+                                <div style={{
+                                  padding: 6, borderRadius: 6,
+                                  background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                }}>
+                                  <IconFile size={14}/>
+                                </div>
+                                <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`}
+                                  target="_blank" rel="noopener noreferrer"
+                                  style={{
+                                    flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none',
+                                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                  }}
+                                  title={`Open ${att.name} on IPFS`}>
+                                  {att.name}
+                                </a>
+                                <button type="button"
+                                  onClick={() => setExistingAttachments(existingAttachments.filter((_, idx) => idx !== i))}
+                                  style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 4 }}
+                                  title="Remove this attachment from the updated PO">
+                                  <IconX size={14}/>
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <input type="file" multiple id="scpo-update-file-input"
+                        onChange={(e) => setSelectedFiles(e.target.files)}
+                        style={{ display: 'none' }}/>
+                      <label htmlFor="scpo-update-file-input" style={{
+                        display: 'flex', alignItems: 'center', gap: 14,
+                        width: '100%', padding: '22px 18px', borderRadius: 14,
+                        border: '1.5px dashed rgba(180, 140, 60, 0.35)',
+                        background: selectedFiles && selectedFiles.length > 0 ? 'rgba(255, 248, 222, 0.55)' : 'rgba(255, 248, 222, 0.25)',
+                        cursor: 'pointer', transition: 'all 0.2s ease',
+                        boxSizing: 'border-box',
+                      }}>
+                        <div style={{
+                          width: 44, height: 44, borderRadius: 10,
+                          background: 'rgba(240, 200, 100, 0.25)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          color: '#6a4a10',
+                        }}>
+                          <IconFile size={18}/>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600 }}>
+                            {selectedFiles && selectedFiles.length > 0
+                              ? `${selectedFiles.length} new file${selectedFiles.length === 1 ? '' : 's'} selected`
+                              : existingAttachments.length > 0 ? 'Add more documents' : 'Attach supporting documents'}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                            {selectedFiles && selectedFiles.length > 0
+                              ? 'Click to replace this selection · pinned to IPFS on submit'
+                              : existingAttachments.length > 0 ? 'New uploads will be added to the kept files above' : 'Quote, spec sheet, drawings, contract — multiple files supported'}
+                          </div>
+                        </div>
+                        {selectedFiles && selectedFiles.length > 0
+                          ? <Chip tone="green">New</Chip>
+                          : <Chip tone="neutral">Browse</Chip>}
+                      </label>
+
+                      {selectedFiles && selectedFiles.length > 0 && (
+                        <ul style={{ margin: '12px 0 0', paddingLeft: 16, fontSize: 12, color: 'var(--ink-2)' }}>
+                          {Array.from(selectedFiles).map((file, i) => (
+                            <li key={i} style={{ marginBottom: 2 }}>
+                              {file.name} <span style={{ color: 'var(--ink-3)' }}>({(file.size / 1024).toFixed(1)} KB)</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Card>
+
+                    {/* Re-acceptance warning */}
+                    <div className="etched" style={{ padding: 14, borderRadius: 12, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <div style={{ padding: 6, borderRadius: 8, background: 'rgba(240, 200, 100, 0.3)', color: '#6a4a10' }}>
+                        <IconSpark size={14}/>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>Changes require re-acceptance</div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.4 }}>
+                          Submitting creates a new MPT version. The vendor will be notified and must re-accept before the new terms are binding. The old version is clawed back.
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Footer actions */}
+                    <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                      <Btn variant="ghost"
+                        onClick={() => { setSelectedUpdatePO(null); setUpdateResult(''); }}>
+                        Discard changes
+                      </Btn>
+                      <button type="button"
+                        onClick={handleUpdateSCPO}
+                        disabled={updateSubmitting}
+                        style={{
+                          position: 'relative',
+                          padding: '14px 20px', borderRadius: 14, border: 0,
+                          background: (updateResult.includes('Successfully') && !updateSubmitting)
+                            ? 'linear-gradient(180deg, oklch(0.78 0.16 140), oklch(0.55 0.16 140))'
+                            : 'linear-gradient(180deg, oklch(0.88 0.14 82), oklch(0.65 0.16 58))',
+                          color: (updateResult.includes('Successfully') && !updateSubmitting) ? '#0e2010' : '#2a1f08',
+                          fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em',
+                          cursor: updateSubmitting ? 'default' : 'pointer',
+                          boxShadow: (updateResult.includes('Successfully') && !updateSubmitting)
+                            ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 0 0 4px rgba(100, 200, 120, 0.2), 0 0 24px 4px rgba(100, 200, 120, 0.4)'
+                            : updateSubmitting
+                              ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 4px rgba(240, 200, 100, 0.3), 0 0 24px 4px rgba(240, 200, 100, 0.5)'
+                              : 'inset 0 1px 0 rgba(255,255,255,0.8), 0 6px 16px -6px rgba(200,150,50,0.5)',
+                          transition: 'all 0.5s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                          overflow: 'hidden', fontFamily: 'inherit',
+                        }}>
+                        {updateSubmitting && (
+                          <span style={{
+                            position: 'absolute', inset: 0,
+                            background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)',
+                            backgroundSize: '200% 100%',
+                            animation: 'shimmer 1.2s linear infinite',
+                          }}/>
+                        )}
+                        {(updateResult.includes('Successfully') && !updateSubmitting)
+                          ? <IconCheck size={16}/>
+                          : updateSubmitting
+                            ? <IconSpark size={16}/>
+                            : <IconSend size={14}/>}
+                        <span style={{ position: 'relative' }}>
+                          {(updateResult.includes('Successfully') && !updateSubmitting)
+                            ? 'PO Updated'
+                            : updateSubmitting
+                              ? 'Updating…'
+                              : 'Send amendment'}
+                        </span>
+                      </button>
+                    </div>
+
+                    {/* In-form error only — success lives above, outside this branch */}
+                    {updateResult.startsWith('Error') && (
+                      <div style={{ padding: 14, borderRadius: 12, background: 'rgba(220, 140, 120, 0.12)', border: '1px solid rgba(220, 140, 120, 0.3)', fontSize: 12, color: '#6a2a10' }}>
+                        {updateResult}
                       </div>
                     )}
                   </div>
                 )}
               </div>
             )}
+          </Page>
+        )}
+        {activeTab === 'scpoAction' && mode === 'customer' && (() => {
+          const latestOpen = sortPOsNewestFirst(getLatestActivePOs('open'));
+          const latestAcceptedNotFunded = sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence));
+          const source = actionStageFilter === 'open' ? latestOpen : latestAcceptedNotFunded;
+          const q = actionSearchQuery.trim().toLowerCase();
+          const filtered = !q ? source : source.filter(po => {
+            const vp = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+            const vname = (vp?.company || vp?.name || '').toLowerCase();
+            return (po.poName || '').toLowerCase().includes(q)
+              || (po.issuanceId || '').toLowerCase().includes(q)
+              || vname.includes(q);
+          });
+          const totalInFlight = latestOpen.length + latestAcceptedNotFunded.length;
+          const vendorOf = (po: SavedPO | null) => po ? linkedVendors.find(v => v.classicAddress === po.vendorAddress) : null;
+          const supplierName = (po: SavedPO | null) => {
+            if (!po) return '';
+            const v = vendorOf(po);
+            return v?.company || v?.name || (po.vendorAddress ? po.vendorAddress.slice(0, 8) + '…' : 'Vendor');
+          };
+          const canFund = selectedOpenPO && selectedOpenPO.status === 'accepted' && !selectedOpenPO.escrowSequence;
 
-            {overviewSubTab === 'details' && (
-              <>
-                {mode === 'customer' && (
-                  <div style={{ marginBottom: '40px' }}>
-                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Funded SC.PO</h3>
-                    {getLatestActivePOs('funded').length === 0 ? <p>No funded POs</p> : (
-                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                          <thead>
-                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(fundedExpanded ? sortPOsNewestFirst(getLatestActivePOs('funded')) : sortPOsNewestFirst(getLatestActivePOs('funded').slice(0, 2))).map(po => (
-                                <tr key={po.issuanceId || po.id}>
-                                <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span><YieldBadge poIssuanceId={po.issuanceId} positions={yieldPositions} /></td>
-                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                                <td style={{ padding: '10px' }}>${po.total}</td>
-                                <td style={{ padding: '10px' }}>
-                                  <button onClick={async () => { setSelectedFundedPO(po); await viewPOFromUri(po.ipfsUri, po, setCustomerViewViewedPO, setCustomerViewPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                    View PO
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {getLatestActivePOs('funded').length > 2 && (
-                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                            <button onClick={() => setFundedExpanded(!fundedExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              {fundedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {mode === 'customer' && (
-                  <div style={{ marginBottom: '40px' }}>
-                  <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Claimed SC.PO</h3>
-                  {getLatestActivePOs('claimed').length === 0 ? <p>No claimed POs</p> : (
-                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                          <thead>
-                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(closedExpanded ? sortPOsNewestFirst(getLatestActivePOs('claimed')) : sortPOsNewestFirst(getLatestActivePOs('claimed').slice(0, 2))).map(po => (
-                                <tr key={po.issuanceId || po.id}>
-                                <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span><YieldBadge poIssuanceId={po.issuanceId} positions={yieldPositions} /></td>
-                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                                <td style={{ padding: '10px' }}>${po.total}</td>
-                                <td style={{ padding: '10px' }}>
-                                  <button onClick={async () => { setSelectedFundedPO(po); await viewPOFromUri(po.ipfsUri, po, setCustomerViewViewedPO, setCustomerViewPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                    View PO
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {getLatestActivePOs('claimed').length > 2 && (
-                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                            <button onClick={() => setClosedExpanded(!closedExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              {closedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {mode === 'vendor' && (
-                  <div style={{ marginBottom: '40px' }}>
-                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Accepted SC.PO (Not Funded)</h3>
-                    {getLatestActivePOs('accepted').filter(p => !p.escrowSequence).length === 0 ? <p>No accepted POs</p> : (
-                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                          <thead>
-                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(acceptedExpanded ? sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence)) : sortPOsNewestFirst(getLatestActivePOs('accepted').filter(p => !p.escrowSequence).slice(0, 2))).map(po => (
-                                <tr key={po.issuanceId || po.id}>
-                                <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                                <td style={{ padding: '10px' }}>${po.total}</td>
-                                <td style={{ padding: '10px' }}>
-                                  <button onClick={async () => { setSelectedOpenPO(po); await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                    View PO
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {getLatestActivePOs('accepted').filter(p => !p.escrowSequence).length > 2 && (
-                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                            <button onClick={() => setAcceptedExpanded(!acceptedExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              {acceptedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {mode === 'vendor' && (
-                  <div style={{ marginBottom: '40px' }}>
-                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Funded SC.PO</h3>
-                    {getLatestActivePOs('funded').length === 0 ? <p>No funded POs</p> : (
-                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                          <thead>
-                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>PO Name</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Date Issued</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Total $</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Time Remaining</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(fundedExpanded ? sortPOsNewestFirst(getLatestActivePOs('funded')) : sortPOsNewestFirst(getLatestActivePOs('funded').slice(0, 2))).map(po => (
-                                <tr key={po.issuanceId || po.id}>
-                                <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                                <td style={{ padding: '10px' }}>${po.total}</td>
-                                <td style={{ padding: '10px' }}>{getTimeRemaining(po)}</td>
-                                <td style={{ padding: '10px' }}>
-                                  <button onClick={async () => { setSelectedFundedPO(po); await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                    View PO
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {getLatestActivePOs('funded').length > 2 && (
-                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                            <button onClick={() => setFundedExpanded(!fundedExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              {fundedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {mode === 'vendor' && (
-                  <div style={{ marginBottom: '40px' }}>
-                    <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Claimed SC.PO</h3>
-                    {getLatestActivePOs('claimed').length === 0 ? <p>No claimed POs</p> : (
-                      <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '15px' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                          <thead>
-                            <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '40%' }}>PO Name</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '25%' }}>Date Issued</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Total $</th>
-                              <th style={{ padding: '10px', textAlign: 'left', width: '15%' }}>Action</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(closedExpanded ? sortPOsNewestFirst(getLatestActivePOs('claimed')) : sortPOsNewestFirst(getLatestActivePOs('claimed').slice(0, 2))).map(po => (
-                                <tr key={po.issuanceId || po.id}>
-                                <td style={{ padding: '10px' }}>{po.poName} <span style={{ background: '#4CAF50', color: 'white', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', marginLeft: '8px' }}>Latest</span></td>
-                                <td style={{ padding: '10px' }}>{po.dateIssued}</td>
-                                <td style={{ padding: '10px' }}>${po.total}</td>
-                                <td style={{ padding: '10px' }}>
-                                  <button onClick={async () => { setSelectedFundedPO(po); await viewPOFromUri(po.ipfsUri, po, setVendorViewViewedPO, setVendorViewPoLoadError); }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                    View PO
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {getLatestActivePOs('claimed').length > 2 && (
-                          <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                            <button onClick={() => setClosedExpanded(!closedExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                              {closedExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {(mode === 'customer' ? customerViewPoLoadError : vendorViewPoLoadError) && (
-                  <div style={{ marginTop: '40px', padding: '20px', background: '#ffebee', borderRadius: '15px', textAlign: 'center' }}>
-                    <p style={{ color: '#c62828', marginBottom: '15px' }}>
-                      <strong>Could not load PO from IPFS:</strong><br />
-                      {mode === 'customer' ? customerViewPoLoadError : vendorViewPoLoadError}
-                    </p>
-                    <p style={{ color: '#666', marginBottom: '20px' }}>
-                      IPFS gateways can be slow or temporarily unavailable.<br />
-                      Please try again in a moment.
-                    </p>
-                  </div>
-                )}
-                {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO) && (
-                  <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
-                    <h3 style={{ color: '#F2B04A' }}>Purchase Order Details</h3>
-                    <p><strong style={{ color: '#F2B04A' }}>PO Name:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.poName}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.description || 'N/A'}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.department}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.paymentTerms}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.escrowCurrency === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.deliveryTerms}</p>
-                    <h4 style={{ color: '#F2B04A' }}>Items</h4>
-                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                      <thead>
-                        <tr style={{ background: '#e0e0e0' }}>
-                          <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
-                          <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
-                          <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)?.items.map((item, i) => (
-                          <tr key={i}>
-                            <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
-                            <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
-                            <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    <div style={{ marginTop: '20px', display: 'flex', gap: '10px' }}>
-                      <button onClick={() => openProfilesModal(selectedOpenPO || selectedFundedPO)} style={{ background: 'linear-gradient(90deg, #2196F3 0%, #64B5F6 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-                        Profiles
+          return (
+            <Page
+              tag="Buy · Action queue"
+              title={`${totalInFlight} PO${totalInFlight === 1 ? '' : 's'} in flight`}
+              subtitle="Open POs are awaiting counter-party acceptance. Accepted POs are ready to fund into escrow.">
+
+              <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 20, alignItems: 'flex-start' }}>
+
+                {/* ———— LEFT: sidebar ———— */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+                  {/* Search */}
+                  <div className="glass etched" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 12 }}>
+                    <IconSearch size={14} style={{ color: 'var(--ink-3)' }}/>
+                    <input value={actionSearchQuery} onChange={(e) => setActionSearchQuery(e.target.value)}
+                      placeholder="Search PO name, ID or supplier…"
+                      style={{ flex: 1, border: 0, background: 'transparent', outline: 'none', fontSize: 13, color: 'var(--ink)', fontFamily: 'inherit' }}/>
+                    {actionSearchQuery && (
+                      <button type="button" onClick={() => setActionSearchQuery('')}
+                        style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 2 }}>
+                        <IconX size={12}/>
                       </button>
-                      {getPOHistory(selectedOpenPO || selectedFundedPO || (mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO) as any).length > 0 && (
-                        <button onClick={() => openHistoryModal(selectedOpenPO || selectedFundedPO, mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-                          View History
-                        </button>
-                      )}
-                      <button onClick={() => openPOInventoryModal(selectedOpenPO || selectedFundedPO, mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO)}
-                        style={{ background: 'linear-gradient(90deg, #27ae60 0%, #2ecc71 100%)', color: 'white', padding: '10px 20px', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>
-                        Inventory
+                    )}
+                  </div>
+
+                  {/* Stage segmented tabs */}
+                  <div className="glass-strong" style={{ display: 'flex', padding: 4, borderRadius: 12, position: 'relative' }}>
+                    <div style={{
+                      position: 'absolute', top: 4, bottom: 4,
+                      left: actionStageFilter === 'open' ? 4 : 'calc(50% + 0px)',
+                      width: 'calc(50% - 4px)',
+                      background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                      borderRadius: 9,
+                      transition: 'left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.4)',
+                    }}/>
+                    {[
+                      { k: 'open' as const,     l: 'Open',     n: latestOpen.length },
+                      { k: 'accepted' as const, l: 'Accepted', n: latestAcceptedNotFunded.length },
+                    ].map(t => (
+                      <button key={t.k} type="button" onClick={() => setActionStageFilter(t.k)}
+                        style={{
+                          flex: 1, position: 'relative', zIndex: 1, padding: '8px 12px',
+                          fontSize: 12.5, fontWeight: 600, background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                          color: actionStageFilter === t.k ? '#2a1f08' : 'var(--ink-3)',
+                        }}>
+                        {t.l}
+                        <span className="mono" style={{
+                          fontSize: 10, padding: '1px 6px', borderRadius: 6,
+                          background: actionStageFilter === t.k ? 'rgba(42,31,8,0.12)' : 'rgba(180,140,60,0.15)',
+                          color: actionStageFilter === t.k ? '#2a1f08' : 'var(--ink-3)',
+                        }}>{t.n}</span>
                       </button>
+                    ))}
+                  </div>
+
+                  {/* PO list */}
+                  <Card style={{ padding: 8 }}>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', padding: '8px 10px 6px' }}>
+                      {actionStageFilter} · sorted newest first · {filtered.length} total
                     </div>
-                    {(() => {
-                      const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
-                      const historyPOs = getPOHistory(selectedOpenPO || selectedFundedPO || currentViewedPO as any);
-                      return historyPOs.length > 0 && (
-                        <div style={{ marginTop: '20px' }}>
-                          <h4 style={{ color: '#F2B04A', cursor: 'pointer' }} onClick={() => setShowHistory(!showHistory)}>
-                            View History {showHistory ? '▲' : '▼'}
-                          </h4>
-                          {showHistory && (
-                            <div>
-                              {historyPOs.map(hist => (
-                                <div key={hist.id} style={{ marginBottom: '10px', padding: '10px', border: '1px solid #ddd', borderRadius: '10px' }}>
-                                  <strong>Version:</strong> {hist.poName} (Status: {hist.status})
-                                  <button onClick={async () => { await viewPOFromUri(hist.ipfsUri, hist, mode === 'customer' ? setCustomerViewViewedPO : setVendorViewViewedPO, mode === 'customer' ? setCustomerViewPoLoadError : setVendorViewPoLoadError); }} style={{ marginLeft: '10px', background: '#F2B04A', color: 'white', padding: '5px 10px', borderRadius: '15px', cursor: 'pointer' }}>
-                                    Load This Version
+                    <div style={{ maxHeight: 520, overflowY: 'auto', overflowX: 'hidden' }}>
+                    {filtered.length === 0 ? (
+                      <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                        {q ? `No ${actionStageFilter} POs match "${actionSearchQuery}"` : `No ${actionStageFilter} POs at this time.`}
+                      </div>
+                    ) : filtered.map(po => {
+                      const active = selectedOpenPO?.issuanceId === po.issuanceId && selectedOpenPO?.id === po.id;
+                      const vname = supplierName(po);
+                      return (
+                        <button type="button" key={po.issuanceId || po.id}
+                          onClick={async () => {
+                            setSelectedOpenPO(po);
+                            setActionMode('view');
+                            setActionDetailTab('overview');
+                            await viewPOFromUri(po.ipfsUri, po, setCustomerScpoActionViewedPO, setCustomerScpoActionPoLoadError);
+                          }}
+                          style={{
+                            width: '100%', textAlign: 'left', padding: 12, borderRadius: 10,
+                            background: active ? 'rgba(255, 248, 220, 0.85)' : 'transparent',
+                            border: active ? '1px solid rgba(180,140,60,0.18)' : '1px solid transparent',
+                            marginBottom: 4, cursor: 'pointer', fontFamily: 'inherit',
+                            transition: 'all 0.15s ease',
+                          }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                              {po.issuanceId ? po.issuanceId.slice(0, 10) + '…' : (po.id || '').slice(0, 10)}
+                            </span>
+                            <Chip tone={po.status === 'accepted' ? 'green' : 'gold'}>{po.status}</Chip>
+                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {po.poName}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {vname}
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                              {po.dateIssued} · {po.paymentTerms || '—'}
+                            </span>
+                            <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>${po.total}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    </div>
+                  </Card>
+                </div>
+
+                {/* ———— RIGHT: detail ———— */}
+                {!selectedOpenPO ? (
+                  <Card strong layered style={{ padding: 40, textAlign: 'center' }}>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 8 }}>
+                      No PO selected
+                    </div>
+                    <div style={{ maxWidth: 360, margin: '0 auto', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+                      Pick a PO from the list on the left to view its details and take action.
+                    </div>
+                  </Card>
+                ) : (
+                  <Card strong layered>
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <Chip tone={selectedOpenPO.status === 'accepted' ? 'green' : 'gold'} style={{ marginBottom: 10 }}>
+                          {selectedOpenPO.status} {canFund ? '· awaiting funding' : selectedOpenPO.status === 'open' ? '· awaiting acceptance' : ''}
+                        </Chip>
+                        <h2 style={{ margin: 0, fontSize: 24, fontWeight: 500, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {supplierName(selectedOpenPO)}
+                        </h2>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>
+                          {selectedOpenPO.poName} · {selectedOpenPO.dateIssued} · {(customerScpoActionViewedPO?.items?.length ?? 0)} line{(customerScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {selectedOpenPO.paymentTerms || '—'}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total</div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.02em' }}>${selectedOpenPO.total}</div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                          Escrow · {selectedOpenPO.escrowCurrency || 'XRP'}
+                        </div>
+                        {getPOHistory(selectedOpenPO || customerScpoActionViewedPO as any).length > 0 && (
+                          <button type="button"
+                            onClick={() => openHistoryModal(selectedOpenPO, customerScpoActionViewedPO)}
+                            style={{
+                              marginTop: 8, padding: '4px 10px', fontSize: 11,
+                              background: 'transparent', border: '1px solid rgba(180,140,60,0.25)', borderRadius: 8,
+                              color: 'var(--ink-2)', cursor: 'pointer', fontFamily: 'inherit',
+                            }}>
+                            View history
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Action buttons row (view mode only) */}
+                    {actionMode === 'view' && (
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: canFund ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
+                        gap: 10, marginBottom: 18,
+                      }}>
+                        <button type="button" className="action-btn"
+                          onClick={async () => {
+                            if (!selectedOpenPO) return;
+                            setActionMode('update');
+                            setSelectedUpdatePO(selectedOpenPO);
+                            await prefillFromPO(selectedOpenPO);
+                          }}
+                          style={{
+                            display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                            padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(180,140,60,0.25)',
+                            background: 'linear-gradient(180deg, oklch(0.95 0.06 86), oklch(0.9 0.09 82))',
+                            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                          }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <IconFile size={14} style={{ color: '#6a4a10' }}/>
+                            <span style={{ fontSize: 13, fontWeight: 600 }}>Update</span>
+                          </div>
+                          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Edit PO details & line items</span>
+                        </button>
+
+                        <button type="button" className="action-btn"
+                          onClick={async () => {
+                            if (!selectedOpenPO) return;
+                            await recallPO(selectedOpenPO);
+                            setSelectedOpenPO(null);
+                            setCustomerScpoActionViewedPO(null);
+                          }}
+                          style={{
+                            display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                            padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(180, 80, 80, 0.25)',
+                            background: 'linear-gradient(180deg, oklch(0.94 0.05 28), oklch(0.88 0.1 28))',
+                            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                          }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <IconX size={14} style={{ color: '#6a2a10' }}/>
+                            <span style={{ fontSize: 13, fontWeight: 600 }}>Recall</span>
+                          </div>
+                          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Withdraw from supplier</span>
+                        </button>
+
+                        {canFund && (
+                          <button type="button" className="action-btn"
+                            onClick={async () => {
+                              if (!selectedOpenPO) return;
+                              await fundEscrow(selectedOpenPO);
+                              setSelectedOpenPO(null);
+                              setCustomerScpoActionViewedPO(null);
+                            }}
+                            style={{
+                              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                              padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(100, 180, 120, 0.3)',
+                              background: 'linear-gradient(180deg, oklch(0.93 0.09 148), oklch(0.85 0.14 148))',
+                              cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                            }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <IconWallet size={14} style={{ color: '#1d4d2d' }}/>
+                              <span style={{ fontSize: 13, fontWeight: 600 }}>Fund</span>
+                            </div>
+                            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Lock ${selectedOpenPO.total} in escrow</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Body: success → update form → view-mode tabs → loading */}
+                    {actionMode === 'update' && updateResult.includes('Successfully') ? (
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                          <div style={{
+                            width: 44, height: 44, borderRadius: 12,
+                            background: 'linear-gradient(180deg, oklch(0.88 0.18 140), oklch(0.62 0.16 140))',
+                            color: '#0e2010',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            boxShadow: '0 0 0 4px rgba(100, 200, 120, 0.2)',
+                          }}>
+                            <IconCheck size={22}/>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.01em' }}>PO Updated Successfully</div>
+                            <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>Vendor notified to re-accept · old version hidden</div>
+                          </div>
+                        </div>
+                        <div style={{ padding: 14, borderRadius: 12, background: 'rgba(255, 248, 222, 0.4)', border: '1px solid rgba(180, 140, 60, 0.15)', fontSize: 12, color: 'var(--ink-2)' }}>
+                          {['New Issuance', 'Tx Hash', 'IPFS URI'].map(label => {
+                            const m = updateResult.match(new RegExp(`${label}:\\s*(\\S+)`));
+                            if (!m) return null;
+                            const value = m[1];
+                            const truncated = value.length > 22 ? `${value.slice(0, 12)}…${value.slice(-8)}` : value;
+                            return (
+                              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', minWidth: 0 }}>
+                                <span style={{ minWidth: 90, color: 'var(--ink-3)', fontSize: 10, letterSpacing: '0.05em', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>{label}</span>
+                                <span className="mono" style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={value}>{truncated}</span>
+                                <button type="button"
+                                  onClick={(e) => {
+                                    navigator.clipboard?.writeText(value);
+                                    const btn = e.currentTarget;
+                                    const original = btn.textContent;
+                                    btn.textContent = 'Copied';
+                                    setTimeout(() => { btn.textContent = original; }, 1500);
+                                  }}
+                                  style={{ background: 'transparent', border: '1px solid rgba(180, 140, 60, 0.25)', borderRadius: 6, padding: '3px 8px', cursor: 'pointer', fontSize: 10, fontWeight: 500, color: 'var(--ink-2)', fontFamily: 'inherit', minWidth: 54 }}>
+                                  Copy
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div style={{ marginTop: 14, fontSize: 11, color: 'var(--ink-3)', textAlign: 'center' }}>Clearing in a moment…</div>
+                      </div>
+                    ) : actionMode === 'update' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+                        {isLoadingEditPO && (
+                          <Card>
+                            <div style={{ textAlign: 'center', padding: 20, color: 'var(--ink-3)', fontSize: 13 }}>Loading PO details from IPFS…</div>
+                          </Card>
+                        )}
+
+                        {/* 01 · PO overview */}
+                        <Card label={<StepLabel n="01" title="PO overview"/>}>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                            <Field label="PO name" full>
+                              <input value={poName} onChange={(e) => setPoName(e.target.value)} style={inpStyle}/>
+                            </Field>
+                            <Field label="Department">
+                              <input value={department} onChange={(e) => setDepartment(e.target.value)} style={inpStyle}/>
+                            </Field>
+                            <Field label="Description" full>
+                              <textarea value={desc} onChange={(e) => setDesc(e.target.value)}
+                                style={{ ...inpStyle, minHeight: 68, resize: 'vertical', lineHeight: 1.5 }}/>
+                            </Field>
+                          </div>
+                        </Card>
+
+                        {/* 02 · Terms & settlement */}
+                        <Card label={<StepLabel n="02" title="Terms & settlement"/>}>
+                          <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
+                            <Field label="Payment terms">
+                              <SelectBox value={paymentTerms} onChange={setPaymentTerms} options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
+                            </Field>
+                            {isRLUSDConfigured() && (
+                              <Field label="Escrow currency">
+                                <SelectBox value={escrowCurrency} onChange={(v) => setEscrowCurrency(v as 'XRP' | 'RLUSD')} options={['RLUSD', 'XRP']}/>
+                              </Field>
+                            )}
+                            <Field label="Delivery terms">
+                              <SelectBox value={deliveryTerms} onChange={setDeliveryTerms}
+                                options={['DDP — Delivered Duty Paid', 'DAP — Delivered at Place', 'FOB — Free on Board', 'EXW — Ex Works', 'CIF — Cost, Insurance & Freight']}/>
+                            </Field>
+                          </div>
+                        </Card>
+
+                        {/* 03 · Order request */}
+                        <Card label={<StepLabel n="03" title="Order request"/>} actions={
+                          <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                            {items.length} line{items.length !== 1 ? 's' : ''}
+                          </span>
+                        }>
+                          <div style={{ border: '1px solid rgba(180, 140, 60, 0.15)', borderRadius: 14, overflow: 'hidden', background: 'rgba(255, 248, 222, 0.25)' }}>
+                            <div style={{
+                              display: 'grid', gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px',
+                              gap: 10, padding: '10px 14px',
+                              fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
+                              color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                              borderBottom: '1px solid rgba(180,140,60,0.15)',
+                              background: 'rgba(255, 248, 222, 0.5)',
+                            }}>
+                              <div>Item #</div><div/>
+                              <div style={{ textAlign: 'right' }}>QTY</div>
+                              <div style={{ textAlign: 'right' }}>Piece price</div>
+                              <div style={{ textAlign: 'right' }}>Total</div>
+                              <div/>
+                            </div>
+                            {items.map((item, index) => {
+                              const linkedV2Item = selectedUpdatePO?.vendorAddress
+                                ? (linkedVendorInventoryV2[selectedUpdatePO.vendorAddress] || []).find(i => i.nftId === item.invNFTId || i.partNumber === item.num || i.name === item.num)
+                                : null;
+                              return (
+                                <div key={index} style={{ display: 'grid', gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px', gap: 10, padding: '10px 14px', alignItems: 'center', fontSize: 13, borderBottom: '1px solid rgba(180,140,60,0.08)' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                                    <ProductImage uri={linkedV2Item?.productImageUri} name={item.num} size={28}/>
+                                    <div style={{ minWidth: 0 }}>
+                                      <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.num}</div>
+                                    </div>
+                                  </div>
+                                  <div>
+                                    {linkedV2Item && (
+                                      <button type="button" onClick={() => {
+                                        const fakePO = { vendorAddress: selectedUpdatePO?.vendorAddress, buyerAddress: customerProfile.classicAddress } as any;
+                                        const fakePOData = { items: [item] } as any;
+                                        openPOInventoryModal(fakePO, fakePOData);
+                                      }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-3)', padding: 2 }} title="View inventory details">
+                                        <IconLayer size={13}/>
+                                      </button>
+                                    )}
+                                  </div>
+                                  <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                                  <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
+                                  <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
+                                  <button type="button" onClick={() => removeItem(index)} style={{ color: 'var(--ink-3)', padding: 4, justifySelf: 'end', background: 'transparent', border: 0, cursor: 'pointer' }}>
+                                    <IconX size={13}/>
                                   </button>
+                                </div>
+                              );
+                            })}
+                            {items.length === 0 && (
+                              <div style={{ padding: '20px 14px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>No lines. Add at least one item before submitting.</div>
+                            )}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 40px 90px 110px 110px 32px', gap: 10, padding: '12px 14px', alignItems: 'start', background: 'rgba(255, 248, 222, 0.55)', borderTop: '1px dashed rgba(180,140,60,0.25)' }}>
+                              <div style={{ minWidth: 0 }}>
+                                {(() => {
+                                  const vendorAddr = selectedUpdatePO?.vendorAddress;
+                                  const v2items = vendorAddr ? (linkedVendorInventoryV2[vendorAddr] || []) : [];
+                                  if (!vendorAddr || v2items.length === 0) {
+                                    return (<input placeholder="Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ ...inpStyle, padding: '6px 10px', fontSize: 13 }}/>);
+                                  }
+                                  return (
+                                    <select value={selectedInventoryItem}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setSelectedInventoryItem(val);
+                                        if (val === 'custom') { setNewItemNum(''); setNewPiecePrice(''); setNewTotal(''); return; }
+                                        const v2item = v2items.find(i => i.partNumber === val || i.name === val);
+                                        if (v2item) { setNewItemNum(v2item.partNumber || v2item.name); setNewPiecePrice(''); setNewTotal(''); return; }
+                                        setNewItemNum(val); setNewPiecePrice(''); setNewTotal('');
+                                      }}
+                                      style={{ ...inpStyle, padding: '6px 10px', fontSize: 13 }}>
+                                      <option value="custom">Custom Item #</option>
+                                      {v2items.map(item => (<option key={item.nftId} value={item.partNumber || item.name}>{item.partNumber} — {item.name}</option>))}
+                                    </select>
+                                  );
+                                })()}
+                                {selectedInventoryItem === 'custom' && selectedUpdatePO?.vendorAddress && (linkedVendorInventoryV2[selectedUpdatePO.vendorAddress]?.length ?? 0) > 0 && (
+                                  <input placeholder="Custom Item #" value={newItemNum} onChange={(e) => setNewItemNum(e.target.value)} style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, marginTop: 6 }}/>
+                                )}
+                              </div>
+                              <div/>
+                              <input placeholder="0" value={newQty} onChange={(e) => setNewQty(e.target.value)} className="mono" style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                              <input placeholder="0.00" value={newPiecePrice} onChange={(e) => { setNewPiecePrice(e.target.value); const qty = parseFloat(newQty); const price = parseFloat(e.target.value); if (qty > 0 && price > 0) setNewTotal((qty * price).toFixed(2)); }} className="mono" style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                              <input placeholder="0.00" value={newTotal} onChange={(e) => setNewTotal(e.target.value)} className="mono" style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right' }}/>
+                              <div/>
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+                            <div className="mono" style={{ fontSize: 13 }}>
+                              <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
+                              <span style={{ fontWeight: 600, fontSize: 16 }}>${totalEscrowAmount}</span>
+                            </div>
+                            <Btn variant="ghost" icon={IconPlus} onClick={addItem}>Add line</Btn>
+                          </div>
+                        </Card>
+
+                        {/* 04 · Supporting documents */}
+                        <Card label={<StepLabel n="04" title="Supporting documents"/>}>
+                          {existingAttachments.length > 0 && (
+                            <div style={{ marginBottom: 14 }}>
+                              <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>From original PO · will be kept unless removed</div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                {existingAttachments.map((att, i) => (
+                                  <div key={i} className="etched" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10 }}>
+                                    <div style={{ padding: 6, borderRadius: 6, background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                      <IconFile size={14}/>
+                                    </div>
+                                    <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`Open ${att.name} on IPFS`}>{att.name}</a>
+                                    <button type="button" onClick={() => setExistingAttachments(existingAttachments.filter((_, idx) => idx !== i))} style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 4 }} title="Remove this attachment">
+                                      <IconX size={14}/>
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <input type="file" multiple id="scpo-action-update-file-input" onChange={(e) => setSelectedFiles(e.target.files)} style={{ display: 'none' }}/>
+                          <label htmlFor="scpo-action-update-file-input" style={{ display: 'flex', alignItems: 'center', gap: 14, width: '100%', padding: '22px 18px', borderRadius: 14, border: '1.5px dashed rgba(180, 140, 60, 0.35)', background: selectedFiles && selectedFiles.length > 0 ? 'rgba(255, 248, 222, 0.55)' : 'rgba(255, 248, 222, 0.25)', cursor: 'pointer', transition: 'all 0.2s ease', boxSizing: 'border-box' }}>
+                            <div style={{ width: 44, height: 44, borderRadius: 10, background: 'rgba(240, 200, 100, 0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6a4a10' }}>
+                              <IconFile size={18}/>
+                            </div>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                                {selectedFiles && selectedFiles.length > 0 ? `${selectedFiles.length} new file${selectedFiles.length === 1 ? '' : 's'} selected` : existingAttachments.length > 0 ? 'Add more documents' : 'Attach supporting documents'}
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                                {selectedFiles && selectedFiles.length > 0 ? 'Click to replace this selection · pinned to IPFS on submit' : existingAttachments.length > 0 ? 'New uploads will be added to the kept files above' : 'Quote, spec sheet, drawings, contract — multiple files supported'}
+                              </div>
+                            </div>
+                            {selectedFiles && selectedFiles.length > 0 ? <Chip tone="green">New</Chip> : <Chip tone="neutral">Browse</Chip>}
+                          </label>
+                        </Card>
+
+                        {/* Re-acceptance warning */}
+                        <div className="etched" style={{ padding: 14, borderRadius: 12, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                          <div style={{ padding: 6, borderRadius: 8, background: 'rgba(240, 200, 100, 0.3)', color: '#6a4a10' }}>
+                            <IconSpark size={14}/>
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600 }}>Changes require re-acceptance</div>
+                            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.4 }}>
+                              Submitting creates a new MPT version. The vendor will be notified and must re-accept before the new terms are binding. The old version is clawed back.
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Footer actions */}
+                        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                          <Btn variant="ghost" onClick={() => {
+                            setActionMode('view');
+                            setSelectedUpdatePO(null);
+                            setUpdateResult('');
+                            setPoName('');
+                            setDesc('');
+                            setDepartment('');
+                            setItems([]);
+                            setExistingAttachments([]);
+                            setSelectedFiles(null);
+                            setNewItemNum('');
+                            setNewQty('');
+                            setNewPiecePrice('');
+                            setNewTotal('');
+                            setVendor('');
+                            setSelectedVendorUUID('');
+                          }}>Discard changes</Btn>
+                          <button type="button" onClick={handleUpdateSCPO} disabled={updateSubmitting}
+                            style={{
+                              position: 'relative', padding: '14px 20px', borderRadius: 14, border: 0,
+                              background: updateSubmitting ? 'linear-gradient(180deg, oklch(0.88 0.14 82), oklch(0.65 0.16 58))' : 'linear-gradient(180deg, oklch(0.88 0.14 82), oklch(0.65 0.16 58))',
+                              color: '#2a1f08', fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em',
+                              cursor: updateSubmitting ? 'default' : 'pointer',
+                              boxShadow: updateSubmitting ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 4px rgba(240, 200, 100, 0.3), 0 0 24px 4px rgba(240, 200, 100, 0.5)' : 'inset 0 1px 0 rgba(255,255,255,0.8), 0 6px 16px -6px rgba(200,150,50,0.5)',
+                              transition: 'all 0.5s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                              overflow: 'hidden', fontFamily: 'inherit',
+                            }}>
+                            {updateSubmitting && (
+                              <span style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)', backgroundSize: '200% 100%', animation: 'shimmer 1.2s linear infinite' }}/>
+                            )}
+                            {updateSubmitting ? <IconSpark size={16}/> : <IconSend size={14}/>}
+                            <span style={{ position: 'relative' }}>{updateSubmitting ? 'Updating…' : 'Send amendment'}</span>
+                          </button>
+                        </div>
+
+                        {updateResult.startsWith('Error') && (
+                          <div style={{ padding: 14, borderRadius: 12, background: 'rgba(220, 140, 120, 0.12)', border: '1px solid rgba(220, 140, 120, 0.3)', fontSize: 12, color: '#6a2a10' }}>
+                            {updateResult}
+                          </div>
+                        )}
+                      </div>
+                    ) : !customerScpoActionViewedPO ? (
+                      <div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>
+                        {customerScpoActionPoLoadError ? `Load error: ${customerScpoActionPoLoadError}` : 'Loading PO details from IPFS…'}
+                      </div>
+                    ) : (
+                      <>
+                        {/* Inline pill tabs */}
+                        <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 12, background: 'rgba(255, 248, 222, 0.4)', border: '1px solid rgba(180,140,60,0.12)', marginBottom: 20, width: 'fit-content' }}>
+                          {[
+                            { k: 'overview' as const,  l: 'Overview',  I: IconFile },
+                            { k: 'profile' as const,   l: 'Profile',   I: IconUser },
+                            { k: 'inventory' as const, l: 'Inventory', I: IconBox },
+                          ].map(t => {
+                            const active = actionDetailTab === t.k;
+                            const I = t.I;
+                            return (
+                              <button key={t.k} type="button" onClick={() => setActionDetailTab(t.k)}
+                                style={{
+                                  display: 'flex', alignItems: 'center', gap: 6,
+                                  padding: '7px 14px', borderRadius: 9,
+                                  background: active ? '#2a1f08' : 'transparent',
+                                  color: active ? '#f9efd2' : 'var(--ink-2)',
+                                  fontSize: 12.5, fontWeight: 600, border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                                  transition: 'all 0.2s ease',
+                                }}>
+                                <I size={13}/> {t.l}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* OVERVIEW TAB */}
+                        {actionDetailTab === 'overview' && (
+                          <>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
+                              {[
+                                { label: 'Department', v: customerScpoActionViewedPO.department || '—' },
+                                { label: 'Payment',    v: customerScpoActionViewedPO.paymentTerms || '—' },
+                                { label: 'Delivery',   v: customerScpoActionViewedPO.deliveryTerms || '—' },
+                                { label: 'Escrow ccy', v: customerScpoActionViewedPO.escrowCurrency || 'XRP', mono: true },
+                              ].map(f => (
+                                <div key={f.label} className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</div>
+                                  <div className={f.mono ? 'mono' : ''} style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>{f.v}</div>
                                 </div>
                               ))}
                             </div>
+
+                            {customerScpoActionViewedPO.description && (
+                              <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 18 }}>
+                                <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
+                                <div style={{ fontSize: 13, lineHeight: 1.5 }}>{customerScpoActionViewedPO.description}</div>
+                              </div>
+                            )}
+
+                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                              Line items · {customerScpoActionViewedPO.items?.length || 0}
+                            </div>
+                            <div style={{ border: '1px solid rgba(180,140,60,0.15)', borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10, padding: '10px 14px', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace", background: 'rgba(255, 248, 222, 0.5)', borderBottom: '1px solid rgba(180,140,60,0.15)' }}>
+                                <div>Item #</div>
+                                <div style={{ textAlign: 'right' }}>Qty</div>
+                                <div style={{ textAlign: 'right' }}>Unit</div>
+                                <div style={{ textAlign: 'right' }}>Total</div>
+                              </div>
+                              {(customerScpoActionViewedPO.items || []).map((item, i) => (
+                                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10, padding: '10px 14px', alignItems: 'center', fontSize: 13, borderBottom: '1px solid rgba(180,140,60,0.08)' }}>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.num}</span>
+                                  <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                                  <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
+                                  <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
+                                </div>
+                              ))}
+                            </div>
+
+                            {customerScpoActionViewedPO.attachments && customerScpoActionViewedPO.attachments.length > 0 && (
+                              <>
+                                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10, marginTop: 18 }}>
+                                  Attachments · {customerScpoActionViewedPO.attachments.length}
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                                  {customerScpoActionViewedPO.attachments.map((att, i) => (
+                                    <div key={i} className="etched" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10 }}>
+                                      <div style={{ padding: 6, borderRadius: 6, background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                        <IconFile size={14}/>
+                                      </div>
+                                      <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`Open ${att.name} on IPFS`}>
+                                        {att.name}
+                                      </a>
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+
+                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12, paddingTop: 12, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
+                              <div className="mono" style={{ fontSize: 13 }}>
+                                <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
+                                <span style={{ fontWeight: 600, fontSize: 16 }}>${selectedOpenPO.total}</span>
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        {/* PROFILE TAB */}
+                        {actionDetailTab === 'profile' && (
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                            {[
+                              { title: 'Buyer', data: customerProfile, tone: 'blue' as const },
+                              { title: 'Seller', data: vendorOf(selectedOpenPO) || ({} as any), tone: 'gold' as const },
+                            ].map(({ title, data, tone }) => (
+                              <div key={title} className="etched" style={{ padding: 16, borderRadius: 14 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{title}</div>
+                                  {data.uniqueID && <Chip tone={tone}>{data.uniqueID}</Chip>}
+                                </div>
+                                <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 2 }}>
+                                  {data.company || data.name || '—'}
+                                </div>
+                                {data.name && data.company && (
+                                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 12 }}>{data.name}</div>
+                                )}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                                  {[
+                                    { k: 'Email',   v: data.email,   mono: false },
+                                    { k: 'Phone',   v: data.phone,   mono: false },
+                                    { k: 'Address', v: data.address, mono: false },
+                                    { k: 'Wallet',  v: data.classicAddress, mono: true },
+                                    { k: 'ID',      v: data.uniqueID, mono: true },
+                                  ].filter(r => r.v).map(r => (
+                                    <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, minWidth: 0 }}>
+                                      <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>{r.k}</span>
+                                      <span className={r.mono ? 'mono' : ''} style={{ fontWeight: 500, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.v}>
+                                        {r.mono && r.v.length > 18 ? `${r.v.slice(0, 8)}…${r.v.slice(-6)}` : r.v}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* INVENTORY TAB */}
+                        {actionDetailTab === 'inventory' && (() => {
+                          const lines = customerScpoActionViewedPO.items || [];
+                          const totalUnits = lines.reduce((s, l) => s + (parseFloat(l.qty as any) || 0), 0);
+                          const totalCost = lines.reduce((s, l) => s + (parseFloat(l.total as any) || 0), 0);
+                          const v2 = selectedOpenPO.vendorAddress ? (linkedVendorInventoryV2[selectedOpenPO.vendorAddress] || []) : [];
+                          return (
+                            <>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
+                                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Line items</div>
+                                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>{lines.length}</div>
+                                </div>
+                                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total units</div>
+                                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>{totalUnits}</div>
+                                </div>
+                                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
+                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Order value</div>
+                                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>${selectedOpenPO.total}</div>
+                                </div>
+                              </div>
+
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                                Items on this order
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                {lines.map((l, i) => {
+                                  const match = v2.find(x => x.nftId === l.invNFTId || x.partNumber === l.num || x.name === l.num);
+                                  const desc = match?.shortDescription || `Custom item — ${l.num}`;
+                                  const category = match?.category || '';
+                                  return (
+                                    <div key={i} className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                                      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'start' }}>
+                                        <div style={{ minWidth: 0 }}>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{l.num}</span>
+                                            {category && (
+                                              <span style={{ fontSize: 10, color: 'var(--ink-3)', padding: '1px 6px', borderRadius: 4, background: 'rgba(180, 140, 60, 0.1)' }}>{category}</span>
+                                            )}
+                                          </div>
+                                          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>{match?.name || l.num}</div>
+                                          <div style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.45 }}>{desc}</div>
+                                        </div>
+                                        <div style={{ textAlign: 'right' }}>
+                                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{l.qty} units</div>
+                                          <div className="mono" style={{ fontSize: 16, fontWeight: 600, marginTop: 2 }}>${l.total}</div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          );
+                        })()}
+                      </>
+                    )}
+                  </Card>
+                )}
+              </div>
+            </Page>
+          );
+        })()}
+        {activeTab === 'scpoAction' && mode === 'vendor' && (() => {
+          const latestOpen   = sortPOsNewestFirst(getLatestActivePOs('open'));
+          const latestFunded = sortPOsNewestFirst(getLatestActivePOs('funded'));
+          const source = vendorActionStageFilter === 'open' ? latestOpen : latestFunded;
+          const q = vendorActionSearchQuery.trim().toLowerCase();
+          const filtered = !q ? source : source.filter(po => {
+            const cp = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+            const cname = (cp?.company || cp?.name || '').toLowerCase();
+            return (po.poName || '').toLowerCase().includes(q)
+              || (po.issuanceId || '').toLowerCase().includes(q)
+              || cname.includes(q);
+          });
+          const totalInFlight = latestOpen.length + latestFunded.length;
+          const buyerOf = (po: SavedPO | null) => po ? linkedCustomers.find(c => c.classicAddress === po.buyerAddress) : null;
+          const buyerName = (po: SavedPO | null) => {
+            if (!po) return '';
+            const c = buyerOf(po);
+            return c?.company || c?.name || (po.buyerAddress ? po.buyerAddress.slice(0, 8) + '…' : 'Buyer');
+          };
+          const activePO: SavedPO | null = vendorActionStageFilter === 'open' ? selectedOpenPO : selectedFundedPO;
+          const financingState = activePO ? financingStatusMap[activePO.issuanceId] : undefined;
+          const canClaim = !!activePO && activePO.status === 'funded';
+          const canGetAdvance = !!activePO && activePO.status === 'funded' && activePO.escrowCurrency === 'RLUSD' && !financingState;
+          const canDisburse = !!activePO && financingState?.status === 'approved';
+          const clearSelection = () => { setSelectedOpenPO(null); setSelectedFundedPO(null); setVendorScpoActionViewedPO(null); setVendorScpoActionPoLoadError(null); };
+
+          return (
+            <Page
+              tag="Sell · Action queue"
+              title={`${totalInFlight} PO${totalInFlight === 1 ? '' : 's'} in flight`}
+              subtitle="Open POs are awaiting your acceptance. Funded POs can be claimed on delivery."
+              actions={
+                <Btn variant="ghost" icon={IconRefresh} onClick={refreshFinancingStatus}>
+                  Refresh financing
+                </Btn>
+              }>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 20, alignItems: 'flex-start' }}>
+
+                {/* ———— LEFT: sidebar ———— */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+
+                  {/* Search */}
+                  <div className="glass etched" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 12 }}>
+                    <IconSearch size={14} style={{ color: 'var(--ink-3)' }}/>
+                    <input value={vendorActionSearchQuery} onChange={(e) => setVendorActionSearchQuery(e.target.value)}
+                      placeholder="Search PO name, ID or buyer…"
+                      style={{ flex: 1, border: 0, background: 'transparent', outline: 'none', fontSize: 13, color: 'var(--ink)', fontFamily: 'inherit' }}/>
+                    {vendorActionSearchQuery && (
+                      <button type="button" onClick={() => setVendorActionSearchQuery('')}
+                        style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 2 }}>
+                        <IconX size={12}/>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Stage segmented tabs */}
+                  <div className="glass-strong" style={{ display: 'flex', padding: 4, borderRadius: 12, position: 'relative' }}>
+                    <div style={{
+                      position: 'absolute', top: 4, bottom: 4,
+                      left: vendorActionStageFilter === 'open' ? 4 : 'calc(50% + 0px)',
+                      width: 'calc(50% - 4px)',
+                      background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                      borderRadius: 9,
+                      transition: 'left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.4)',
+                    }}/>
+                    {[
+                      { k: 'open' as const,   l: 'Open',   n: latestOpen.length },
+                      { k: 'funded' as const, l: 'Funded', n: latestFunded.length },
+                    ].map(t => (
+                      <button key={t.k} type="button" onClick={() => { setVendorActionStageFilter(t.k); clearSelection(); setFinancingDrawerForPO(null); }}
+                        style={{
+                          flex: 1, position: 'relative', zIndex: 1, padding: '8px 12px',
+                          fontSize: 12.5, fontWeight: 600, background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                          color: vendorActionStageFilter === t.k ? '#2a1f08' : 'var(--ink-3)',
+                        }}>
+                        {t.l}
+                        <span className="mono" style={{
+                          fontSize: 10, padding: '1px 6px', borderRadius: 6,
+                          background: vendorActionStageFilter === t.k ? 'rgba(42,31,8,0.12)' : 'rgba(180,140,60,0.15)',
+                          color: vendorActionStageFilter === t.k ? '#2a1f08' : 'var(--ink-3)',
+                        }}>{t.n}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* PO list */}
+                  <Card style={{ padding: 8 }}>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', padding: '8px 10px 6px' }}>
+                      {vendorActionStageFilter} · sorted newest first · {filtered.length} total
+                    </div>
+                    <div style={{ maxHeight: 520, overflowY: 'auto', overflowX: 'hidden' }}>
+                    {filtered.length === 0 ? (
+                      <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                        {q ? `No ${vendorActionStageFilter} POs match "${vendorActionSearchQuery}"` : `No ${vendorActionStageFilter} POs at this time.`}
+                      </div>
+                    ) : filtered.map(po => {
+                      const active = activePO?.issuanceId === po.issuanceId && activePO?.id === po.id;
+                      const cname = buyerName(po);
+                      return (
+                        <button type="button" key={po.issuanceId || po.id}
+                          onClick={async () => {
+                            if (vendorActionStageFilter === 'open') { setSelectedOpenPO(po); setSelectedFundedPO(null); }
+                            else { setSelectedFundedPO(po); setSelectedOpenPO(null); }
+                            setVendorActionDetailTab('overview');
+                            setFinancingDrawerForPO(null);
+                            await viewPOFromUri(po.ipfsUri, po, setVendorScpoActionViewedPO, setVendorScpoActionPoLoadError);
+                          }}
+                          style={{
+                            width: '100%', textAlign: 'left', padding: 12, borderRadius: 10,
+                            background: active ? 'rgba(255, 248, 220, 0.85)' : 'transparent',
+                            border: active ? '1px solid rgba(180,140,60,0.18)' : '1px solid transparent',
+                            marginBottom: 4, cursor: 'pointer', fontFamily: 'inherit',
+                            transition: 'all 0.15s ease',
+                          }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                              {po.issuanceId ? po.issuanceId.slice(0, 10) + '…' : (po.id || '').slice(0, 10)}
+                            </span>
+                            <Chip tone={po.status === 'funded' ? 'green' : 'gold'}>{po.status}</Chip>
+                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {po.poName}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {cname}
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}>
+                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                              {po.dateIssued} · {po.paymentTerms || '—'}
+                            </span>
+                            <span className="mono" style={{ fontSize: 12, fontWeight: 600 }}>${po.total}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                    </div>
+                  </Card>
+                </div>
+
+                {/* ———— RIGHT: detail ———— */}
+                {!activePO ? (
+                  <Card strong layered style={{ padding: 40, textAlign: 'center' }}>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 8 }}>
+                      No PO selected
+                    </div>
+                    <div style={{ maxWidth: 360, margin: '0 auto', fontSize: 13, color: 'var(--ink-3)', lineHeight: 1.5 }}>
+                      Pick a PO from the list on the left to view its details and take action.
+                    </div>
+                  </Card>
+                ) : (
+                  <Card strong layered style={
+                    claimJustCelebrated && activePO && claimJustCelebrated === activePO.issuanceId ? {
+                      boxShadow: [
+                        '0 0 0 1px oklch(0.72 0.17 148 / 0.5)',
+                        '0 0 48px -4px oklch(0.72 0.18 148 / 0.55)',
+                        '0 0 160px -28px oklch(0.75 0.2 148 / 0.7)',
+                        'inset 0 1px 0 rgba(255,255,255,0.7)',
+                      ].join(', '),
+                      transition: 'box-shadow 0.6s ease',
+                    } : { transition: 'box-shadow 0.6s ease' }
+                  }>
+                    {/* Celebration banner */}
+                    {claimJustCelebrated && activePO && claimJustCelebrated === activePO.issuanceId && (
+                      <div className="rise" style={{
+                        display: 'flex', alignItems: 'center', gap: 14,
+                        padding: '14px 18px', marginBottom: 18, borderRadius: 14,
+                        background: 'linear-gradient(180deg, oklch(0.94 0.12 148 / 0.7), oklch(0.88 0.16 148 / 0.55))',
+                        border: '1px solid oklch(0.55 0.16 148 / 0.35)',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 14px -4px oklch(0.6 0.18 148 / 0.4)',
+                      }}>
+                        <div style={{
+                          width: 44, height: 44, borderRadius: 12,
+                          background: 'linear-gradient(180deg, oklch(0.88 0.18 148), oklch(0.62 0.16 148))',
+                          color: '#0e2010',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          boxShadow: '0 0 0 4px rgba(100, 200, 120, 0.25)',
+                        }}>
+                          <IconCheck size={22}/>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>
+                            Escrow claimed · ${activePO.total} released
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                            Funds are on their way to your wallet. Clearing in a moment…
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+                          <Chip tone={activePO.status === 'funded' ? 'green' : 'gold'}>
+                            {activePO.status} {activePO.status === 'funded'
+                              ? (() => {
+                                  const remaining = getTimeRemaining(activePO);
+                                  return typeof remaining === 'string'
+                                    ? `· ${remaining} remaining`
+                                    : <>· {remaining}</>;
+                                })()
+                              : '· awaiting your acceptance'}
+                          </Chip>
+                          <YieldBadge poIssuanceId={activePO.issuanceId} positions={yieldPositions}/>
+                          {financingState && (() => {
+                            const fr = financingState;
+                            const tones: Record<string, 'gold' | 'green' | 'red' | 'blue' | 'neutral'> = {
+                              pending_lender: 'gold', approved: 'green', denied: 'red', disbursed: 'blue', repaid: 'neutral',
+                            };
+                            const labels: Record<string, string> = {
+                              pending_lender: 'Pending lender', approved: 'Advance approved', denied: 'Advance denied', disbursed: 'Advance disbursed', repaid: 'Advance repaid',
+                            };
+                            return <Chip tone={tones[fr.status] || 'neutral'}>{labels[fr.status] || fr.status}</Chip>;
+                          })()}
+                        </div>
+                        <h2 style={{ margin: 0, fontSize: 24, fontWeight: 500, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {buyerName(activePO)}
+                        </h2>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>
+                          {activePO.poName} · {activePO.dateIssued} · {(vendorScpoActionViewedPO?.items?.length ?? 0)} line{(vendorScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {activePO.paymentTerms || '—'}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total</div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.02em' }}>${activePO.total}</div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                          Escrow · {activePO.escrowCurrency || 'XRP'}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action buttons row */}
+                    {activePO.status === 'open' && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 18 }}>
+                        <button type="button" className="action-btn"
+                          onClick={async () => {
+                            if (!activePO) return;
+                            await acceptMPTOfferForPO(activePO);
+                            clearSelection();
+                          }}
+                          style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+                            padding: '16px 20px', borderRadius: 12, border: '1px solid rgba(100, 180, 120, 0.3)',
+                            background: 'linear-gradient(180deg, oklch(0.93 0.09 148), oklch(0.85 0.14 148))',
+                            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                          }}>
+                          <div>
+                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+                              Respond to buyer
+                            </div>
+                            <div style={{ fontSize: 15, fontWeight: 600, marginTop: 3 }}>Accept purchase order</div>
+                          </div>
+                          <div style={{
+                            width: 36, height: 36, borderRadius: 999,
+                            background: 'rgba(29, 77, 45, 0.15)', color: '#1d4d2d',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            <IconCheck size={18}/>
+                          </div>
+                        </button>
+                      </div>
+                    )}
+
+                    {activePO.status === 'funded' && (
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: [canClaim, canGetAdvance, canDisburse].filter(Boolean).length === 1
+                          ? '1fr'
+                          : [canClaim, canGetAdvance, canDisburse].filter(Boolean).length === 2
+                            ? '1fr 1fr' : '1fr 1fr 1fr',
+                        gap: 10, marginBottom: 18,
+                      }}>
+                        {canClaim && (() => {
+                          const isClaiming = claimSubmitting === activePO.issuanceId;
+                          const isClaimed = claimJustCelebrated === activePO.issuanceId;
+                          return (
+                            <button type="button" className={isClaiming || isClaimed ? '' : 'action-btn'}
+                              disabled={isClaiming || isClaimed}
+                              onClick={async () => {
+                                if (!activePO) return;
+                                const poIssuance = activePO.issuanceId;
+                                setClaimSubmitting(poIssuance);
+                                try {
+                                  await claimEscrowForPO(activePO);
+                                  setClaimJustCelebrated(poIssuance);
+                                } finally {
+                                  setClaimSubmitting(null);
+                                }
+                              }}
+                              style={{
+                                position: 'relative',
+                                display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                                padding: '14px 16px', borderRadius: 12,
+                                border: isClaimed
+                                  ? '1px solid oklch(0.55 0.16 148 / 0.5)'
+                                  : '1px solid rgba(100, 180, 120, 0.3)',
+                                background: isClaimed
+                                  ? 'linear-gradient(180deg, oklch(0.78 0.16 148), oklch(0.55 0.16 148))'
+                                  : 'linear-gradient(180deg, oklch(0.93 0.09 148), oklch(0.85 0.14 148))',
+                                color: isClaimed ? '#0e2010' : 'var(--ink)',
+                                cursor: (isClaiming || isClaimed) ? 'default' : 'pointer',
+                                fontFamily: 'inherit', textAlign: 'left',
+                                overflow: 'hidden',
+                                boxShadow: isClaimed
+                                  ? 'inset 0 1px 0 rgba(255,255,255,0.5), 0 0 0 4px rgba(100, 200, 120, 0.25), 0 0 24px 4px rgba(100, 200, 120, 0.45)'
+                                  : isClaiming
+                                    ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 4px rgba(100, 200, 120, 0.25), 0 0 24px 4px rgba(100, 200, 120, 0.4)'
+                                    : 'inset 0 1px 0 rgba(255,255,255,0.7)',
+                                transition: 'all 0.5s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                              }}>
+                              {isClaiming && (
+                                <span style={{
+                                  position: 'absolute', inset: 0,
+                                  background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)',
+                                  backgroundSize: '200% 100%',
+                                  animation: 'shimmer 1.2s linear infinite',
+                                  pointerEvents: 'none',
+                                }}/>
+                              )}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+                                {isClaimed ? <IconCheck size={14}/> : isClaiming ? <IconSpark size={14}/> : <IconWallet size={14} style={{ color: '#1d4d2d' }}/>}
+                                <span style={{ fontSize: 13, fontWeight: 600 }}>
+                                  {isClaimed ? 'Escrow claimed' : isClaiming ? 'Claiming…' : 'Claim escrow'}
+                                </span>
+                              </div>
+                              <span style={{ fontSize: 11, color: isClaimed ? 'rgba(14, 32, 16, 0.65)' : 'var(--ink-3)', position: 'relative' }}>
+                                {isClaimed ? `$${activePO.total} released to your wallet` : isClaiming ? 'Settling on-chain…' : `Release $${activePO.total} on delivery`}
+                              </span>
+                            </button>
+                          );
+                        })()}
+
+                        {canGetAdvance && (
+                          <button type="button" className="action-btn"
+                            onClick={async () => {
+                              if (!activePO) return;
+                              if ((financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId)) {
+                                setFinancingDrawerForPO(null);
+                                return;
+                              }
+                              setFinancingModalPO(activePO);
+                              setFinancingAdvanceRate(0.80);
+                              setFinancingLenderAddress('');
+                              setFinancingEscrowDetails(null);
+                              setFinancingDrawerForPO({ tab: 'action', poId: activePO.issuanceId });
+                              setFinancingEscrowLoading(true);
+                              try {
+                                const details = await fetchEscrowDetails(activePO.buyerAddress, activePO.escrowSequence!);
+                                setFinancingEscrowDetails(details);
+                              } catch (e) {
+                                console.warn('[FinancingDrawer] Could not fetch escrow details:', e);
+                              } finally {
+                                setFinancingEscrowLoading(false);
+                              }
+                            }}
+                            style={{
+                              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                              padding: '14px 16px', borderRadius: 12,
+                              border: (financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? '1px solid oklch(0.55 0.16 240 / 0.5)' : '1px solid rgba(120, 140, 200, 0.3)',
+                              background: (financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId)
+                                ? 'linear-gradient(180deg, oklch(0.78 0.13 240), oklch(0.6 0.17 240))'
+                                : 'linear-gradient(180deg, oklch(0.92 0.08 240), oklch(0.82 0.12 240))',
+                              color: (financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? '#f9efd2' : 'var(--ink)',
+                              cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                            }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <IconSpark size={14} style={{ color: (financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? '#f9efd2' : '#1a4080' }}/>
+                              <span style={{ fontSize: 13, fontWeight: 600 }}>{(financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? 'Hide advance form' : 'Request advance'}</span>
+                            </div>
+                            <span style={{ fontSize: 11, color: (financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? 'rgba(249, 239, 210, 0.8)' : 'var(--ink-3)' }}>
+                              {(financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? 'Click to collapse' : 'Request working capital early'}
+                            </span>
+                          </button>
+                        )}
+
+                        {canDisburse && (
+                          <button type="button" className="action-btn"
+                            onClick={async () => {
+                              if (!activePO || !financingState) return;
+                              if (disbursing) return;
+                              await disburseAdvance(financingState);
+                              clearSelection();
+                            }}
+                            disabled={disbursing}
+                            style={{
+                              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                              padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(80, 140, 220, 0.3)',
+                              background: disbursing
+                                ? 'linear-gradient(180deg, oklch(0.88 0.04 240), oklch(0.82 0.06 240))'
+                                : 'linear-gradient(180deg, oklch(0.9 0.09 240), oklch(0.78 0.14 240))',
+                              cursor: disbursing ? 'wait' : 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                              opacity: disbursing ? 0.7 : 1,
+                            }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                              <IconSend size={14} style={{ color: '#1a4080' }}/>
+                              <span style={{ fontSize: 13, fontWeight: 600 }}>
+                                {disbursing ? 'Disbursing…' : 'Disburse advance'}
+                              </span>
+                            </div>
+                            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                              {disbursing ? 'On-chain transfer in progress' : 'Release approved funds to your wallet'}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Inline Get Advance drawer */}
+
+                    {activePO && renderFinancingDrawer(activePO, 'action')}
+
+                    {renderActionDetailTabs(vendorScpoActionViewedPO, vendorScpoActionPoLoadError, activePO, vendorActionDetailTab, setVendorActionDetailTab)}
+
+                  </Card>
+                )}
+              </div>
+            </Page>
+          );
+        })()}
+            {/* Phase 6B — Financing Request Modal */}
+        {activeTab === 'inventoryCatalog' && mode === 'vendor' && (() => {
+          const setInvTabPersist = (t: 'stock' | 'intake') => setInvTab(t);
+
+          // ── STOCK DATA ────────────────────────────────────────────────
+          const v2 = vendorInventoryV2 || [];
+          const superseded = vendorInventorySuperseded || [];
+          // Combined lookup — ancestors live in superseded, heads live in v2.
+          // Need both to (a) walk history back past the current head, and
+          // (b) render detail when the user clicks a historical version.
+          const allInventoryItems = [...v2, ...superseded];
+          const allInventoryById = new Map<string, any>();
+          allInventoryItems.forEach(i => { if (i?.nftId) allInventoryById.set(i.nftId, i); });
+
+          // An item is "current" if nothing else in v2 claims it as parent.
+          // (Superseded items may have stale or external parent pointers — don't
+          // let those filter out live heads. History walk below still uses the
+          // combined map, so ancestors remain reachable.)
+          const childIds = new Set<string>();
+          v2.forEach(i => { if (i.parentNFTId && i.parentNFTId !== '') childIds.add(i.parentNFTId); });
+          const currentItems = v2.filter(i => !childIds.has(i.nftId));
+
+          const getItemHistory = (item: any) => {
+            const history: any[] = [];
+            let cursor = item?.parentNFTId && item.parentNFTId !== ''
+              ? allInventoryById.get(item.parentNFTId)
+              : undefined;
+            let depth = 0;
+            while (cursor && depth < 15) {
+              history.push(cursor);
+              cursor = cursor.parentNFTId && cursor.parentNFTId !== ''
+                ? allInventoryById.get(cursor.parentNFTId)
+                : undefined;
+              depth++;
+            }
+            return history.reverse();
+          };
+          const versionOfItem = (item: any) => {
+            if (!item) return 1;
+            return getItemHistory(item).length + 1;
+          };
+
+          // For any item (current or superseded), return the current head of its chain.
+          const findChainTop = (item: any) => {
+            if (!item) return null;
+            if (currentItems.some(c => c.nftId === item.nftId)) return item;
+            return currentItems.find(c => getItemHistory(c).some(h => h.nftId === item.nftId)) || null;
+          };
+
+          const uniqueDepts = Array.from(new Set(currentItems.map(i => i.department).filter(Boolean)));
+          const uniqueCats  = Array.from(new Set(currentItems.map(i => i.category).filter(Boolean)));
+          const depts = ['All', ...uniqueDepts];
+          const cats  = ['All', ...uniqueCats];
+          const statuses = ['All', 'Active', 'Out of Stock', 'Discontinued'];
+
+          const statusToDisplay = (s: string) => {
+            if (s === 'active') return 'Active';
+            if (s === 'out_of_stock') return 'Out of Stock';
+            if (s === 'discontinued') return 'Discontinued';
+            return s;
+          };
+
+          const q = invStockQuery.trim().toLowerCase();
+          const filteredItems = currentItems.filter(i => {
+            if (q && !((i.name || '').toLowerCase().includes(q)
+                    || (i.partNumber || '').toLowerCase().includes(q)
+                    || (i.nftId || '').toLowerCase().includes(q))) return false;
+            if (invStockDept !== 'All' && i.department !== invStockDept) return false;
+            if (invStockCategory !== 'All' && i.category !== invStockCategory) return false;
+            if (invStockStatus !== 'All' && statusToDisplay(i.status) !== invStockStatus) return false;
+            return true;
+          });
+
+          // selectedItem can be current OR superseded — use the combined map so
+          // historical rows render when the user clicks them in the version panel.
+          const selectedItem = invStockSelectedNftId
+            ? (allInventoryById.get(invStockSelectedNftId) || null)
+            : null;
+          // Chain head is anchored to the current version — panel stays open
+          // even while viewing an ancestor, mirroring Overview's anchor pattern.
+          const chainTop = findChainTop(selectedItem);
+          const selectedHistory = chainTop ? getItemHistory(chainTop) : [];
+          const selectedVersionNum = selectedItem ? versionOfItem(selectedItem) : 1;
+
+          const totalSkus   = currentItems.length;
+          const activeCount = currentItems.filter(i => i.status === 'active').length;
+          const totalUnits  = currentItems.reduce((s, i) => s + (Number(i.quantityOnHand) || 0), 0);
+          const invValue    = currentItems.reduce((s, i) => s + ((Number(i.quantityOnHand) || 0) * (Number(i.listPrice) || 0)), 0);
+
+          const statusTone = (s: string): 'green' | 'gold' | 'neutral' | 'red' => {
+            if (s === 'active') return 'green';
+            if (s === 'out_of_stock') return 'gold';
+            if (s === 'discontinued') return 'neutral';
+            return 'neutral';
+          };
+
+          // Vendor-assigned SKU (from memo `sk`) preferred; fall back to NFT-derived
+          // tag for items minted before SKU support shipped.
+          const skuTag = (item: any) => {
+            if (item?.sku && String(item.sku).trim()) return String(item.sku).trim();
+            return item?.nftId ? item.nftId.slice(-8).toUpperCase() : '';
+          };
+
+          const receiveReady = invStockReceiveQty && Number(invStockReceiveQty) > 0;
+
+          return (
+            <Page
+              tag="Sell · Inventory"
+              title={invTab === 'stock' ? 'Stock ledger & receipts' : 'Intake & onboarding'}
+              subtitle={invTab === 'stock'
+                ? 'Every part, revision, and receipt — searchable, versioned, on-chain attested.'
+                : 'Bring parts into the ledger — bulk upload, intake from XRPL, or register by hand.'}
+              actions={
+                <div className="glass-strong" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', padding: 4, borderRadius: 14, position: 'relative' }}>
+                  <div style={{
+                    position: 'absolute', top: 4, bottom: 4, left: 4,
+                    width: 'calc((100% - 8px) / 2)',
+                    transform: `translateX(calc(${invTab === 'stock' ? 0 : 1} * 100%))`,
+                    background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                    borderRadius: 10,
+                    transition: 'transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.5)',
+                  }}/>
+                  {[{ k: 'stock' as const, l: 'Stock' }, { k: 'intake' as const, l: 'Intake' }].map(t => (
+                    <button key={t.k} type="button" onClick={() => setInvTabPersist(t.k)}
+                      style={{
+                        position: 'relative', zIndex: 1, padding: '8px 18px', minWidth: 110,
+                        fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
+                        background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                        color: invTab === t.k ? '#2a1f08' : 'var(--ink-3)',
+                        textAlign: 'center',
+                      }}>{t.l}</button>
+                  ))}
+                </div>
+              }>
+
+              {invTab === 'stock' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+                  {/* Summary cards */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                    <Card>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>SKUs on hand</div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>{totalSkus}</div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{activeCount} active</div>
+                      </div>
+                    </Card>
+                    <Card>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Units on hand</div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>{formatNumber(totalUnits, { decimals: 0 })}</div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>across all parts</div>
+                      </div>
+                    </Card>
+                    <Card>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Inventory value</div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>${formatNumber(invValue, { decimals: 0 })}</div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>at list price</div>
+                      </div>
+                    </Card>
+                    <Card>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Categories</div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>{uniqueCats.length}</div>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
+                          {uniqueDepts.length} department{uniqueDepts.length === 1 ? '' : 's'}
+                        </div>
+                      </div>
+                    </Card>
+                  </div>
+
+                  {/* Stock ledger */}
+                  <Card layered label={<>
+                      <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                        {filteredItems.length} of {currentItems.length} parts
+                      </div>
+                      <div style={{ fontSize: 18, fontWeight: 600 }}>Stock ledger</div>
+                    </>}>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
+                      <div className="glass etched" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 10 }}>
+                        <IconSearch size={13} style={{ color: 'var(--ink-3)' }}/>
+                        <input value={invStockQuery} onChange={(e) => setInvStockQuery(e.target.value)}
+                          placeholder="Search name, SKU, part #…"
+                          style={{ flex: 1, border: 0, background: 'transparent', outline: 'none', fontSize: 13, fontFamily: 'inherit' }}/>
+                        {invStockQuery && (
+                          <button type="button" onClick={() => setInvStockQuery('')}
+                            style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 2 }}>
+                            <IconX size={12}/>
+                          </button>
+                        )}
+                      </div>
+                      {[
+                        { label: 'Dept', value: invStockDept, setter: setInvStockDept, opts: depts },
+                        { label: 'Category', value: invStockCategory, setter: setInvStockCategory, opts: cats },
+                        { label: 'Status', value: invStockStatus, setter: setInvStockStatus, opts: statuses },
+                      ].map(filter => (
+                        <div key={filter.label} className="glass etched" style={{ padding: '6px 10px', borderRadius: 10 }}>
+                          <div className="mono" style={{ fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{filter.label}</div>
+                          <select value={filter.value} onChange={(e) => filter.setter(e.target.value)}
+                            style={{
+                              width: '100%', border: 0, background: 'transparent', outline: 'none',
+                              fontSize: 12, fontWeight: 500, color: 'var(--ink)', fontFamily: 'inherit',
+                              padding: '2px 0', marginTop: 2, cursor: 'pointer',
+                            }}>
+                            {filter.opts.map(o => <option key={o} value={o}>{o}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ maxHeight: 420, overflow: 'auto', borderRadius: 10, border: '1px solid rgba(180, 140, 60, 0.12)' }}>
+                      <div>
+                        <div style={{
+                          display: 'grid',
+                          gridTemplateColumns: '82px 92px minmax(0, 1.5fr) 76px 80px 88px 92px 68px 96px 58px 78px',
+                          gap: 10, padding: '10px 14px',
+                          borderBottom: '1px solid rgba(180, 140, 60, 0.15)',
+                          position: 'sticky', top: 0, zIndex: 2,
+                          background: 'rgba(255, 248, 222, 0.95)',
+                          backdropFilter: 'blur(8px)',
+                          fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--ink-3)',
+                          whiteSpace: 'nowrap',
+                        }} className="mono">
+                          <span>SKU</span>
+                          <span>Part #</span>
+                          <span>Item name</span>
+                          <span style={{ textAlign: 'right' }}>Unit cost</span>
+                          <span style={{ textAlign: 'right' }}>List price</span>
+                          <span>Category</span>
+                          <span>Department</span>
+                          <span style={{ textAlign: 'right' }}>On hand</span>
+                          <span>Status</span>
+                          <span>Version</span>
+                          <span>Added</span>
+                        </div>
+                        {filteredItems.length === 0 ? (
+                          <div style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--ink-3)' }}>
+                            No parts match your filters.
+                          </div>
+                        ) : filteredItems.map((r, idx) => {
+                          const isActiveRow = invStockSelectedNftId === r.nftId;
+                          const added = r.dateAdded ? String(r.dateAdded).slice(0, 10) : '—';
+                          return (
+                            <button key={r.nftId} type="button"
+                              onClick={() => { setInvStockSelectedNftId(r.nftId); setInvStockVersionsOpen(false); setInvStockReceiveOpen(false); setInvStockDeleteConfirm(false); }}
+                              onMouseEnter={(e) => { if (!isActiveRow) e.currentTarget.style.background = 'rgba(255, 248, 222, 0.5)'; }}
+                              onMouseLeave={(e) => { if (!isActiveRow) e.currentTarget.style.background = 'transparent'; }}
+                              style={{
+                                width: '100%', textAlign: 'left',
+                                display: 'grid',
+                                gridTemplateColumns: '82px 92px minmax(0, 1.5fr) 76px 80px 88px 92px 68px 96px 58px 78px',
+                                gap: 10, padding: '11px 14px', alignItems: 'center',
+                                background: isActiveRow ? 'rgba(255, 232, 170, 0.55)' : 'transparent',
+                                border: 0,
+                                borderLeft: isActiveRow ? '3px solid oklch(0.78 0.14 78)' : '3px solid transparent',
+                                borderBottom: '1px solid rgba(180, 140, 60, 0.08)',
+                                transition: 'background 0.12s ease', fontSize: 12,
+                                cursor: 'pointer', fontFamily: 'inherit',
+                              }}>
+                              <span className="mono" style={{ fontSize: 11, fontWeight: isActiveRow ? 600 : 500 }}>{skuTag(r) || '—'}</span>
+                              <span className="mono" style={{ fontSize: 11, color: 'var(--ink-2)' }}>{r.partNumber || '—'}</span>
+                              <span title={r.name || ''} style={{ fontSize: 12.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name || '—'}</span>
+                              <span className="mono" style={{ fontSize: 12, textAlign: 'right' }}>${Number(r.unitCost || 0).toFixed(2)}</span>
+                              <span className="mono" style={{ fontSize: 12, textAlign: 'right' }}>${Number(r.listPrice || 0).toFixed(2)}</span>
+                              <span style={{ fontSize: 11.5, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.category || '—'}</span>
+                              <span style={{ fontSize: 11, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.department || '—'}</span>
+                              <span className="mono" style={{ fontSize: 12, textAlign: 'right', fontWeight: 500 }}>{r.quantityOnHand || 0}</span>
+                              <span><Chip tone={statusTone(r.status)}>{statusToDisplay(r.status)}</Chip></span>
+                              <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>v{versionOfItem(r)}</span>
+                              <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{added}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </Card>
+
+                  {/* Selected part detail */}
+                  {selectedItem && (
+                    <Card layered label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                          Selected part · {skuTag(selectedItem)}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                          <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em' }}>{selectedItem.name || 'Unnamed part'}</div>
+                          <Chip tone={statusTone(selectedItem.status)}>{statusToDisplay(selectedItem.status)}</Chip>
+                        </div>
+                      </>}
+                      actions={
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button type="button"
+                            onClick={() => selectedHistory.length > 0 && setInvStockVersionsOpen(!invStockVersionsOpen)}
+                            disabled={selectedHistory.length === 0}
+                            title={selectedHistory.length === 0 ? 'First version — no history yet' : `${invStockVersionsOpen ? 'Hide' : 'Show'} previous versions`}
+                            style={{
+                              padding: '7px 12px', borderRadius: 9, fontSize: 12, fontWeight: 600,
+                              background: selectedHistory.length > 0
+                                ? (invStockVersionsOpen ? 'rgba(42, 31, 8, 0.9)' : 'rgba(180, 140, 60, 0.12)')
+                                : 'rgba(180, 140, 60, 0.06)',
+                              color: selectedHistory.length > 0
+                                ? (invStockVersionsOpen ? '#f9efd2' : 'var(--ink-2)')
+                                : 'var(--ink-3)',
+                              border: '1px solid rgba(180, 140, 60, 0.2)',
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              cursor: selectedHistory.length > 0 ? 'pointer' : 'default',
+                              fontFamily: 'inherit',
+                            }}>
+                            <IconRefresh size={12}/> Version history {selectedHistory.length > 0 && `(${selectedHistory.length})`}
+                          </button>
+                          <button type="button"
+                            onClick={async () => {
+                              if (invStockEditOpen) { setInvStockEditOpen(false); return; }
+                              setInvStockReceiveOpen(false);
+                              setInvStockDeleteConfirm(false);
+                              setInvStockVersionsOpen(false);
+                              const tgt = chainTop || selectedItem;
+                              if (!tgt) return;
+                              if (!vendorProfile.seed) { alert('Vendor wallet seed required to load details.'); return; }
+                              try {
+                                setEditPricingResult('');
+                                const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
+                                const doc = tgt.vendorUri ? await fetchVendorInventoryDoc(tgt.vendorUri, wallet) : null;
+                                setInventoryDetailItem(tgt);
+                                setInventoryDetailDoc(doc);
+                                // Populate all edit* state from item + doc (same populate block
+                                // as the legacy detail modal — kept identical so saveInventoryVersionEdit
+                                // sees the same shape regardless of entry point).
+                                setEditName(tgt.name || '');
+                                setEditPartNumber(tgt.partNumber || '');
+                                setEditShortDesc(tgt.shortDescription || '');
+                                setEditFullDesc((doc as any)?.fullDescription || '');
+                                setEditCategory(tgt.category || '');
+                                setEditFamilyCode(tgt.familyCode || '');
+                                setEditBrand((tgt as any).productBrand || '');
+                                setEditWeight(tgt.weight || '');
+                                setEditDepartment(tgt.department || '');
+                                setEditPlant(tgt.productionPlant || '');
+                                setEditCompetitiveFlag((tgt as any).competitiveFlag || false);
+                                setEditStatus((tgt.status as any) || 'active');
+                                setEditUnitPrice((doc as any)?.pricing?.listPrice || String(tgt.listPrice || ''));
+                                setEditPriceCurrency((doc as any)?.pricing?.currency || tgt.pricingCurrency || 'USD');
+                                setEditEffectiveDate((doc as any)?.pricing?.effectiveDate || '');
+                                setEditExpiresDate((doc as any)?.pricing?.expiresDate || '');
+                                const tiers = (doc as any)?.pricing?.volumeTiers || [];
+                                setEditUseVolumeTiers(tiers.length > 0);
+                                setEditVolumeTiers(tiers.length > 0
+                                  ? tiers.map((t: any, i: number) => ({ minQty: String(t.minQty), maxQty: i < tiers.length - 1 ? '' : '', price: t.price }))
+                                  : [{ minQty: '1', maxQty: '', price: '' }, { minQty: '', maxQty: '', price: '' }]
+                                );
+                                setEditUnitCost((doc as any)?.cost?.unitCost || String(tgt.unitCost || ''));
+                                setEditCostCurrency((doc as any)?.cost?.currency || 'USD');
+                                setEditSupplierCode((doc as any)?.supplierCode || '');
+                                setEditSupplierName((doc as any)?.supplierName || '');
+                                setInvStockEditOpen(true);
+                              } catch (err: any) {
+                                alert(`Failed to load item details: ${err.message}`);
+                              }
+                            }}
+                            style={{
+                              padding: '7px 12px', borderRadius: 9, fontSize: 12, fontWeight: 600,
+                              background: invStockEditOpen
+                                ? 'linear-gradient(180deg, oklch(0.74 0.13 230), oklch(0.58 0.16 235))'
+                                : 'rgba(210, 225, 250, 0.5)',
+                              color: invStockEditOpen ? '#fff' : 'oklch(0.42 0.16 235)',
+                              border: '1px solid ' + (invStockEditOpen ? 'oklch(0.55 0.18 235 / 0.5)' : 'oklch(0.6 0.16 235 / 0.28)'),
+                              boxShadow: invStockEditOpen ? 'inset 0 1px 0 rgba(255,255,255,0.5), 0 4px 12px -4px oklch(0.5 0.18 235 / 0.4)' : 'none',
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              transition: 'all 0.2s ease', cursor: 'pointer', fontFamily: 'inherit',
+                            }}>
+                            ✎ Edit
+                          </button>
+                          <button type="button"
+                            onClick={() => {
+                              setInvStockReceiveOpen(!invStockReceiveOpen);
+                              setInvStockDeleteConfirm(false);
+                              setReceiveModalItem(chainTop || selectedItem);
+                              setReceiveQty('');
+                              setInvStockReceiveQty('');
+                              setInvStockReceiveRef('');
+                              setReceiveResult('');
+                            }}
+                            style={{
+                              padding: '7px 12px', borderRadius: 9, fontSize: 12, fontWeight: 600,
+                              background: invStockReceiveOpen
+                                ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.72 0.14 62))'
+                                : 'rgba(240, 225, 175, 0.55)',
+                              color: invStockReceiveOpen ? '#1a1505' : 'oklch(0.38 0.12 70)',
+                              border: '1px solid ' + (invStockReceiveOpen ? 'oklch(0.65 0.16 70 / 0.45)' : 'oklch(0.7 0.14 70 / 0.3)'),
+                              boxShadow: invStockReceiveOpen ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 12px -4px rgba(200,150,50,0.35)' : 'none',
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              transition: 'all 0.2s ease', cursor: 'pointer', fontFamily: 'inherit',
+                            }}>
+                            <IconPlus size={12}/> Receive
+                          </button>
+                          <button type="button"
+                            onClick={async () => {
+                              if (!invStockDeleteConfirm) {
+                                setInvStockDeleteConfirm(true);
+                                setInvStockReceiveOpen(false);
+                                return;
+                              }
+                              await quickUpdateItemStatus(selectedItem, 'discontinued');
+                              setInvStockDeleteConfirm(false);
+                            }}
+                            style={{
+                              padding: '7px 12px', borderRadius: 9, fontSize: 12, fontWeight: 600,
+                              background: invStockDeleteConfirm
+                                ? 'linear-gradient(180deg, oklch(0.78 0.18 28), oklch(0.58 0.2 28))'
+                                : 'rgba(255, 230, 225, 0.5)',
+                              color: invStockDeleteConfirm ? '#fff' : 'oklch(0.45 0.18 28)',
+                              border: '1px solid ' + (invStockDeleteConfirm ? 'oklch(0.55 0.2 28 / 0.5)' : 'oklch(0.6 0.16 28 / 0.3)'),
+                              boxShadow: invStockDeleteConfirm ? '0 0 24px -4px oklch(0.62 0.22 28 / 0.5)' : 'none',
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              transition: 'all 0.2s ease', cursor: 'pointer', fontFamily: 'inherit',
+                            }}>
+                            <IconX size={12}/> {invStockDeleteConfirm ? 'Confirm delete' : 'Delete Inventory'}
+                          </button>
+                        </div>
+                      }>
+
+                      {/* Inline Receive form */}
+                      {invStockReceiveOpen && (
+                        <div className="etched rise" style={{
+                          padding: 14, borderRadius: 12, marginBottom: 16,
+                          background: 'linear-gradient(180deg, rgba(255, 248, 220, 0.6), rgba(250, 238, 200, 0.4))',
+                          border: '1px solid oklch(0.7 0.14 70 / 0.25)',
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+                              Receive new inventory
+                            </div>
+                            <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                              On hand: <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{selectedItem.quantityOnHand || 0}</span> {selectedItem.unit || 'units'}
+                            </div>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '180px 1fr auto', gap: 10, alignItems: 'end' }}>
+                            <div>
+                              <label className="mono" style={{ display: 'block', fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 5 }}>
+                                Quantity received
+                              </label>
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                <input type="number" value={invStockReceiveQty}
+                                  onChange={(e) => { setInvStockReceiveQty(e.target.value); setReceiveQty(e.target.value); }}
+                                  placeholder="0" autoFocus
+                                  className="mono"
+                                  style={{
+                                    width: '100%', padding: '9px 10px', borderRadius: 9,
+                                    border: '1px solid rgba(180, 140, 60, 0.22)',
+                                    background: 'rgba(255, 253, 240, 0.75)',
+                                    fontSize: 15, fontWeight: 500, outline: 'none',
+                                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)', boxSizing: 'border-box',
+                                  }}/>
+                                <div style={{
+                                  padding: '9px 10px', borderRadius: 9,
+                                  background: 'rgba(180, 140, 60, 0.1)',
+                                  fontSize: 11, fontWeight: 500, color: 'var(--ink-2)',
+                                  display: 'flex', alignItems: 'center',
+                                }}>{selectedItem.unit || 'units'}</div>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="mono" style={{ display: 'block', fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 5 }}>
+                                Lot / PO reference <span style={{ textTransform: 'none', letterSpacing: 0, opacity: 0.6 }}>· optional</span>
+                              </label>
+                              <input value={invStockReceiveRef} onChange={(e) => setInvStockReceiveRef(e.target.value)}
+                                placeholder="PO-24-0887 / LOT-4421"
+                                className="mono"
+                                style={{
+                                  width: '100%', padding: '9px 10px', borderRadius: 9,
+                                  border: '1px solid rgba(180, 140, 60, 0.22)',
+                                  background: 'rgba(255, 253, 240, 0.75)',
+                                  fontSize: 12, outline: 'none',
+                                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)', boxSizing: 'border-box',
+                                }}/>
+                            </div>
+                            {(() => {
+                              const isSubmittingNow = receiveLoading;
+                              const isSuccessNow = !receiveLoading && typeof receiveResult === 'string' && receiveResult.startsWith('✅');
+                              const btnLabel = isSuccessNow
+                                ? '✓ Received'
+                                : isSubmittingNow
+                                  ? (receiveResult && receiveResult.replace('⏳ ', '')) || 'Submitting…'
+                                  : 'Receive';
+                              return (
+                                <button type="button" disabled={!receiveReady || isSubmittingNow || isSuccessNow}
+                                  onClick={async () => {
+                                    if (!receiveReady || receiveLoading) return;
+                                    await receiveInventory();
+                                  }}
+                                  style={{
+                                    padding: '10px 16px', borderRadius: 10, minWidth: 148,
+                                    fontSize: 12.5, fontWeight: 600, border: 0,
+                                    background: isSuccessNow
+                                      ? 'linear-gradient(180deg, oklch(0.88 0.16 148), oklch(0.68 0.18 148))'
+                                      : isSubmittingNow
+                                        ? 'linear-gradient(90deg, oklch(0.92 0.1 86) 0%, oklch(0.82 0.13 72) 50%, oklch(0.92 0.1 86) 100%)'
+                                        : receiveReady
+                                          ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.72 0.14 62))'
+                                          : 'rgba(180, 140, 60, 0.15)',
+                                    backgroundSize: isSubmittingNow ? '200% 100%' : 'auto',
+                                    animation: isSubmittingNow ? 'shimmer 1.4s linear infinite' : 'none',
+                                    color: isSuccessNow ? '#07240f' : (receiveReady || isSubmittingNow) ? '#1a1505' : 'var(--ink-3)',
+                                    cursor: (!receiveReady || isSubmittingNow || isSuccessNow) ? 'default' : 'pointer',
+                                    boxShadow: isSuccessNow
+                                      ? '0 0 28px -4px oklch(0.7 0.2 148 / 0.55), inset 0 1px 0 rgba(255,255,255,0.5)'
+                                      : receiveReady && !isSubmittingNow
+                                        ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 12px -4px rgba(200,150,50,0.4)'
+                                        : 'none',
+                                    fontFamily: 'inherit',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                    transition: 'box-shadow 0.25s ease, background 0.25s ease',
+                                  }}>
+                                  {isSuccessNow || isSubmittingNow ? null : <IconCheck size={13}/>}
+                                  <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{btnLabel}</span>
+                                </button>
+                              );
+                            })()}
+                          </div>
+                          {(() => {
+                            const showErr = !receiveLoading && typeof receiveResult === 'string' && receiveResult.startsWith('❌');
+                            if (!showErr) return null;
+                            return (
+                              <div style={{
+                                marginTop: 10, padding: '8px 12px', borderRadius: 8,
+                                background: 'rgba(255, 230, 225, 0.5)',
+                                border: '1px solid oklch(0.6 0.16 28 / 0.3)',
+                                color: 'oklch(0.4 0.18 28)',
+                                fontSize: 11.5, lineHeight: 1.4,
+                              }}>
+                                {receiveResult}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+
+                      {/* Inline Edit drawer */}
+                      {invStockEditOpen && selectedItem && (() => {
+                        const labelStyle: React.CSSProperties = {
+                          display: 'block', fontSize: 9.5, letterSpacing: '0.08em',
+                          textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 5,
+                          fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                        };
+                        const inputStyle: React.CSSProperties = {
+                          width: '100%', padding: '9px 10px', borderRadius: 9,
+                          border: '1px solid rgba(180, 140, 60, 0.22)',
+                          background: 'rgba(255, 253, 240, 0.75)',
+                          fontSize: 13, fontWeight: 500, outline: 'none',
+                          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                          boxSizing: 'border-box', fontFamily: 'inherit',
+                        };
+                        const monoInputStyle: React.CSSProperties = { ...inputStyle, fontFamily: 'JetBrains Mono, ui-monospace, monospace' };
+                        const isSubmittingNow = editPricingSaving;
+                        const isSuccessNow = !editPricingSaving && typeof editPricingResult === 'string' && editPricingResult.startsWith('✅');
+                        const showErr = !editPricingSaving && typeof editPricingResult === 'string' && editPricingResult.startsWith('❌');
+                        const atts = (inventoryDetailDoc as any)?.attachments || {};
+                        const docCount = Object.keys(atts).filter(k => atts[k]).length;
+                        const btnLabel = isSuccessNow
+                          ? '✓ Version minted'
+                          : isSubmittingNow
+                            ? (editPricingResult || 'Minting new version…')
+                            : 'Save changes';
+                        return (
+                          <div className="etched rise" style={{
+                            padding: 16, borderRadius: 12, marginBottom: 16,
+                            background: 'linear-gradient(180deg, rgba(255, 248, 220, 0.65), rgba(250, 238, 200, 0.45))',
+                            border: '1px solid oklch(0.7 0.14 70 / 0.25)',
+                          }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 14 }}>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+                                Edit inventory item
+                              </div>
+                              <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                                Saving mints <span style={{ color: 'var(--ink)', fontWeight: 600 }}>v{selectedVersionNum + 1}</span> · old version preserved as history
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                              <div>
+                                <label style={labelStyle}>Status</label>
+                                <select value={editStatus} onChange={e => setEditStatus(e.target.value as ItemStatus)} style={inputStyle}>
+                                  <option value="active">Active</option>
+                                  <option value="out_of_stock">Out of Stock</option>
+                                  <option value="discontinued">Discontinued</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Part #</label>
+                                <input value={editPartNumber} onChange={e => setEditPartNumber(e.target.value)} style={monoInputStyle}/>
+                              </div>
+                            </div>
+                            <div style={{ marginBottom: 10 }}>
+                              <label style={labelStyle}>Name</label>
+                              <input value={editName} onChange={e => setEditName(e.target.value)} style={inputStyle}/>
+                            </div>
+                            <div style={{ marginBottom: 10 }}>
+                              <label style={labelStyle}>Description · up to 60 chars</label>
+                              <input value={editShortDesc} onChange={e => setEditShortDesc(e.target.value.substring(0, 60))} style={inputStyle}/>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                              <div>
+                                <label style={labelStyle}>Category</label>
+                                <input value={editCategory} onChange={e => setEditCategory(e.target.value)} style={inputStyle}/>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Department</label>
+                                <input value={editDepartment} onChange={e => setEditDepartment(e.target.value)} style={inputStyle}/>
+                              </div>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                              <div>
+                                <label style={labelStyle}>Unit cost (USD)</label>
+                                <input type="number" step="0.01" value={editUnitCost} onChange={e => setEditUnitCost(e.target.value)} style={monoInputStyle}/>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>List price (USD)</label>
+                                <input type="number" step="0.01" value={editUnitPrice} onChange={e => setEditUnitPrice(e.target.value)} style={monoInputStyle}/>
+                              </div>
+                            </div>
+
+                            {/* Documents placeholder */}
+                            <div style={{
+                              padding: '8px 12px', borderRadius: 8, marginBottom: 14,
+                              background: 'rgba(180, 140, 60, 0.08)',
+                              border: '1px dashed rgba(180, 140, 60, 0.22)',
+                              display: 'flex', alignItems: 'center', gap: 8,
+                              fontSize: 11, color: 'var(--ink-3)',
+                            }}>
+                              <span style={{ fontSize: 13 }}>📎</span>
+                              <span>
+                                {docCount === 0 ? 'No documents attached' : `${docCount} document${docCount > 1 ? 's' : ''} attached`}
+                                {' · editing documents coming in a future session'}
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                              <button type="button"
+                                onClick={() => { setInvStockEditOpen(false); setEditPricingResult(''); }}
+                                disabled={editPricingSaving}
+                                style={{
+                                  padding: '10px 16px', borderRadius: 10,
+                                  fontSize: 12.5, fontWeight: 600, border: 0,
+                                  background: 'rgba(180, 140, 60, 0.12)',
+                                  color: 'var(--ink-2)',
+                                  cursor: editPricingSaving ? 'not-allowed' : 'pointer',
+                                  fontFamily: 'inherit',
+                                  opacity: editPricingSaving ? 0.5 : 1,
+                                }}>
+                                Cancel
+                              </button>
+                              <button type="button" disabled={isSubmittingNow || isSuccessNow}
+                                onClick={async () => { if (editPricingSaving) return; await saveInventoryVersionEdit(); }}
+                                style={{
+                                  padding: '10px 16px', borderRadius: 10, minWidth: 200,
+                                  fontSize: 12.5, fontWeight: 600, border: 0,
+                                  background: isSuccessNow
+                                    ? 'linear-gradient(180deg, oklch(0.88 0.16 148), oklch(0.68 0.18 148))'
+                                    : isSubmittingNow
+                                      ? 'linear-gradient(90deg, oklch(0.92 0.1 86) 0%, oklch(0.82 0.13 72) 50%, oklch(0.92 0.1 86) 100%)'
+                                      : 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.72 0.14 62))',
+                                  backgroundSize: isSubmittingNow ? '200% 100%' : 'auto',
+                                  animation: isSubmittingNow ? 'shimmer 1.4s linear infinite' : 'none',
+                                  color: isSuccessNow ? '#07240f' : '#1a1505',
+                                  cursor: (isSubmittingNow || isSuccessNow) ? 'default' : 'pointer',
+                                  boxShadow: isSuccessNow
+                                    ? '0 0 28px -4px oklch(0.7 0.2 148 / 0.55), inset 0 1px 0 rgba(255,255,255,0.5)'
+                                    : !isSubmittingNow
+                                      ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 12px -4px rgba(200,150,50,0.4)'
+                                      : 'none',
+                                  fontFamily: 'inherit',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                  transition: 'box-shadow 0.25s ease, background 0.25s ease',
+                                }}>
+                                {!isSubmittingNow && !isSuccessNow && <IconCheck size={13}/>}
+                                <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{btnLabel}</span>
+                              </button>
+                            </div>
+
+                            {showErr && (
+                              <div style={{
+                                marginTop: 10, padding: '8px 12px', borderRadius: 8,
+                                background: 'rgba(255, 230, 225, 0.5)',
+                                border: '1px solid oklch(0.6 0.16 28 / 0.3)',
+                                color: 'oklch(0.4 0.18 28)',
+                                fontSize: 11.5, lineHeight: 1.4, whiteSpace: 'pre-wrap',
+                              }}>
+                                {editPricingResult}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      {/* 4-field grid: Part # / Category / Department / Unit */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
+                        {[
+                          { k: 'Part #', v: selectedItem.partNumber || '—', mono: true },
+                          { k: 'Category', v: selectedItem.category || '—' },
+                          { k: 'Department', v: selectedItem.department || '—' },
+                          { k: 'Unit', v: selectedItem.unit || '—', mono: true },
+                        ].map(f => (
+                          <div key={f.k} className="etched" style={{ padding: 12, borderRadius: 10 }}>
+                            <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.k}</div>
+                            <div className={f.mono ? 'mono' : ''} style={{ fontSize: 13, fontWeight: 500, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.v}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* 4-field grid: Unit cost / List price / On hand / Inventory value */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
+                        <div className="etched" style={{ padding: 12, borderRadius: 10 }}>
+                          <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Unit cost</div>
+                          <div className="mono" style={{ fontSize: 18, fontWeight: 500, marginTop: 2, lineHeight: 1.2 }}>${Number(selectedItem.unitCost || 0).toFixed(2)}</div>
+                        </div>
+                        <div className="etched" style={{ padding: 12, borderRadius: 10 }}>
+                          <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>List price</div>
+                          <div className="mono" style={{ fontSize: 18, fontWeight: 500, marginTop: 2, lineHeight: 1.2 }}>${Number(selectedItem.listPrice || 0).toFixed(2)}</div>
+                          {Number(selectedItem.listPrice) > Number(selectedItem.unitCost) && Number(selectedItem.listPrice) > 0 && (
+                            <div className="mono" style={{ fontSize: 10, color: 'oklch(0.5 0.14 140)', marginTop: 4 }}>
+                              ▲ {(((Number(selectedItem.listPrice) - Number(selectedItem.unitCost)) / Number(selectedItem.listPrice)) * 100).toFixed(1)}% margin
+                            </div>
                           )}
+                        </div>
+                        <div className="etched" style={{ padding: 12, borderRadius: 10 }}>
+                          <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>On hand</div>
+                          <div className="mono" style={{ fontSize: 18, fontWeight: 500, marginTop: 2, lineHeight: 1.2 }}>{selectedItem.quantityOnHand || 0}</div>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 4 }}>{selectedItem.unit || 'units'}</div>
+                        </div>
+                        <div className="etched" style={{ padding: 12, borderRadius: 10 }}>
+                          <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Inventory value</div>
+                          <div className="mono" style={{ fontSize: 18, fontWeight: 500, marginTop: 2, lineHeight: 1.2 }}>${formatNumber((Number(selectedItem.quantityOnHand) || 0) * (Number(selectedItem.listPrice) || 0), { decimals: 0 })}</div>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 4 }}>at list price</div>
+                        </div>
+                      </div>
+
+                      {selectedItem.shortDescription && (
+                        <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 14 }}>
+                          <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
+                          <div style={{ fontSize: 13, lineHeight: 1.5 }}>{selectedItem.shortDescription}</div>
+                        </div>
+                      )}
+
+                      <div style={{ paddingTop: 12, marginBottom: 14, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
+                        <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+                          On-chain references · v{selectedVersionNum} · added {selectedItem.dateAdded ? String(selectedItem.dateAdded).slice(0, 10) : '—'}
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {[
+                            { label: 'NFT ID', value: selectedItem.nftId, copyable: true },
+                            { label: 'Issuance ID', value: selectedItem.mptIssuanceId, copyable: true },
+                            { label: 'Product image', value: selectedItem.productImageUri, copyable: true },
+                          ].filter(r => r.value).map(r => {
+                            const v = r.value as string;
+                            const truncated = v.length > 22 ? `${v.slice(0, 12)}…${v.slice(-8)}` : v;
+                            return (
+                              <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', minWidth: 0 }}>
+                                <span style={{ minWidth: 100, color: 'var(--ink-3)', fontSize: 10, letterSpacing: '0.05em', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>{r.label}</span>
+                                <span className="mono" style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v}>{truncated}</span>
+                                {r.copyable && (
+                                  <button type="button"
+                                    onClick={(e) => {
+                                      navigator.clipboard?.writeText(v);
+                                      const btn = e.currentTarget;
+                                      const original = btn.textContent;
+                                      btn.textContent = 'Copied';
+                                      setTimeout(() => { btn.textContent = original; }, 1500);
+                                    }}
+                                    style={{
+                                      background: 'transparent',
+                                      border: '1px solid rgba(180, 140, 60, 0.25)',
+                                      borderRadius: 6, padding: '3px 8px',
+                                      cursor: 'pointer', fontSize: 10, fontWeight: 500,
+                                      color: 'var(--ink-2)', fontFamily: 'inherit', minWidth: 54,
+                                    }}>
+                                    Copy
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Version history panel */}
+                      {invStockVersionsOpen && selectedHistory.length > 0 && (
+                        <div className="etched rise" style={{
+                          padding: 16, borderRadius: 12, marginTop: 4,
+                          background: 'rgba(255, 248, 222, 0.4)',
+                        }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                            Previous versions · {selectedHistory.length} superseded
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {selectedHistory.map((hist, i) => {
+                              const isViewingThisVersion = invStockSelectedNftId === hist.nftId;
+                              return (
+                                <button type="button" key={hist.nftId}
+                                  onClick={() => setInvStockSelectedNftId(hist.nftId)}
+                                  style={{
+                                    display: 'grid', gridTemplateColumns: '60px 1fr 90px 100px 100px',
+                                    gap: 12, padding: '10px 12px', borderRadius: 10,
+                                    background: isViewingThisVersion ? 'rgba(255, 248, 220, 0.85)' : 'rgba(255, 255, 255, 0.4)',
+                                    border: isViewingThisVersion ? '1px solid rgba(180, 140, 60, 0.35)' : '1px solid rgba(180, 140, 60, 0.1)',
+                                    borderLeft: isViewingThisVersion ? '3px solid oklch(0.72 0.15 62)' : '1px solid rgba(180, 140, 60, 0.1)',
+                                    alignItems: 'center', fontSize: 12,
+                                    cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                                    transition: 'all 0.15s ease',
+                                  }}
+                                  title="Click to view this version's details">
+                                  <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', fontWeight: 600 }}>v{i + 1}</span>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hist.name || hist.partNumber}</span>
+                                  <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{hist.partNumber || '—'}</span>
+                                  <span className="mono" style={{ fontSize: 11, textAlign: 'right' }}>{hist.quantityOnHand || 0} units</span>
+                                  <span style={{ textAlign: 'right' }}><Chip tone="neutral">superseded</Chip></span>
+                                </button>
+                              );
+                            })}
+                            {selectedItem && (() => {
+                              const latest = currentItems.find(c => {
+                                const h = getItemHistory(c);
+                                return h.some(x => x.nftId === selectedHistory[0]?.nftId) || c.nftId === invStockSelectedNftId;
+                              });
+                              if (!latest) return null;
+                              const nowOnLatest = invStockSelectedNftId === latest.nftId;
+                              return (
+                                <button type="button"
+                                  onClick={() => { if (!nowOnLatest) setInvStockSelectedNftId(latest.nftId); }}
+                                  style={{
+                                    display: 'grid', gridTemplateColumns: '60px 1fr 90px 100px 100px',
+                                    gap: 12, padding: '10px 12px', borderRadius: 10,
+                                    background: nowOnLatest ? 'rgba(255, 248, 220, 0.85)' : 'linear-gradient(180deg, oklch(0.95 0.06 86), oklch(0.9 0.09 82))',
+                                    border: '1px solid rgba(180, 140, 60, 0.35)',
+                                    borderLeft: nowOnLatest ? '3px solid oklch(0.72 0.15 62)' : '1px solid rgba(180, 140, 60, 0.35)',
+                                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                                    alignItems: 'center', fontSize: 12,
+                                    cursor: nowOnLatest ? 'default' : 'pointer',
+                                    fontFamily: 'inherit', textAlign: 'left',
+                                    transition: 'all 0.15s ease',
+                                  }}
+                                  title={nowOnLatest ? 'Currently viewing the latest version' : 'Click to return to the latest version'}>
+                                  <span className="mono" style={{ fontSize: 10, color: 'var(--ink)', fontWeight: 700 }}>v{versionOfItem(latest)}</span>
+                                  <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {latest.name || latest.partNumber}
+                                    <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--ink-3)', fontWeight: 500 }}>(current)</span>
+                                  </span>
+                                  <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{latest.partNumber || '—'}</span>
+                                  <span className="mono" style={{ fontSize: 11, textAlign: 'right' }}>{latest.quantityOnHand || 0} units</span>
+                                  <span style={{ textAlign: 'right' }}><Chip tone={statusTone(latest.status)}>{statusToDisplay(latest.status)}</Chip></span>
+                                </button>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      )}
+                    </Card>
+                  )}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+                  {/* ── Card 1 · Warehouse Wallet ── */}
+                  {(() => {
+                    const isValidAddr = (s: string) => !!s && s.startsWith('r') && s.length >= 25 && s.length <= 35;
+                    const isValidSeed = (s: string) => !!s && s.startsWith('s') && s.length >= 25;
+                    const savedValid = isValidAddr(warehouseWalletAddress);
+                    const fullyConfigured = savedValid && isValidSeed(warehouseWalletSeed);
+                    const isDirty =
+                      warehouseSetupInput !== warehouseWalletAddress
+                      || warehouseSetupSeedInput !== warehouseWalletSeed
+                      || warehouseSetupNameInput !== warehouseWalletName;
+                    const canSave = isValidAddr(warehouseSetupInput) && isDirty && warehouseSaveState !== 'saving';
+                    const labelStyle: React.CSSProperties = {
+                      display: 'block', fontSize: 9.5, letterSpacing: '0.08em',
+                      textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 5,
+                      fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                    };
+                    const inputStyle: React.CSSProperties = {
+                      width: '100%', padding: '9px 11px', borderRadius: 9,
+                      border: '1px solid rgba(180, 140, 60, 0.22)',
+                      background: 'rgba(255, 253, 240, 0.75)',
+                      fontSize: 13, fontWeight: 500, outline: 'none',
+                      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                      boxSizing: 'border-box', fontFamily: 'inherit',
+                    };
+                    const monoInputStyle: React.CSSProperties = { ...inputStyle, fontFamily: 'JetBrains Mono, ui-monospace, monospace' };
+                    const saveBtnLabel = warehouseSaveState === 'saved'
+                      ? '✓ Saved'
+                      : warehouseSaveState === 'saving' ? 'Saving…' : 'Save warehouse';
+                    return (
+                      <div data-warehouse-card>
+                      <Card layered
+                        label={<>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                            Warehouse · MPT destination
+                          </div>
+                          <div style={{ fontSize: 18, fontWeight: 600 }}>Warehouse wallet</div>
+                        </>}
+                        actions={
+                          <Chip tone={fullyConfigured ? 'green' : savedValid ? 'gold' : 'neutral'}>
+                            {fullyConfigured ? '✓ Verified' : savedValid ? 'Address only' : 'Not configured'}
+                          </Chip>
+                        }>
+                        <p style={{ fontSize: 12.5, color: 'var(--ink-2)', lineHeight: 1.5, margin: '0 0 14px' }}>
+                          A second vendor-controlled XRPL wallet that holds your inventory MPTs. Inventory tokens
+                          are paid to this address to track on-hand stock. The seed is stored locally and enables
+                          auto-authorization of each MPT issuance.
+                        </p>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 12, marginBottom: 12 }}>
+                          <div>
+                            <label style={labelStyle}>Label · friendly name</label>
+                            <input value={warehouseSetupNameInput}
+                              onChange={e => setWarehouseSetupNameInput(e.target.value)}
+                              placeholder="Porto Mill · Bay 3"
+                              style={inputStyle}/>
+                          </div>
+                          <div>
+                            <label style={labelStyle}>XRPL address</label>
+                            <input value={warehouseSetupInput}
+                              onChange={e => setWarehouseSetupInput(e.target.value)}
+                              placeholder="rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                              style={monoInputStyle}/>
+                          </div>
+                        </div>
+
+                        <div style={{ marginBottom: 14 }}>
+                          <label style={labelStyle}>
+                            Wallet seed <span style={{ textTransform: 'none', letterSpacing: 0, opacity: 0.6 }}>· stored locally, enables auto-authorization</span>
+                          </label>
+                          <div style={{ position: 'relative' }}>
+                            <input
+                              type={warehouseSeedRevealed ? 'text' : 'password'}
+                              value={warehouseSetupSeedInput}
+                              onChange={e => setWarehouseSetupSeedInput(e.target.value)}
+                              placeholder="sXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                              style={{ ...monoInputStyle, paddingRight: 72 }}/>
+                            <button type="button"
+                              onClick={() => setWarehouseSeedRevealed(v => !v)}
+                              style={{
+                                position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
+                                padding: '5px 10px', borderRadius: 7, border: 0,
+                                background: 'rgba(180, 140, 60, 0.12)',
+                                color: 'var(--ink-2)',
+                                fontSize: 10, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
+                                cursor: 'pointer', fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                              }}>
+                              {warehouseSeedRevealed ? 'Hide' : 'Reveal'}
+                            </button>
+                          </div>
+                        </div>
+
+                        <div style={{
+                          padding: '10px 12px', borderRadius: 9, marginBottom: 14,
+                          background: 'rgba(255, 248, 222, 0.45)',
+                          border: '1px solid rgba(180, 140, 60, 0.15)',
+                          fontSize: 11.5, color: 'var(--ink-2)', lineHeight: 1.5,
+                        }}>
+                          <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', letterSpacing: '0.08em', textTransform: 'uppercase', marginRight: 6 }}>Setup</span>
+                          (1) create a second XRPL wallet (devnet faucet works) · (2) paste its address + seed above · (3) save
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                          <button type="button" disabled={!canSave || warehouseSaveState === 'saved'}
+                            onClick={async () => {
+                              if (!isValidAddr(warehouseSetupInput)) {
+                                alert('Enter a valid XRPL address starting with r');
+                                return;
+                              }
+                              setWarehouseSaveState('saving');
+                              // Small delay to give the shimmer state a moment of presence
+                              await new Promise(r => setTimeout(r, 450));
+                              setWarehouseWalletAddress(warehouseSetupInput);
+                              localStorage.setItem('scpo_warehouse_wallet', warehouseSetupInput);
+                              if (warehouseSetupSeedInput) {
+                                setWarehouseWalletSeed(warehouseSetupSeedInput);
+                                localStorage.setItem('scpo_warehouse_seed', warehouseSetupSeedInput);
+                              }
+                              setWarehouseWalletName(warehouseSetupNameInput);
+                              localStorage.setItem('scpo_warehouse_name', warehouseSetupNameInput);
+                              setWarehouseSaveState('saved');
+                              setTimeout(() => setWarehouseSaveState('idle'), 1800);
+                            }}
+                            style={{
+                              padding: '10px 18px', borderRadius: 10, minWidth: 180,
+                              fontSize: 12.5, fontWeight: 600, border: 0,
+                              background: warehouseSaveState === 'saved'
+                                ? 'linear-gradient(180deg, oklch(0.88 0.16 148), oklch(0.68 0.18 148))'
+                                : warehouseSaveState === 'saving'
+                                  ? 'linear-gradient(90deg, oklch(0.92 0.1 86) 0%, oklch(0.82 0.13 72) 50%, oklch(0.92 0.1 86) 100%)'
+                                  : canSave
+                                    ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.72 0.14 62))'
+                                    : 'rgba(180, 140, 60, 0.15)',
+                              backgroundSize: warehouseSaveState === 'saving' ? '200% 100%' : 'auto',
+                              animation: warehouseSaveState === 'saving' ? 'shimmer 1.4s linear infinite' : 'none',
+                              color: warehouseSaveState === 'saved' ? '#07240f' : canSave || warehouseSaveState === 'saving' ? '#1a1505' : 'var(--ink-3)',
+                              cursor: (!canSave || warehouseSaveState !== 'idle') ? 'default' : 'pointer',
+                              boxShadow: warehouseSaveState === 'saved'
+                                ? '0 0 28px -4px oklch(0.7 0.2 148 / 0.55), inset 0 1px 0 rgba(255,255,255,0.5)'
+                                : canSave
+                                  ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 12px -4px rgba(200,150,50,0.4)'
+                                  : 'none',
+                              fontFamily: 'inherit',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                              transition: 'box-shadow 0.25s ease, background 0.25s ease',
+                            }}>
+                            <IconWallet size={13}/>
+                            <span style={{ whiteSpace: 'nowrap' }}>{saveBtnLabel}</span>
+                          </button>
+                        </div>
+                      </Card>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── Card 2 · Upload Parts ── */}
+                  <Card layered
+                    label={<>
+                      <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                        Bulk import
+                      </div>
+                      <div style={{ fontSize: 18, fontWeight: 600 }}>Upload parts</div>
+                    </>}
+                    actions={
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        {csvImportSubTab === 'csv' && (
+                          <button type="button"
+                            onClick={() => {
+                              const headers = [
+                                'SKU','Part Number','Name','Short Description',
+                                'Category','Department','Brand','Family Code',
+                                'Production Plant','Weight',
+                                'Unit Cost','List Price','Currency',
+                                'Initial Quantity','Unit of Measure',
+                                'Supplier Code','Supplier Name',
+                              ];
+                              const sample = [
+                                'TX240NAT-01','TX-240-NAT','Combed cotton 240gsm — natural','One-line catalog summary',
+                                'Textile','Textile · Porto','Vhay Originals','TX-240',
+                                'Porto Mill · Bay 3','240g',
+                                '8.50','12.00','USD',
+                                '100','ea',
+                                'SUP-2218','Mill Supply Co.',
+                              ];
+                              const csv = headers.join(',') + '\n' + sample.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',') + '\n';
+                              const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url;
+                              a.download = 'vhay-inventory-template.csv';
+                              document.body.appendChild(a);
+                              a.click();
+                              document.body.removeChild(a);
+                              setTimeout(() => URL.revokeObjectURL(url), 100);
+                            }}
+                            style={{
+                              padding: '7px 12px', borderRadius: 9, border: 0,
+                              background: 'rgba(180, 140, 60, 0.12)',
+                              color: 'var(--ink-2)', fontSize: 11, fontWeight: 600,
+                              cursor: 'pointer', fontFamily: 'inherit',
+                              display: 'inline-flex', alignItems: 'center', gap: 5,
+                              whiteSpace: 'nowrap',
+                            }}>
+                            ↓ Download template
+                          </button>
+                        )}
+                        <div className="glass-strong" style={{
+                          display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)',
+                          padding: 4, borderRadius: 12, position: 'relative',
+                        }}>
+                        <div style={{
+                          position: 'absolute', top: 4, bottom: 4, left: 4,
+                          width: 'calc((100% - 8px) / 2)',
+                          transform: `translateX(calc(${csvImportSubTab === 'csv' ? 0 : 1} * 100%))`,
+                          background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                          borderRadius: 9,
+                          transition: 'transform 0.28s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.5)',
+                        }}/>
+                        {[
+                          { k: 'csv' as const, l: 'CSV upload' },
+                          { k: 'xrpl' as const, l: 'From XRPL' },
+                        ].map(m => (
+                          <button key={m.k} type="button"
+                            onClick={() => setCsvImportSubTab(m.k)}
+                            style={{
+                              position: 'relative', zIndex: 1, padding: '7px 16px', minWidth: 110,
+                              fontSize: 11.5, fontWeight: 600, letterSpacing: '-0.005em',
+                              background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                              color: csvImportSubTab === m.k ? '#2a1f08' : 'var(--ink-3)',
+                              textAlign: 'center',
+                            }}>{m.l}</button>
+                        ))}
+                        </div>
+                      </div>
+                    }>
+
+                    {/* XRPL placeholder pane */}
+                    {csvImportSubTab === 'xrpl' && (
+                      <div className="etched" style={{
+                        padding: '40px 24px', borderRadius: 12, textAlign: 'center',
+                        background: 'rgba(245, 240, 225, 0.3)',
+                        border: '1px dashed rgba(180, 140, 60, 0.25)',
+                      }}>
+                        <div style={{
+                          width: 52, height: 52, borderRadius: 999,
+                          background: 'rgba(180, 140, 60, 0.1)',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          margin: '0 auto 14px',
+                        }}>
+                          <IconWallet size={22} style={{ color: 'var(--ink-3)' }}/>
+                        </div>
+                        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 8 }}>
+                          Import from XRPL address
+                        </div>
+                        <p style={{ maxWidth: 460, margin: '0 auto', fontSize: 12.5, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+                          Coming soon — import inventory NFTs minted by other applications by providing
+                          a vendor&apos;s XRPL address. Schema mapping will bridge foreign NFT formats
+                          to your catalog. For now, use CSV upload.
+                        </p>
+                        <div className="mono" style={{
+                          display: 'inline-block', marginTop: 16,
+                          padding: '5px 12px', borderRadius: 999,
+                          background: 'rgba(180, 140, 60, 0.12)',
+                          border: '1px solid rgba(180, 140, 60, 0.2)',
+                          fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase',
+                          color: 'var(--ink-3)',
+                        }}>
+                          Planned · Phase 5+
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CSV pane */}
+                    {csvImportSubTab === 'csv' && (() => {
+                      const hasFile = csvHeaders.length > 0 && csvRows.length > 0;
+                      // Auto-infer CSV header → inventory field mapping.
+                      // Permissive matching: lowercase, strip non-alphanumeric, compare.
+                      const inferMapping = (headers: string[]): { [h: string]: string } => {
+                        const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+                        const rules: { field: string; matches: string[] }[] = [
+                          { field: 'sku',             matches: ['sku', 'skucode', 'stockkeepingunit'] },
+                          { field: 'partNumber',      matches: ['partnumber', 'partno', 'partnum', 'itemnumber', 'itemno', 'itemcode', 'mpn', 'manufacturerpartnumber'] },
+                          { field: 'name',            matches: ['name', 'partname', 'itemname', 'productname', 'description1', 'title'] },
+                          { field: 'shortDescription',matches: ['shortdescription', 'shortdesc', 'description', 'desc', 'summary'] },
+                          { field: 'category',        matches: ['category', 'cat', 'productcategory', 'type'] },
+                          { field: 'department',      matches: ['department', 'dept', 'division'] },
+                          { field: 'brand',           matches: ['brand', 'productbrand', 'manufacturer'] },
+                          { field: 'weight',          matches: ['weight', 'wt', 'mass'] },
+                          { field: 'familyCode',      matches: ['familycode', 'family'] },
+                          { field: 'productionPlant', matches: ['productionplant', 'plant', 'facility', 'factory'] },
+                          { field: 'listPrice',       matches: ['listprice', 'price', 'retail', 'retailprice', 'msrp', 'sellprice'] },
+                          { field: 'unitCost',        matches: ['unitcost', 'cost', 'costprice', 'wholesale'] },
+                          { field: 'initialQty',      matches: ['initialqty', 'qty', 'quantity', 'stock', 'onhand', 'inventory'] },
+                          { field: 'unit',            matches: ['unit', 'uom', 'unitofmeasure', 'unitofmeasurement'] },
+                          { field: 'supplierName',    matches: ['suppliername', 'vendor', 'vendorname'] },
+                          { field: 'supplierCode',    matches: ['suppliercode', 'vendorcode', 'supplierid'] },
+                        ];
+                        const used = new Set<string>();
+                        const result: { [h: string]: string } = {};
+                        for (const h of headers) {
+                          const n = norm(h);
+                          const hit = rules.find(r => !used.has(r.field) && r.matches.includes(n));
+                          if (hit) { result[h] = hit.field; used.add(hit.field); }
+                          else result[h] = '__ignore__';
+                        }
+                        return result;
+                      };
+
+                      const processCsvFile = (file: File) => {
+                        if (!file) return;
+                        if (!/\.csv$/i.test(file.name)) { alert('Please select a .csv file'); return; }
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                          try {
+                            const text = String(e.target?.result || '');
+                            const parsed = parseCSV(text);
+                            if (parsed.headers.length === 0 || parsed.rows.length === 0) {
+                              alert('CSV is empty or missing a header row');
+                              return;
+                            }
+                            setCsvHeaders(parsed.headers);
+                            setCsvRows(parsed.rows);
+                            setCsvMapping(inferMapping(parsed.headers));
+                            setCsvFileName(file.name);
+                            setCsvFileSize(file.size);
+                            setCsvImportDone(false);
+                          } catch (err: any) {
+                            alert('Failed to parse CSV: ' + err.message);
+                          }
+                        };
+                        reader.readAsText(file);
+                      };
+
+                      const clearFile = () => {
+                        setCsvHeaders([]);
+                        setCsvRows([]);
+                        setCsvMapping({});
+                        setCsvFileName('');
+                        setCsvFileSize(0);
+                        setCsvImportDone(false);
+                      };
+
+                      return (
+                        <>
+                          {/* Step indicator */}
+                          <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+                            {['Upload', 'Map columns', 'Preview', 'Import'].map((lbl, i) => {
+                              const active = (!hasFile && i === 0) || (hasFile && i === 1);
+                              return (
+                                <div key={lbl} style={{
+                                  display: 'flex', alignItems: 'center', gap: 6,
+                                  padding: '4px 10px', borderRadius: 999,
+                                  background: active ? 'rgba(255, 248, 222, 0.9)' : 'transparent',
+                                  border: '1px solid ' + (active ? 'rgba(180, 140, 60, 0.25)' : 'rgba(180, 140, 60, 0.08)'),
+                                  fontSize: 10.5, letterSpacing: '0.04em',
+                                  color: active ? 'var(--ink)' : 'var(--ink-3)',
+                                  fontWeight: active ? 600 : 500,
+                                }}>
+                                  <span className="mono" style={{ fontSize: 9, opacity: 0.6 }}>{i + 1}</span>
+                                  {lbl}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Step 1 — drop zone / file chip */}
+                          {!hasFile ? (
+                            <div
+                              onDragOver={(e) => { e.preventDefault(); (e.currentTarget as HTMLDivElement).style.background = 'rgba(255, 232, 170, 0.45)'; (e.currentTarget as HTMLDivElement).style.borderColor = 'oklch(0.72 0.16 72 / 0.5)'; }}
+                              onDragLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = 'rgba(245, 240, 225, 0.3)'; (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(180, 140, 60, 0.25)'; }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                (e.currentTarget as HTMLDivElement).style.background = 'rgba(245, 240, 225, 0.3)';
+                                (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(180, 140, 60, 0.25)';
+                                const f = e.dataTransfer.files?.[0];
+                                if (f) processCsvFile(f);
+                              }}
+                              style={{
+                                position: 'relative',
+                                padding: '36px 24px', borderRadius: 12, textAlign: 'center',
+                                background: 'rgba(245, 240, 225, 0.3)',
+                                border: '2px dashed rgba(180, 140, 60, 0.25)',
+                                transition: 'all 0.15s ease',
+                              }}>
+                              <div style={{
+                                width: 52, height: 52, borderRadius: 999,
+                                background: 'rgba(180, 140, 60, 0.1)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                margin: '0 auto 14px',
+                              }}>
+                                <IconFile size={22} style={{ color: 'var(--ink-3)' }}/>
+                              </div>
+                              <div style={{ fontSize: 14.5, fontWeight: 600, color: 'var(--ink-2)', marginBottom: 6 }}>
+                                Drop a CSV here, or click to browse
+                              </div>
+                              <p style={{ maxWidth: 460, margin: '0 auto 16px', fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.55 }}>
+                                Your CSV must have a header row. Only <strong style={{ color: 'var(--ink-2)' }}>Part Number</strong> and <strong style={{ color: 'var(--ink-2)' }}>Name</strong> columns are required — all other fields are optional.
+                              </p>
+                              <label style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 6,
+                                padding: '9px 18px', borderRadius: 10,
+                                fontSize: 12.5, fontWeight: 600,
+                                background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.72 0.14 62))',
+                                color: '#1a1505', cursor: 'pointer',
+                                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 12px -4px rgba(200,150,50,0.4)',
+                              }}>
+                                Choose file
+                                <input type="file" accept=".csv" style={{ display: 'none' }}
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) processCsvFile(f);
+                                    e.target.value = '';
+                                  }}/>
+                              </label>
+                            </div>
+                          ) : (
+                            <>
+                              {/* File summary chip */}
+                              <div className="glass" style={{
+                                padding: 14, borderRadius: 12, marginBottom: 14,
+                                display: 'flex', alignItems: 'center', gap: 12,
+                                border: '1px solid rgba(180, 140, 60, 0.22)',
+                              }}>
+                                <div style={{
+                                  width: 40, height: 40, borderRadius: 10,
+                                  background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.12 72))',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  flexShrink: 0,
+                                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                                }}>
+                                  <IconFile size={18} style={{ color: '#2a1f08' }}/>
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {csvFileName || 'Uploaded CSV'}
+                                  </div>
+                                  <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>
+                                    {csvFileSize > 0 && `${(csvFileSize / 1024).toFixed(1)} KB · `}
+                                    {csvRows.length.toLocaleString()} row{csvRows.length === 1 ? '' : 's'} · {csvHeaders.length} column{csvHeaders.length === 1 ? '' : 's'}
+                                  </div>
+                                </div>
+                                <button type="button" onClick={clearFile}
+                                  style={{
+                                    padding: '7px 12px', borderRadius: 9, border: 0,
+                                    background: 'rgba(180, 140, 60, 0.12)',
+                                    color: 'var(--ink-2)', fontSize: 11, fontWeight: 600,
+                                    cursor: 'pointer', fontFamily: 'inherit',
+                                  }}>
+                                  Change file
+                                </button>
+                              </div>
+
+                              {/* Step 2 — Column mapping */}
+                              {(() => {
+                                const mappingOptions: { value: string; label: string; required?: boolean }[] = [
+                                  { value: '__ignore__', label: '— Ignore —' },
+                                  { value: 'sku',             label: 'SKU', required: true },
+                                  { value: 'partNumber',      label: 'Part Number', required: true },
+                                  { value: 'name',            label: 'Name', required: true },
+                                  { value: 'shortDescription',label: 'Short Description' },
+                                  { value: 'category',        label: 'Category' },
+                                  { value: 'department',      label: 'Department' },
+                                  { value: 'brand',           label: 'Brand' },
+                                  { value: 'weight',          label: 'Weight' },
+                                  { value: 'familyCode',      label: 'Family Code' },
+                                  { value: 'productionPlant', label: 'Production Plant' },
+                                  { value: 'listPrice',       label: 'List Price ($)' },
+                                  { value: 'unitCost',        label: 'Unit Cost ($)' },
+                                  { value: 'initialQty',      label: 'Initial Quantity' },
+                                  { value: 'unit',            label: 'Unit of Measure' },
+                                  { value: 'supplierName',    label: 'Supplier Name' },
+                                  { value: 'supplierCode',    label: 'Supplier Code' },
+                                ];
+                                const mappedValues = Object.values(csvMapping);
+                                const hasSku = mappedValues.includes('sku');
+                                const hasPartNumber = mappedValues.includes('partNumber');
+                                const hasName = mappedValues.includes('name');
+                                const requirementsMet = hasSku && hasPartNumber && hasName;
+                                const mappedCount = mappedValues.filter(v => v !== '__ignore__').length;
+
+                                return (
+                                  <>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                                      <div>
+                                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>
+                                          Step 2 · Map columns
+                                        </div>
+                                        <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>
+                                          Set columns you don&apos;t want imported to <span className="mono" style={{ fontSize: 11 }}>— Ignore —</span>
+                                        </div>
+                                      </div>
+                                      <Chip tone={requirementsMet ? 'green' : 'red'}>
+                                        {requirementsMet
+                                          ? `✓ Ready · ${mappedCount} mapped`
+                                          : `Missing: ${[!hasSku && 'SKU', !hasPartNumber && 'Part Number', !hasName && 'Name'].filter(Boolean).join(', ')}`}
+                                      </Chip>
+                                    </div>
+
+                                    <div style={{ marginBottom: 16, borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(180, 140, 60, 0.15)' }}>
+                                      <div style={{
+                                        display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr)',
+                                        gap: 10, padding: '9px 14px',
+                                        background: 'rgba(255, 248, 222, 0.8)',
+                                        fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase',
+                                        color: 'var(--ink-3)',
+                                      }} className="mono">
+                                        <span>Your CSV column</span>
+                                        <span>Maps to</span>
+                                        <span>Sample value</span>
+                                      </div>
+                                      {csvHeaders.map((header, idx) => {
+                                        const currentMapping = csvMapping[header] || '__ignore__';
+                                        const isRequired = currentMapping === 'sku' || currentMapping === 'partNumber' || currentMapping === 'name';
+                                        const sampleValue = csvRows[0]?.[idx] || '';
+                                        return (
+                                          <div key={header} style={{
+                                            display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr)',
+                                            gap: 10, padding: '9px 14px', alignItems: 'center',
+                                            borderTop: '1px solid rgba(180, 140, 60, 0.08)',
+                                            background: currentMapping === '__ignore__' ? 'rgba(245, 240, 225, 0.2)' : 'transparent',
+                                            fontSize: 12,
+                                          }}>
+                                            <span className="mono" style={{ fontSize: 11.5, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: currentMapping === '__ignore__' ? 'var(--ink-3)' : 'var(--ink)' }} title={header}>
+                                              {header}
+                                            </span>
+                                            <select
+                                              value={currentMapping}
+                                              onChange={(e) => setCsvMapping(prev => ({ ...prev, [header]: e.target.value }))}
+                                              style={{
+                                                width: '100%', padding: '6px 9px', borderRadius: 7,
+                                                border: isRequired ? '1px solid oklch(0.72 0.15 148 / 0.4)' : '1px solid rgba(180, 140, 60, 0.2)',
+                                                background: isRequired ? 'rgba(220, 245, 225, 0.4)' : 'rgba(255, 253, 240, 0.7)',
+                                                fontSize: 12, fontFamily: 'inherit', color: 'var(--ink)',
+                                                outline: 'none', cursor: 'pointer',
+                                                fontWeight: isRequired ? 600 : 500,
+                                              }}>
+                                              {mappingOptions.map(o => {
+                                                // Disable options already used by another header (except __ignore__ and this header's current)
+                                                const usedElsewhere = o.value !== '__ignore__'
+                                                  && o.value !== currentMapping
+                                                  && mappedValues.includes(o.value);
+                                                return (
+                                                  <option key={o.value} value={o.value} disabled={usedElsewhere}>
+                                                    {o.label}{o.required ? ' *' : ''}{usedElsewhere ? ' (used)' : ''}
+                                                  </option>
+                                                );
+                                              })}
+                                            </select>
+                                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sampleValue}>
+                                              {sampleValue || <span style={{ opacity: 0.4 }}>—</span>}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+
+                                    {/* Step 3 — Preview first 5 rows */}
+                                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                                      Step 3 · Preview {Math.min(5, csvRows.length)} of {csvRows.length} rows
+                                    </div>
+                                    {(() => {
+                                      const activeFields = csvHeaders
+                                        .map((h, i) => ({ header: h, idx: i, field: csvMapping[h] }))
+                                        .filter(m => m.field && m.field !== '__ignore__');
+
+                                      if (activeFields.length === 0) {
+                                        return (
+                                          <div style={{
+                                            padding: '20px', borderRadius: 10,
+                                            background: 'rgba(245, 240, 225, 0.3)',
+                                            border: '1px dashed rgba(180, 140, 60, 0.2)',
+                                            textAlign: 'center', fontSize: 12, color: 'var(--ink-3)',
+                                          }}>
+                                            Map at least one column above to see a preview.
+                                          </div>
+                                        );
+                                      }
+                                      return (
+                                        <div style={{ borderRadius: 10, overflow: 'auto', border: '1px solid rgba(180, 140, 60, 0.15)', marginBottom: 14 }}>
+                                          <div style={{ minWidth: activeFields.length * 110 }}>
+                                            <div style={{
+                                              display: 'grid',
+                                              gridTemplateColumns: activeFields.map(() => 'minmax(100px, 1fr)').join(' '),
+                                              gap: 8, padding: '9px 12px',
+                                              background: 'rgba(255, 248, 222, 0.8)',
+                                              fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase',
+                                              color: 'var(--ink-3)',
+                                            }} className="mono">
+                                              {activeFields.map(f => {
+                                                const opt = mappingOptions.find(o => o.value === f.field);
+                                                return (
+                                                  <span key={f.field} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={opt?.label}>
+                                                    {opt?.label || f.field}{opt?.required ? ' *' : ''}
+                                                  </span>
+                                                );
+                                              })}
+                                            </div>
+                                            {csvRows.slice(0, 5).map((row, ri) => (
+                                              <div key={ri} style={{
+                                                display: 'grid',
+                                                gridTemplateColumns: activeFields.map(() => 'minmax(100px, 1fr)').join(' '),
+                                                gap: 8, padding: '9px 12px',
+                                                borderTop: '1px solid rgba(180, 140, 60, 0.08)',
+                                                fontSize: 12, alignItems: 'center',
+                                              }}>
+                                                {activeFields.map(f => (
+                                                  <span key={f.field} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={row[f.idx] || ''}>
+                                                    {row[f.idx] || <span style={{ color: 'var(--ink-3)', opacity: 0.4 }}>—</span>}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      );
+                                    })()}
+
+                                    {/* Step 4 — Import button / progress / result banner */}
+                                    {(() => {
+                                      const resetCsvState = () => {
+                                        setCsvHeaders([]);
+                                        setCsvRows([]);
+                                        setCsvMapping({});
+                                        setCsvFileName('');
+                                        setCsvFileSize(0);
+                                        setCsvImportDone(false);
+                                        setCsvImportedCount(0);
+                                        setCsvSkippedCount(0);
+                                        setCsvErrors([]);
+                                        setCsvProgress({ current: 0, total: 0, currentName: '' });
+                                      };
+
+                                      // While importing — progress bar
+                                      if (csvImporting) {
+                                        const pct = csvProgress.total > 0
+                                          ? Math.round((csvProgress.current / csvProgress.total) * 100)
+                                          : 0;
+                                        return (
+                                          <div className="etched rise" style={{
+                                            padding: '18px 20px', borderRadius: 12,
+                                            background: 'linear-gradient(180deg, rgba(255, 248, 220, 0.6), rgba(250, 238, 200, 0.4))',
+                                            border: '1px solid oklch(0.7 0.14 70 / 0.25)',
+                                          }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+                                                Step 4 · Importing to chain
+                                              </div>
+                                              <div className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)', fontWeight: 600 }}>
+                                                {csvProgress.current} / {csvProgress.total} · {pct}%
+                                              </div>
+                                            </div>
+                                            <div style={{
+                                              height: 6, borderRadius: 999, overflow: 'hidden',
+                                              background: 'rgba(180, 140, 60, 0.12)', marginBottom: 10,
+                                            }}>
+                                              <div style={{
+                                                width: `${pct}%`, height: '100%',
+                                                background: 'linear-gradient(90deg, oklch(0.82 0.14 78) 0%, oklch(0.72 0.15 62) 100%)',
+                                                transition: 'width 0.25s ease',
+                                                boxShadow: '0 0 10px -2px oklch(0.72 0.15 62 / 0.6)',
+                                              }}/>
+                                            </div>
+                                            <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                              {csvProgress.currentName
+                                                ? <>Minting <span style={{ color: 'var(--ink)', fontWeight: 600 }}>{csvProgress.currentName}</span>…</>
+                                                : 'Preparing…'}
+                                            </div>
+                                          </div>
+                                        );
+                                      }
+
+                                      // After import — success / partial / failure banner
+                                      if (csvImportDone) {
+                                        const allSucceeded = csvErrors.length === 0 && csvImportedCount > 0;
+                                        const allFailed = csvImportedCount === 0;
+                                        return (
+                                          <>
+                                            <div className="glass rise" style={{
+                                              padding: 16, borderRadius: 14,
+                                              display: 'flex', gap: 12, alignItems: 'flex-start',
+                                              border: '1px solid ' + (allSucceeded
+                                                ? 'oklch(0.68 0.16 148 / 0.4)'
+                                                : allFailed
+                                                  ? 'oklch(0.62 0.16 28 / 0.4)'
+                                                  : 'oklch(0.72 0.16 78 / 0.4)'),
+                                              background: allSucceeded
+                                                ? 'rgba(220, 245, 225, 0.45)'
+                                                : allFailed
+                                                  ? 'rgba(255, 230, 225, 0.45)'
+                                                  : 'rgba(255, 242, 210, 0.45)',
+                                              marginBottom: 10,
+                                            }}>
+                                              <div style={{
+                                                padding: 7, borderRadius: 9, flexShrink: 0,
+                                                background: allSucceeded
+                                                  ? 'linear-gradient(180deg, oklch(0.88 0.16 148), oklch(0.68 0.18 148))'
+                                                  : allFailed
+                                                    ? 'linear-gradient(180deg, oklch(0.78 0.18 28), oklch(0.58 0.2 28))'
+                                                    : 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 72))',
+                                                color: allSucceeded ? '#07240f' : allFailed ? '#fff' : '#1a1505',
+                                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.4)',
+                                              }}>
+                                                {allFailed ? <IconX size={14}/> : <IconCheck size={14}/>}
+                                              </div>
+                                              <div style={{ flex: 1 }}>
+                                                <div style={{ fontSize: 13.5, fontWeight: 600, marginBottom: 2 }}>
+                                                  {allSucceeded
+                                                    ? `Imported ${csvImportedCount} part${csvImportedCount === 1 ? '' : 's'} to stock ledger`
+                                                    : allFailed
+                                                      ? `Import failed · 0 of ${csvProgress.total} parts minted`
+                                                      : `Imported ${csvImportedCount} · ${csvSkippedCount} skipped`}
+                                                </div>
+                                                <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                                  {csvFileName && <>from {csvFileName}</>}
+                                                  {csvSkippedCount > 0 && <> · {csvSkippedCount} row{csvSkippedCount === 1 ? '' : 's'} skipped due to errors</>}
+                                                </div>
+                                              </div>
+                                              <button type="button" onClick={resetCsvState}
+                                                style={{
+                                                  padding: '8px 14px', borderRadius: 9, border: 0,
+                                                  background: 'rgba(180, 140, 60, 0.12)',
+                                                  color: 'var(--ink-2)', fontSize: 11.5, fontWeight: 600,
+                                                  cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0,
+                                                }}>
+                                                Start new import
+                                              </button>
+                                            </div>
+
+                                            {csvErrors.length > 0 && (
+                                              <div className="etched" style={{
+                                                padding: 12, borderRadius: 10,
+                                                background: 'rgba(255, 242, 210, 0.3)',
+                                                border: '1px solid rgba(180, 140, 60, 0.2)',
+                                                maxHeight: 180, overflowY: 'auto',
+                                              }}>
+                                                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+                                                  Error log · {csvErrors.length} row{csvErrors.length === 1 ? '' : 's'}
+                                                </div>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                                                  {csvErrors.slice(0, 20).map((e, i) => (
+                                                    <div key={i} className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                                                      <span style={{ color: 'var(--ink-3)', minWidth: 60 }}>Row {e.row}</span>
+                                                      <span style={{ color: 'var(--ink-2)', fontWeight: 500, minWidth: 90, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={e.partNumber}>{e.partNumber || '—'}</span>
+                                                      <span style={{ color: 'oklch(0.45 0.18 28)', flex: 1 }}>{e.error}</span>
+                                                    </div>
+                                                  ))}
+                                                  {csvErrors.length > 20 && (
+                                                    <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 4, fontStyle: 'italic' }}>
+                                                      …and {csvErrors.length - 20} more (open console for full log)
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </>
+                                        );
+                                      }
+
+                                      // Idle — Import button
+                                      const mappedValuesForStep4 = Object.values(csvMapping);
+                                      const canImport = mappedValuesForStep4.includes('sku')
+                                        && mappedValuesForStep4.includes('partNumber')
+                                        && mappedValuesForStep4.includes('name')
+                                        && csvRows.length > 0;
+                                      return (
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                                          <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>
+                                              Step 4 · Ready to import
+                                            </div>
+                                            <div style={{ fontSize: 12.5, color: 'var(--ink-2)' }}>
+                                              {canImport
+                                                ? <>Each row will mint one NFT + MPT. Estimated time: <span className="mono" style={{ fontWeight: 600, color: 'var(--ink)' }}>~{Math.ceil(csvRows.length * 2.5)}s</span> for {csvRows.length} rows.</>
+                                                : 'Map SKU, Part Number, and Name above before importing.'}
+                                            </div>
+                                          </div>
+                                          <button type="button" disabled={!canImport}
+                                            onClick={() => {
+                                              if (!canImport) return;
+                                              if (!window.confirm(`Import ${csvRows.length} part${csvRows.length === 1 ? '' : 's'} to chain? Each row mints a parent NFT + MPT and will incur ledger fees.`)) return;
+                                              runCSVImport();
+                                            }}
+                                            style={{
+                                              padding: '11px 22px', borderRadius: 10, minWidth: 180,
+                                              fontSize: 12.5, fontWeight: 600, border: 0,
+                                              background: canImport
+                                                ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.72 0.14 62))'
+                                                : 'rgba(180, 140, 60, 0.15)',
+                                              color: canImport ? '#1a1505' : 'var(--ink-3)',
+                                              cursor: canImport ? 'pointer' : 'not-allowed',
+                                              boxShadow: canImport ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 12px -4px rgba(200,150,50,0.4)' : 'none',
+                                              fontFamily: 'inherit',
+                                              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                              transition: 'box-shadow 0.25s ease, background 0.25s ease',
+                                              flexShrink: 0,
+                                            }}>
+                                            <IconCheck size={13}/>
+                                            <span style={{ whiteSpace: 'nowrap' }}>Import {csvRows.length} part{csvRows.length === 1 ? '' : 's'}</span>
+                                          </button>
+                                        </div>
+                                      );
+                                    })()}
+                                  </>
+                                );
+                              })()}
+                            </>
+                          )}
+                        </>
+                      );
+                    })()}
+
+                  </Card>
+
+                  {/* ── Card 3 · Manual Add Part ── */}
+                  <Card layered
+                    label={<>
+                      <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                        Manual entry
+                      </div>
+                      <div style={{ fontSize: 18, fontWeight: 600 }}>Register a new part</div>
+                    </>}
+                    actions={(() => {
+                      const haveText = invSku && invPartNumber && invName;
+                      const haveCost = !!invUnitCost && parseFloat(invUnitCost) > 0;
+                      const haveQty = !!invInitialQty && parseInt(invInitialQty) >= 1;
+                      const allMet = haveText && haveCost && haveQty;
+                      return (
+                        <Chip tone={allMet ? 'green' : 'neutral'}>
+                          {allMet ? '✓ Required fields set' : 'SKU · Part # · Name · Cost · Qty required'}
+                        </Chip>
+                      );
+                    })()}>
+
+                    {(() => {
+                      const labelStyle: React.CSSProperties = {
+                        display: 'block', fontSize: 9.5, letterSpacing: '0.08em',
+                        textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 5,
+                        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                      };
+                      const labelRequiredStyle: React.CSSProperties = { ...labelStyle, color: 'var(--ink-2)' };
+                      const inputStyle: React.CSSProperties = {
+                        width: '100%', padding: '9px 11px', borderRadius: 9,
+                        border: '1px solid rgba(180, 140, 60, 0.22)',
+                        background: 'rgba(255, 253, 240, 0.75)',
+                        fontSize: 13, fontWeight: 500, outline: 'none',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                        boxSizing: 'border-box', fontFamily: 'inherit',
+                      };
+                      const monoInputStyle: React.CSSProperties = { ...inputStyle, fontFamily: 'JetBrains Mono, ui-monospace, monospace' };
+                      const sectionHeaderStyle: React.CSSProperties = {
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        fontSize: 13.5, fontWeight: 600, color: 'var(--ink)',
+                        marginBottom: 12, paddingBottom: 8,
+                        borderBottom: '1px solid rgba(180, 140, 60, 0.12)',
+                      };
+                      const sectionIndexStyle: React.CSSProperties = {
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        width: 22, height: 22, borderRadius: 7,
+                        background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.12 72))',
+                        fontSize: 11, fontWeight: 700, color: '#2a1f08',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+                      };
+
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+
+                          {/* ── Section 1 · Identity ── */}
+                          <div>
+                            <div style={sectionHeaderStyle}>
+                              <span style={sectionIndexStyle}>1</span>
+                              Identity
+                              <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase', marginLeft: 'auto' }}>
+                                Part # + Name required
+                              </span>
+                            </div>
+
+                            {(() => {
+                              const skuTrimmed = invSku.trim().toUpperCase();
+                              const skuConflict = skuTrimmed && (vendorInventoryV2 || []).some(i =>
+                                (i as any).sku && String((i as any).sku).trim().toUpperCase() === skuTrimmed
+                              );
+                              return (
+                                <>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.6fr', gap: 12, marginBottom: 12 }}>
+                                    <div>
+                                      <label style={labelRequiredStyle}>
+                                        SKU <span style={{ color: 'oklch(0.62 0.18 28)', textTransform: 'none', letterSpacing: 0 }}>*</span>
+                                      </label>
+                                      <input
+                                        value={invSku}
+                                        onChange={e => setInvSku(e.target.value)}
+                                        placeholder="e.g. TX240NAT-01"
+                                        style={{
+                                          ...monoInputStyle,
+                                          borderColor: skuConflict ? 'oklch(0.62 0.18 28 / 0.5)' : monoInputStyle.border?.toString() || undefined,
+                                          background: skuConflict ? 'rgba(255, 230, 225, 0.5)' : monoInputStyle.background,
+                                        }}/>
+                                      {skuConflict && (
+                                        <div className="mono" style={{ fontSize: 9.5, color: 'oklch(0.45 0.18 28)', marginTop: 4, letterSpacing: '0.04em' }}>
+                                          SKU already in use
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div>
+                                      <label style={labelRequiredStyle}>
+                                        Part number <span style={{ color: 'oklch(0.62 0.18 28)', textTransform: 'none', letterSpacing: 0 }}>*</span>
+                                      </label>
+                                      <input
+                                        value={invPartNumber}
+                                        onChange={e => setInvPartNumber(e.target.value)}
+                                        placeholder="e.g. TX-240-NAT"
+                                        style={monoInputStyle}/>
+                                    </div>
+                                    <div>
+                                      <label style={labelRequiredStyle}>
+                                        Part name <span style={{ color: 'oklch(0.62 0.18 28)', textTransform: 'none', letterSpacing: 0 }}>*</span>
+                                      </label>
+                                      <input
+                                        value={invName}
+                                        onChange={e => setInvName(e.target.value)}
+                                        placeholder="Combed cotton 240gsm — natural"
+                                        style={inputStyle}/>
+                                    </div>
+                                  </div>
+                                </>
+                              );
+                            })()}
+
+                            <div>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                                <label style={labelStyle}>Short description</label>
+                                <span className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', marginBottom: 5 }}>
+                                  {invShortDesc.length} / 60
+                                </span>
+                              </div>
+                              <input
+                                value={invShortDesc}
+                                onChange={e => setInvShortDesc(e.target.value.substring(0, 60))}
+                                placeholder="One-line summary shown in catalog views"
+                                style={inputStyle}/>
+                            </div>
+                          </div>
+
+                          {/* ── Section 2 · Classification ── */}
+                          <div>
+                            <div style={sectionHeaderStyle}>
+                              <span style={sectionIndexStyle}>2</span>
+                              Classification
+                              <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase', marginLeft: 'auto' }}>
+                                Optional · improves search and filters
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                              <div>
+                                <label style={labelStyle}>Category</label>
+                                <input
+                                  value={invCategory}
+                                  onChange={e => setInvCategory(e.target.value)}
+                                  list="inv-category-suggestions"
+                                  placeholder="Textile, Hardware, Polymer…"
+                                  style={inputStyle}/>
+                                <datalist id="inv-category-suggestions">
+                                  <option value="Textile"/>
+                                  <option value="Hardware"/>
+                                  <option value="Packaging"/>
+                                  <option value="Polymer"/>
+                                  <option value="Electronics"/>
+                                  <option value="Chemical"/>
+                                  <option value="Other"/>
+                                </datalist>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Department</label>
+                                <input
+                                  value={invDepartment}
+                                  onChange={e => setInvDepartment(e.target.value)}
+                                  placeholder="e.g. Textile · Porto"
+                                  style={inputStyle}/>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                              <div>
+                                <label style={labelStyle}>Family code</label>
+                                <input
+                                  value={invFamilyCode}
+                                  onChange={e => setInvFamilyCode(e.target.value)}
+                                  placeholder="TX-240"
+                                  style={monoInputStyle}/>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Brand</label>
+                                <input
+                                  value={invBrand}
+                                  onChange={e => setInvBrand(e.target.value)}
+                                  placeholder="Vhay Originals"
+                                  style={inputStyle}/>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                              <div>
+                                <label style={labelStyle}>Production plant</label>
+                                <input
+                                  value={invPlant}
+                                  onChange={e => setInvPlant(e.target.value)}
+                                  placeholder="Porto Mill · Bay 3"
+                                  style={inputStyle}/>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Weight</label>
+                                <input
+                                  value={invWeight}
+                                  onChange={e => setInvWeight(e.target.value)}
+                                  placeholder="240g, 1.2kg, 0.5lb…"
+                                  style={monoInputStyle}/>
+                              </div>
+                            </div>
+
+                            <label style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '9px 12px', borderRadius: 9,
+                              background: invCompetitiveFlag ? 'rgba(255, 232, 170, 0.45)' : 'rgba(245, 240, 225, 0.4)',
+                              border: '1px solid ' + (invCompetitiveFlag ? 'oklch(0.72 0.16 78 / 0.35)' : 'rgba(180, 140, 60, 0.15)'),
+                              cursor: 'pointer', fontSize: 12.5, color: 'var(--ink-2)',
+                              transition: 'all 0.15s ease',
+                            }}>
+                              <input
+                                type="checkbox"
+                                checked={invCompetitiveFlag}
+                                onChange={e => setInvCompetitiveFlag(e.target.checked)}
+                                style={{ accentColor: 'oklch(0.72 0.15 62)', cursor: 'pointer' }}/>
+                              <span>
+                                <span style={{ fontWeight: 600, color: 'var(--ink)' }}>Competitive part</span>
+                                <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginLeft: 8 }}>
+                                  flag for tighter pricing review
+                                </span>
+                              </span>
+                            </label>
+                          </div>
+
+                          {/* ── Section 3 · Pricing ── */}
+                          <div>
+                            <div style={sectionHeaderStyle}>
+                              <span style={sectionIndexStyle}>3</span>
+                              Pricing
+                              <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase', marginLeft: 'auto' }}>
+                                List price required
+                              </span>
+                            </div>
+
+                            {/* Cost + List + Currency */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 110px', gap: 12, marginBottom: 12 }}>
+                              <div>
+                                <label style={labelRequiredStyle}>
+                                  Unit cost <span style={{ color: 'oklch(0.62 0.18 28)', textTransform: 'none', letterSpacing: 0 }}>*</span>
+                                </label>
+                                <input
+                                  type="number" step="0.01" min="0.01"
+                                  value={invUnitCost}
+                                  onChange={e => setInvUnitCost(e.target.value)}
+                                  placeholder="0.00"
+                                  style={monoInputStyle}/>
+                                <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', marginTop: 4, letterSpacing: '0.04em' }}>
+                                  internal · vendor-only · required
+                                </div>
+                              </div>
+                              <div>
+                                <label style={labelRequiredStyle}>
+                                  List price <span style={{ color: 'oklch(0.62 0.18 28)', textTransform: 'none', letterSpacing: 0 }}>*</span>
+                                </label>
+                                <input
+                                  type="number" step="0.01" min="0"
+                                  value={invUnitPrice}
+                                  onChange={e => setInvUnitPrice(e.target.value)}
+                                  placeholder="0.00"
+                                  style={monoInputStyle}/>
+                                <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', marginTop: 4, letterSpacing: '0.04em' }}>
+                                  customer-facing
+                                </div>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Currency</label>
+                                <select
+                                  value={invPriceCurrency}
+                                  onChange={e => { setInvPriceCurrency(e.target.value); setInvCostCurrency(e.target.value); }}
+                                  style={monoInputStyle}>
+                                  <option value="USD">USD</option>
+                                  <option value="EUR">EUR</option>
+                                  <option value="GBP">GBP</option>
+                                  <option value="JPY">JPY</option>
+                                  <option value="RLUSD">RLUSD</option>
+                                </select>
+                                <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', marginTop: 4, letterSpacing: '0.04em' }}>
+                                  ISO 4217
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Margin readout */}
+                            {invUnitPrice && invUnitCost && parseFloat(invUnitPrice) > 0 && parseFloat(invUnitCost) > 0 && (
+                              (() => {
+                                const list = parseFloat(invUnitPrice);
+                                const cost = parseFloat(invUnitCost);
+                                const marginPct = ((list - cost) / list) * 100;
+                                const marginAbs = list - cost;
+                                const isPositive = marginPct > 0;
+                                return (
+                                  <div className="etched" style={{
+                                    padding: '8px 12px', borderRadius: 8, marginBottom: 12,
+                                    background: isPositive ? 'rgba(220, 245, 225, 0.4)' : 'rgba(255, 230, 225, 0.4)',
+                                    border: '1px solid ' + (isPositive ? 'oklch(0.68 0.16 148 / 0.3)' : 'oklch(0.62 0.16 28 / 0.3)'),
+                                    display: 'flex', alignItems: 'center', gap: 10, fontSize: 11.5,
+                                  }}>
+                                    <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+                                      Margin
+                                    </span>
+                                    <span className="mono" style={{ fontWeight: 600, color: isPositive ? 'oklch(0.42 0.16 148)' : 'oklch(0.45 0.18 28)' }}>
+                                      {isPositive ? '▲' : '▼'} {Math.abs(marginPct).toFixed(1)}% · {invPriceCurrency} {Math.abs(marginAbs).toFixed(2)}
+                                    </span>
+                                    {!isPositive && (
+                                      <span style={{ color: 'oklch(0.45 0.18 28)', marginLeft: 'auto', fontSize: 11 }}>
+                                        List price must exceed cost
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()
+                            )}
+
+                            {/* Effective / Expires dates */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+                              <div>
+                                <label style={labelStyle}>Effective date</label>
+                                <input
+                                  type="date"
+                                  value={invEffectiveDate}
+                                  onChange={e => setInvEffectiveDate(e.target.value)}
+                                  style={monoInputStyle}/>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Expires date</label>
+                                <input
+                                  type="date"
+                                  value={invExpiresDate}
+                                  onChange={e => setInvExpiresDate(e.target.value)}
+                                  style={monoInputStyle}/>
+                              </div>
+                            </div>
+
+                            {/* Volume pricing toggle */}
+                            <label style={{
+                              display: 'flex', alignItems: 'center', gap: 10,
+                              padding: '10px 14px', borderRadius: 9,
+                              background: invUseVolumePricing ? 'rgba(255, 232, 170, 0.45)' : 'rgba(245, 240, 225, 0.4)',
+                              border: '1px solid ' + (invUseVolumePricing ? 'oklch(0.72 0.16 78 / 0.35)' : 'rgba(180, 140, 60, 0.15)'),
+                              cursor: 'pointer', fontSize: 12.5, color: 'var(--ink-2)',
+                              transition: 'all 0.15s ease',
+                              marginBottom: invUseVolumePricing ? 12 : 0,
+                            }}>
+                              <input
+                                type="checkbox"
+                                checked={invUseVolumePricing}
+                                onChange={e => {
+                                  const checked = e.target.checked;
+                                  setInvUseVolumePricing(checked);
+                                  // Seed two empty tiers so the user has something to fill
+                                  if (checked && invVolumeTiers.length === 0) {
+                                    setInvVolumeTiers([
+                                      { minQty: '1', maxQty: '', price: '' },
+                                      { minQty: '', maxQty: '', price: '' },
+                                    ]);
+                                  }
+                                }}
+                                style={{ accentColor: 'oklch(0.72 0.15 62)', cursor: 'pointer' }}/>
+                              <span style={{ flex: 1 }}>
+                                <span style={{ fontWeight: 600, color: 'var(--ink)' }}>Enable volume pricing</span>
+                                <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginLeft: 8 }}>
+                                  tiered discounts at quantity breaks
+                                </span>
+                              </span>
+                              {invUseVolumePricing && (
+                                <Chip tone={invVolumeTiers.filter(t => t.minQty && t.price).length >= 2 ? 'green' : 'gold'}>
+                                  {invVolumeTiers.filter(t => t.minQty && t.price).length} tier{invVolumeTiers.filter(t => t.minQty && t.price).length === 1 ? '' : 's'}
+                                </Chip>
+                              )}
+                            </label>
+
+                            {/* Volume tier table */}
+                            {invUseVolumePricing && (
+                              <div style={{
+                                padding: 14, borderRadius: 12,
+                                background: 'rgba(255, 248, 222, 0.4)',
+                                border: '1px solid rgba(180, 140, 60, 0.15)',
+                              }}>
+                                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                                  Tier breakdown · at least 2 tiers required
+                                </div>
+
+                                <div style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: '50px 1fr 1fr 1fr 36px',
+                                  gap: 8, padding: '0 4px',
+                                  fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase',
+                                  color: 'var(--ink-3)', marginBottom: 6,
+                                }} className="mono">
+                                  <span>Tier</span>
+                                  <span>Min qty</span>
+                                  <span>Max qty</span>
+                                  <span>Unit price</span>
+                                  <span></span>
+                                </div>
+
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                  {invVolumeTiers.map((tier, idx) => {
+                                    const isFirst = idx === 0;
+                                    const isLast = idx === invVolumeTiers.length - 1;
+                                    // Inline validation hints
+                                    const minQ = parseInt(tier.minQty);
+                                    const prevMaxQ = idx > 0 ? parseInt(invVolumeTiers[idx - 1].maxQty) : null;
+                                    const expectedMinQ = isFirst ? 1 : (prevMaxQ != null && !isNaN(prevMaxQ) ? prevMaxQ + 1 : null);
+                                    const minWarn = !isNaN(minQ) && expectedMinQ != null && minQ !== expectedMinQ;
+                                    return (
+                                      <div key={idx} style={{
+                                        display: 'grid',
+                                        gridTemplateColumns: '50px 1fr 1fr 1fr 36px',
+                                        gap: 8, alignItems: 'center',
+                                      }}>
+                                        <div className="mono" style={{
+                                          padding: '8px 10px', borderRadius: 7,
+                                          background: 'rgba(180, 140, 60, 0.1)',
+                                          fontSize: 11, fontWeight: 600, color: 'var(--ink-2)',
+                                          textAlign: 'center',
+                                        }}>
+                                          T{idx + 1}
+                                        </div>
+                                        <div>
+                                          <input
+                                            type="number" min="1"
+                                            value={tier.minQty}
+                                            onChange={e => {
+                                              const next = [...invVolumeTiers];
+                                              next[idx] = { ...next[idx], minQty: e.target.value };
+                                              setInvVolumeTiers(next);
+                                            }}
+                                            placeholder={isFirst ? '1' : (expectedMinQ != null ? String(expectedMinQ) : 'min')}
+                                            style={{
+                                              ...monoInputStyle, padding: '8px 10px', fontSize: 12,
+                                              borderColor: minWarn ? 'oklch(0.62 0.18 28 / 0.45)' : monoInputStyle.border?.toString().includes('22') ? 'rgba(180, 140, 60, 0.22)' : undefined,
+                                              background: minWarn ? 'rgba(255, 230, 225, 0.5)' : 'rgba(255, 253, 240, 0.75)',
+                                            }}/>
+                                        </div>
+                                        <div>
+                                          <input
+                                            type="number" min="1"
+                                            value={tier.maxQty}
+                                            onChange={e => {
+                                              const next = [...invVolumeTiers];
+                                              next[idx] = { ...next[idx], maxQty: e.target.value };
+                                              setInvVolumeTiers(next);
+                                            }}
+                                            placeholder={isLast ? 'no limit' : 'max'}
+                                            disabled={isLast}
+                                            style={{
+                                              ...monoInputStyle, padding: '8px 10px', fontSize: 12,
+                                              opacity: isLast ? 0.5 : 1,
+                                              cursor: isLast ? 'not-allowed' : 'text',
+                                            }}/>
+                                        </div>
+                                        <div>
+                                          <input
+                                            type="number" step="0.01" min="0"
+                                            value={tier.price}
+                                            onChange={e => {
+                                              const next = [...invVolumeTiers];
+                                              next[idx] = { ...next[idx], price: e.target.value };
+                                              setInvVolumeTiers(next);
+                                            }}
+                                            placeholder="0.00"
+                                            style={{ ...monoInputStyle, padding: '8px 10px', fontSize: 12 }}/>
+                                        </div>
+                                        <button type="button"
+                                          onClick={() => setInvVolumeTiers(invVolumeTiers.filter((_, i) => i !== idx))}
+                                          disabled={invVolumeTiers.length <= 2}
+                                          title={invVolumeTiers.length <= 2 ? 'Minimum 2 tiers required' : 'Remove this tier'}
+                                          style={{
+                                            padding: '7px 8px', borderRadius: 7, border: 0,
+                                            background: invVolumeTiers.length <= 2 ? 'rgba(180, 140, 60, 0.06)' : 'rgba(255, 230, 225, 0.4)',
+                                            color: invVolumeTiers.length <= 2 ? 'var(--ink-3)' : 'oklch(0.5 0.18 28)',
+                                            cursor: invVolumeTiers.length <= 2 ? 'not-allowed' : 'pointer',
+                                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                            fontFamily: 'inherit',
+                                          }}>
+                                          <IconX size={11}/>
+                                        </button>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+
+                                <button type="button"
+                                  onClick={() => setInvVolumeTiers([...invVolumeTiers, { minQty: '', maxQty: '', price: '' }])}
+                                  style={{
+                                    marginTop: 10, padding: '7px 12px', borderRadius: 8, border: 0,
+                                    background: 'rgba(180, 140, 60, 0.12)',
+                                    color: 'var(--ink-2)', fontSize: 11.5, fontWeight: 600,
+                                    cursor: 'pointer', fontFamily: 'inherit',
+                                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                                  }}>
+                                  <IconPlus size={11}/> Add tier
+                                </button>
+
+                                <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 10, lineHeight: 1.5, letterSpacing: '0.02em' }}>
+                                  · Tier 1 must start at min qty 1 · tiers must be contiguous (next min = previous max + 1) · price typically decreases with qty
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* ── Section 4 · Supplier ── */}
+                          <div>
+                            <div style={sectionHeaderStyle}>
+                              <span style={sectionIndexStyle}>4</span>
+                              Supplier
+                              <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase', marginLeft: 'auto' }}>
+                                Optional · vendor-only
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 12 }}>
+                              <div>
+                                <label style={labelStyle}>Supplier code</label>
+                                <input
+                                  value={invSupplierCode}
+                                  onChange={e => setInvSupplierCode(e.target.value)}
+                                  placeholder="SUP-2218"
+                                  style={monoInputStyle}/>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Supplier name</label>
+                                <input
+                                  value={invSupplierName}
+                                  onChange={e => setInvSupplierName(e.target.value)}
+                                  placeholder="Mill Supply Co."
+                                  style={inputStyle}/>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* ── Section 5 · Initial inventory ── */}
+                          <div>
+                            <div style={sectionHeaderStyle}>
+                              <span style={sectionIndexStyle}>5</span>
+                              Initial inventory
+                              <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase', marginLeft: 'auto' }}>
+                                Required · qty must be ≥ 1
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 10 }}>
+                              <div>
+                                <label style={labelRequiredStyle}>
+                                  Initial quantity <span style={{ color: 'oklch(0.62 0.18 28)', textTransform: 'none', letterSpacing: 0 }}>*</span>
+                                </label>
+                                <input
+                                  type="number" min="1"
+                                  value={invInitialQty}
+                                  onChange={e => setInvInitialQty(e.target.value)}
+                                  placeholder="1"
+                                  style={monoInputStyle}/>
+                              </div>
+                              <div>
+                                <label style={labelStyle}>Unit of measure</label>
+                                <select
+                                  value={invUnit}
+                                  onChange={e => setInvUnit(e.target.value as UnitOfMeasure)}
+                                  style={monoInputStyle}>
+                                  <option value="ea">ea — each</option>
+                                  <option value="kg">kg — kilogram</option>
+                                  <option value="lb">lb — pound</option>
+                                  <option value="m">m — meter</option>
+                                  <option value="ft">ft — foot</option>
+                                  <option value="box">box</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            {invInitialQty && parseInt(invInitialQty) > 0 && !warehouseWalletAddress && (
+                              <div style={{
+                                padding: '9px 12px', borderRadius: 9,
+                                background: 'rgba(255, 242, 210, 0.5)',
+                                border: '1px solid oklch(0.72 0.16 78 / 0.3)',
+                                fontSize: 11.5, color: 'var(--ink-2)', lineHeight: 1.5,
+                                display: 'flex', alignItems: 'center', gap: 8,
+                              }}>
+                                <span style={{ fontSize: 13 }}>⚠</span>
+                                <span>
+                                  No warehouse wallet configured. Initial quantity will mint, but tokens will stay with the issuer.
+                                  <a onClick={() => {
+                                    const card = document.querySelector('[data-warehouse-card]');
+                                    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                  }} style={{ color: 'oklch(0.55 0.16 235)', cursor: 'pointer', marginLeft: 6, textDecoration: 'underline' }}>
+                                    Configure above ↑
+                                  </a>
+                                </span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* ── Section 6 · Documents ── */}
+                          <div>
+                            <div style={sectionHeaderStyle}>
+                              <span style={sectionIndexStyle}>6</span>
+                              Documents
+                              <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', color: 'var(--ink-3)', textTransform: 'uppercase', marginLeft: 'auto' }}>
+                                Optional · pinned to IPFS
+                              </span>
+                            </div>
+
+                            {(() => {
+                              const docSlots: { key: 'image' | 'pricing' | 'design' | 'bom' | 'usage'; label: string; sub: string; file: File | null; setter: (f: File | null) => void; accept: string }[] = [
+                                { key: 'image',   label: 'Product image', sub: 'PNG, JPG, WEBP',     file: invImageFile,   setter: setInvImageFile,   accept: 'image/png,image/jpeg,image/webp' },
+                                { key: 'pricing', label: 'Price sheet',   sub: 'PDF',                file: invPricingFile, setter: setInvPricingFile, accept: 'application/pdf' },
+                                { key: 'design',  label: 'Design / spec', sub: 'PDF, DXF, STEP',     file: invDesignFile,  setter: setInvDesignFile,  accept: 'application/pdf,.dxf,.step,.stp' },
+                                { key: 'bom',     label: 'Bill of materials', sub: 'PDF, CSV, XLSX', file: invBomFile,     setter: setInvBomFile,     accept: 'application/pdf,.csv,.xlsx' },
+                                { key: 'usage',   label: 'Usage guide',   sub: 'PDF',                file: invUsageFile,   setter: setInvUsageFile,   accept: 'application/pdf' },
+                              ];
+
+                              return (
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+                                  {docSlots.map(slot => {
+                                    const hasFile = !!slot.file;
+                                    return (
+                                      <div key={slot.key} style={{
+                                        padding: 12, borderRadius: 10,
+                                        background: hasFile ? 'rgba(220, 235, 220, 0.35)' : 'rgba(245, 240, 225, 0.3)',
+                                        border: '1px solid ' + (hasFile ? 'oklch(0.68 0.16 148 / 0.3)' : 'rgba(180, 140, 60, 0.18)'),
+                                        transition: 'all 0.15s ease',
+                                      }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+                                          <div>
+                                            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink)' }}>{slot.label}</div>
+                                            <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', letterSpacing: '0.04em', marginTop: 2 }}>
+                                              {slot.sub}
+                                            </div>
+                                          </div>
+                                          {hasFile && (
+                                            <button type="button"
+                                              onClick={() => slot.setter(null)}
+                                              title="Remove file"
+                                              style={{
+                                                padding: 4, borderRadius: 6, border: 0,
+                                                background: 'rgba(255, 230, 225, 0.6)',
+                                                color: 'oklch(0.5 0.18 28)',
+                                                cursor: 'pointer', display: 'flex',
+                                              }}>
+                                              <IconX size={10}/>
+                                            </button>
+                                          )}
+                                        </div>
+                                        {hasFile ? (
+                                          <div style={{
+                                            padding: '6px 9px', borderRadius: 7,
+                                            background: 'rgba(255, 255, 255, 0.4)',
+                                            border: '1px solid rgba(180, 140, 60, 0.12)',
+                                            display: 'flex', alignItems: 'center', gap: 7, fontSize: 11,
+                                          }}>
+                                            <IconFile size={12} style={{ color: 'oklch(0.45 0.16 148)', flexShrink: 0 }}/>
+                                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }} title={slot.file!.name}>
+                                              {slot.file!.name}
+                                            </span>
+                                            <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', flexShrink: 0 }}>
+                                              {(slot.file!.size / 1024).toFixed(1)} KB
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <label style={{
+                                            display: 'block', padding: '7px 10px', borderRadius: 7,
+                                            background: 'rgba(255, 253, 240, 0.6)',
+                                            border: '1px dashed rgba(180, 140, 60, 0.25)',
+                                            fontSize: 11, color: 'var(--ink-3)', textAlign: 'center',
+                                            cursor: 'pointer', fontFamily: 'inherit',
+                                            transition: 'all 0.12s ease',
+                                          }}
+                                          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 248, 222, 0.7)'; e.currentTarget.style.color = 'var(--ink-2)'; }}
+                                          onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 253, 240, 0.6)'; e.currentTarget.style.color = 'var(--ink-3)'; }}>
+                                            + Choose file
+                                            <input type="file" accept={slot.accept} style={{ display: 'none' }}
+                                              onChange={(e) => { const f = e.target.files?.[0]; if (f) slot.setter(f); e.target.value = ''; }}/>
+                                          </label>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
+                          </div>
+
+                          {/* ── Section 7 · Generate ── */}
+                          {(() => {
+                            const isGenerating = typeof invResult === 'string'
+                              && invResult.length > 0
+                              && !invResult.startsWith('✅')
+                              && !invResult.startsWith('❌')
+                              && !invResult.startsWith('Error');
+                            const isSuccess = typeof invResult === 'string' && invResult.startsWith('✅');
+                            const isError = typeof invResult === 'string' && (invResult.startsWith('❌') || invResult.startsWith('Error'));
+                            const skuTrimmedG = invSku.trim().toUpperCase();
+                            const skuConflictG = !!skuTrimmedG && (vendorInventoryV2 || []).some(i =>
+                              (i as any).sku && String((i as any).sku).trim().toUpperCase() === skuTrimmedG
+                            );
+                            const canGenerate = !!invSku.trim()
+                              && !!invName
+                              && !!invPartNumber
+                              && !!invUnitCost && parseFloat(invUnitCost) > 0
+                              && !!invInitialQty && parseInt(invInitialQty) >= 1
+                              && !skuConflictG
+                              && !isGenerating
+                              && !isSuccess;
+                            const btnLabel = isSuccess
+                              ? '✓ Inventory minted'
+                              : isGenerating
+                                ? invResult.replace(/^(Uploading|Minting|Creating|Sending|Authorizing|Step \d\/\d:)\s?/, m => m).slice(0, 60)
+                                : 'Generate inventory';
+                            const fileCount = [invImageFile, invPricingFile, invDesignFile, invBomFile, invUsageFile].filter(Boolean).length;
+                            const tierCount = invUseVolumePricing ? invVolumeTiers.filter(t => t.minQty && t.price).length : 0;
+
+                            return (
+                              <div style={{
+                                padding: 18, borderRadius: 14,
+                                background: 'linear-gradient(180deg, rgba(255, 248, 222, 0.5), rgba(250, 238, 200, 0.3))',
+                                border: '1px solid oklch(0.7 0.14 70 / 0.2)',
+                              }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 14 }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>
+                                      Step 7 · Mint to chain
+                                    </div>
+                                    <div style={{ fontSize: 13, color: 'var(--ink-2)', marginBottom: 8, lineHeight: 1.5 }}>
+                                      Generate uploads documents to IPFS, mints a parent NFT, creates the MPT issuance, and sends the initial quantity to your warehouse wallet.
+                                    </div>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                                      <Chip tone={invSku.trim() && invPartNumber && invName ? 'green' : 'neutral'}>
+                                        {invSku.trim() && invPartNumber && invName ? '✓ SKU · Part # · Name' : 'SKU + Part # + Name needed'}
+                                      </Chip>
+                                      {skuConflictG && <Chip tone="red">SKU duplicate</Chip>}
+                                      <Chip tone={invUnitCost && parseFloat(invUnitCost) > 0 ? 'gold' : 'red'}>
+                                        {invUnitCost && parseFloat(invUnitCost) > 0 ? `$${parseFloat(invUnitCost).toFixed(2)} cost` : 'Cost required'}
+                                      </Chip>
+                                      <Chip tone={invInitialQty && parseInt(invInitialQty) >= 1 ? 'gold' : 'red'}>
+                                        {invInitialQty && parseInt(invInitialQty) >= 1 ? `${invInitialQty} ${invUnit} initial` : 'Qty ≥ 1 required'}
+                                      </Chip>
+                                      <Chip tone={invUnitPrice && parseFloat(invUnitPrice) > 0 ? 'gold' : 'neutral'}>
+                                        {invUnitPrice ? `$${parseFloat(invUnitPrice).toFixed(2)} list` : 'No list price'}
+                                      </Chip>
+                                      {tierCount > 0 && <Chip tone="gold">{tierCount} volume tier{tierCount === 1 ? '' : 's'}</Chip>}
+                                      {fileCount > 0 && <Chip tone="neutral">📎 {fileCount} doc{fileCount === 1 ? '' : 's'}</Chip>}
+                                    </div>
+                                  </div>
+
+                                  <button type="button" disabled={!canGenerate}
+                                    onClick={async () => { if (canGenerate) await generateInventoryV2(); }}
+                                    style={{
+                                      padding: '12px 22px', borderRadius: 11, minWidth: 200,
+                                      fontSize: 13, fontWeight: 600, border: 0,
+                                      background: isSuccess
+                                        ? 'linear-gradient(180deg, oklch(0.88 0.16 148), oklch(0.68 0.18 148))'
+                                        : isGenerating
+                                          ? 'linear-gradient(90deg, oklch(0.92 0.1 86) 0%, oklch(0.82 0.13 72) 50%, oklch(0.92 0.1 86) 100%)'
+                                          : canGenerate
+                                            ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.72 0.14 62))'
+                                            : 'rgba(180, 140, 60, 0.15)',
+                                      backgroundSize: isGenerating ? '200% 100%' : 'auto',
+                                      animation: isGenerating ? 'shimmer 1.4s linear infinite' : 'none',
+                                      color: isSuccess ? '#07240f' : (canGenerate || isGenerating) ? '#1a1505' : 'var(--ink-3)',
+                                      cursor: !canGenerate ? 'default' : 'pointer',
+                                      boxShadow: isSuccess
+                                        ? '0 0 28px -4px oklch(0.7 0.2 148 / 0.55), inset 0 1px 0 rgba(255,255,255,0.5)'
+                                        : canGenerate && !isGenerating
+                                          ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 14px -4px rgba(200,150,50,0.45)'
+                                          : 'none',
+                                      fontFamily: 'inherit',
+                                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                                      transition: 'box-shadow 0.25s ease, background 0.25s ease',
+                                      flexShrink: 0,
+                                    }}>
+                                    {!isGenerating && !isSuccess && <IconCheck size={14}/>}
+                                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{btnLabel}</span>
+                                  </button>
+                                </div>
+
+                                {isGenerating && (
+                                  <div style={{
+                                    marginTop: 12, padding: '8px 12px', borderRadius: 9,
+                                    background: 'rgba(255, 253, 240, 0.6)',
+                                    border: '1px solid rgba(180, 140, 60, 0.18)',
+                                    fontSize: 11.5, color: 'var(--ink-2)', lineHeight: 1.5,
+                                  }} className="mono">
+                                    {invResult}
+                                  </div>
+                                )}
+
+                                {isSuccess && (
+                                  <div className="rise" style={{
+                                    marginTop: 12, padding: 12, borderRadius: 11,
+                                    background: 'rgba(220, 245, 225, 0.5)',
+                                    border: '1px solid oklch(0.68 0.16 148 / 0.4)',
+                                    fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.55, whiteSpace: 'pre-wrap',
+                                    boxShadow: '0 0 24px -4px oklch(0.7 0.2 148 / 0.35)',
+                                  }}>
+                                    {invResult}
+                                    <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 8, letterSpacing: '0.04em' }}>
+                                      Form will reset in 2 seconds…
+                                    </div>
+                                  </div>
+                                )}
+
+                                {isError && (
+                                  <div style={{
+                                    marginTop: 12, padding: 12, borderRadius: 10,
+                                    background: 'rgba(255, 230, 225, 0.5)',
+                                    border: '1px solid oklch(0.6 0.16 28 / 0.35)',
+                                    color: 'oklch(0.4 0.18 28)',
+                                    fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                                  }}>
+                                    {invResult}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })()}
-                    <h4 style={{ marginTop: '20px', color: '#F2B04A' }}>Inventory Details</h4>
-                    {(() => {
-                      const currentPoInventory = mode === 'customer' ? customerViewPoInventory : vendorViewPoInventory;
-                      const currentViewedPO = mode === 'customer' ? customerViewViewedPO : vendorViewViewedPO;
-                      return currentViewedPO?.items.map((item, i) => {
-                        const inv = currentPoInventory[item.num];
-                        return inv ? (
-                          <div key={i} style={{ marginBottom: '20px', border: '1px solid #D88F2E', padding: '10px', borderRadius: '10px' }}>
-                            <h5 style={{ color: '#F2B04A' }}>Item: {item.num}</h5>
-                            <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {inv.description}</p>
-                            <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {inv.department}</p>
-                            {inv.attachments.length > 0 && (
-                              <>
-                                <strong style={{ color: '#F2B04A' }}>Inventory Attachments:</strong>
-                                <ul>
-                                  {inv.attachments.map((att: Attachment, j: number) => (
-                                    <li key={j}>
-                                      <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                                        {att.name}
-                                      </a>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </>
-                            )}
+                  </Card>
+
+                </div>
+              )}
+            </Page>
+          );
+        })()}
+        {activeTab === 'view' && mode === 'customer' && (() => {
+          const now = new Date();
+
+          // Stage buckets — simple filter counts & dollar sums
+          const bucketOf = (filter: (po: SavedPO) => boolean) => {
+            const pos = savedPOs.filter(filter);
+            const total = pos.reduce((s, p) => s + (parseFloat(p.total) || 0), 0);
+            return { count: pos.length, value: total };
+          };
+          const openBucket     = bucketOf(p => p.status === 'open');
+          const acceptedBucket = bucketOf(p => p.status === 'accepted' && !p.escrowSequence);
+          const fundedBucket   = bucketOf(p => p.status === 'funded');
+          const claimedBucket  = bucketOf(p => p.status === 'claimed');
+
+          // 12-month stacked spend: funded + claimed by dateIssued month
+          const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          const monthLabel = (d: Date) => ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+          const last12: { key: string; m: string }[] = [];
+          for (let i = 11; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            last12.push({ key: monthKey(d), m: monthLabel(d) });
+          }
+          const bucketize = (status: SavedPO['status']) => {
+            const map = new Map<string, number>();
+            for (const po of savedPOs) {
+              if (po.status !== status) continue;
+              const d = new Date(po.dateIssued);
+              if (isNaN(d.getTime())) continue;
+              const k = monthKey(d);
+              map.set(k, (map.get(k) || 0) + (parseFloat(po.total) || 0));
+            }
+            return last12.map(({ key, m }) => ({ m, v: map.get(key) || 0 }));
+          };
+          const fundedSeries = bucketize('funded');
+          const claimedSeries = bucketize('claimed');
+          const trailingTotal = [...fundedSeries, ...claimedSeries].reduce((s, d) => s + d.v, 0);
+
+          // Supplier mix (all POs)
+          const supplierAgg = new Map<string, number>();
+          for (const po of savedPOs) {
+            const key = po.vendorAddress || 'unknown';
+            supplierAgg.set(key, (supplierAgg.get(key) || 0) + (parseFloat(po.total) || 0));
+          }
+          const totalAllPO = Array.from(supplierAgg.values()).reduce((s, v) => s + v, 0) || 1;
+          const supplierMix = Array.from(supplierAgg.entries())
+            .map(([addr, v]) => {
+              const lv = linkedVendors.find(x => x.classicAddress === addr);
+              return { c: lv?.company || lv?.name || (addr === 'unknown' ? 'Unknown' : addr.slice(0, 8) + '…'), v, pct: Math.round((v / totalAllPO) * 100) };
+            })
+            .sort((a, b) => b.v - a.v)
+            .slice(0, 6);
+
+          // Category mix (line items via V2 inventory when matchable)
+          // Since categories live in IPFS-decrypted poData, not on SavedPO,
+          // we can only compute this approximately — using the vendor's V2 inventory
+          // to categorize line items whose partNumber matches a known part.
+          // For a first pass we aggregate by vendor's V2 categories when we have them,
+          // otherwise we skip and note "—".
+          const categoryAgg = new Map<string, number>();
+          let uncategorizedValue = 0;
+          for (const po of savedPOs) {
+            const vendorV2 = linkedVendorInventoryV2[po.vendorAddress] || [];
+            const poVal = parseFloat(po.total) || 0;
+            if (vendorV2.length === 0) {
+              // We can't inspect line items without fetching IPFS here;
+              // best-effort: assign full PO value to "Uncategorized"
+              uncategorizedValue += poVal;
+              continue;
+            }
+            // If items aren't available on SavedPO, we attribute the full value
+            // to the vendor's primary category (most common V2 category).
+            const catFreq = new Map<string, number>();
+            for (const inv of vendorV2) {
+              if (inv.category) catFreq.set(inv.category, (catFreq.get(inv.category) || 0) + 1);
+            }
+            const topCat = Array.from(catFreq.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+            if (topCat) {
+              categoryAgg.set(topCat, (categoryAgg.get(topCat) || 0) + poVal);
+            } else {
+              uncategorizedValue += poVal;
+            }
+          }
+          if (uncategorizedValue > 0) categoryAgg.set('Uncategorized', uncategorizedValue);
+          const totalCat = Array.from(categoryAgg.values()).reduce((s, v) => s + v, 0) || 1;
+          const categoryMix = Array.from(categoryAgg.entries())
+            .map(([c, v]) => ({ c, v, pct: Math.round((v / totalCat) * 100) }))
+            .sort((a, b) => b.v - a.v)
+            .slice(0, 6);
+
+          const activeMix = overviewMix === 'category' ? categoryMix : supplierMix;
+
+          // PO list with filter + search
+          const stageFilterMap: Record<string, (po: SavedPO) => boolean> = {
+            All:      () => true,
+            Open:     (po) => po.status === 'open',
+            Accepted: (po) => po.status === 'accepted',
+            Funded:   (po) => po.status === 'funded',
+            Claimed:  (po) => po.status === 'claimed',
+          };
+          const poQ = overviewPoQuery.trim().toLowerCase();
+          // Exclude superseded POs — only the latest version of each chain shows
+          const latestPOs = savedPOs.filter(p => p.status !== 'superseded');
+          const allPOs = sortPOsNewestFirst(latestPOs.filter(stageFilterMap[overviewPoFilter]));
+          const filteredPOs = !poQ ? allPOs : allPOs.filter(po => {
+            const lv = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+            const vname = (lv?.company || lv?.name || '').toLowerCase();
+            return (po.poName || '').toLowerCase().includes(poQ)
+              || (po.issuanceId || '').toLowerCase().includes(poQ)
+              || vname.includes(poQ);
+          });
+          const versionOf = (po: SavedPO) => getPOHistory(po).length + 1;
+          const selectedVendor = overviewSelectedPO ? linkedVendors.find(v => v.classicAddress === overviewSelectedPO.vendorAddress) : null;
+          // History is always computed from the ANCHOR (the latest PO in the chain,
+          // i.e., the row actually clicked in the main table) — so it stays stable
+          // when the user clicks through old versions inside the history panel.
+          const selectedHistory = overviewHistoryAnchor ? getPOHistory(overviewHistoryAnchor) : [];
+          const anchorLatestVersion = overviewHistoryAnchor ? versionOf(overviewHistoryAnchor) : 1;
+          const selectedVersion = overviewSelectedPO ? versionOf(overviewSelectedPO) : 1;
+
+          const ageString = (dateStr: string) => {
+            const d = new Date(dateStr);
+            if (isNaN(d.getTime())) return '—';
+            const diffMs = now.getTime() - d.getTime();
+            const diffH = Math.floor(diffMs / (1000 * 60 * 60));
+            if (diffH < 1) return 'now';
+            if (diffH < 24) return `${diffH}h`;
+            const diffD = Math.floor(diffH / 24);
+            if (diffD < 30) return `${diffD}d`;
+            const diffMo = Math.floor(diffD / 30);
+            return `${diffMo}mo`;
+          };
+
+          const stageToneMap: Record<string, 'gold' | 'blue' | 'green' | 'neutral' | 'red'> = {
+            open: 'gold', accepted: 'blue', funded: 'green', claimed: 'neutral', recalled: 'red', superseded: 'neutral', updated: 'gold',
+          };
+
+          return (
+            <Page
+              tag="Buy · Overview"
+              title="Procurement overview"
+              subtitle="Spend, pipeline, and purchase order flow across your active supply base."
+              actions={
+                <Btn variant="ghost" icon={IconRefresh}
+                  onClick={async () => {
+                    setIsRefreshing(true);
+                    await loadPOsFromLedger();
+                    setIsRefreshing(false);
+                  }}>
+                  {isRefreshing ? 'Refreshing…' : 'Refresh'}
+                </Btn>
+              }>
+
+              {/* Stage metrics */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+                {[
+                  { stage: 'Open',     tone: 'gold' as const,    b: openBucket },
+                  { stage: 'Accepted', tone: 'blue' as const,    b: acceptedBucket },
+                  { stage: 'Funded',   tone: 'green' as const,   b: fundedBucket },
+                  { stage: 'Claimed',  tone: 'neutral' as const, b: claimedBucket },
+                ].map(card => (
+                  <Card key={card.stage}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <Chip tone={card.tone}>{card.stage}</Chip>
+                    </div>
+                    <div className="mono" style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-0.02em', lineHeight: 1 }}>
+                      ${formatNumber(card.b.value, { decimals: 0 })}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 11, color: 'var(--ink-3)' }}>
+                      <span>{card.stage} POs</span>
+                      <span className="mono" style={{ fontWeight: 600, color: 'var(--ink)' }}>{card.b.count}</span>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+
+              {/* Spend chart + Mix panel */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 16, marginBottom: 20 }}>
+                <Card layered
+                  label={<>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                      Trailing 12 months · committed spend
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 600 }}>
+                      Procurement spend · <span className="mono" style={{ fontWeight: 500 }}>${formatNumber(trailingTotal, { decimals: 0 })}</span>
+                    </div>
+                  </>}
+                  actions={
+                    <div style={{ display: 'flex', gap: 12 }}>
+                      <LegendSwatch color="oklch(0.72 0.14 62)" label="Funded"/>
+                      <LegendSwatch color="oklch(0.82 0.13 148)" label="Claimed"/>
+                    </div>
+                  }>
+                  <StackedAreaChart
+                    bottomSeries={fundedSeries}
+                    topSeries={claimedSeries}
+                    bottomAccent="oklch(0.72 0.14 62)"
+                    topAccent="oklch(0.82 0.13 148)"/>
+                </Card>
+
+                <Card layered
+                  label={<>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                      Spend by {overviewMix}
+                    </div>
+                    <div style={{ fontSize: 16, fontWeight: 600 }}>
+                      {overviewMix === 'category' ? 'Category mix' : 'Top suppliers'}
+                    </div>
+                  </>}
+                  actions={
+                    <div className="glass-strong" style={{ display: 'flex', padding: 3, borderRadius: 10, position: 'relative' }}>
+                      <div style={{
+                        position: 'absolute', top: 3, bottom: 3,
+                        left: overviewMix === 'category' ? 3 : 'calc(50% + 0px)',
+                        width: 'calc(50% - 3px)',
+                        background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                        borderRadius: 7,
+                        transition: 'left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7)',
+                      }}/>
+                      {[
+                        { k: 'category' as const, l: 'Category' },
+                        { k: 'supplier' as const, l: 'Supplier' },
+                      ].map(t => (
+                        <button key={t.k} type="button" onClick={() => setOverviewMix(t.k)}
+                          style={{
+                            position: 'relative', zIndex: 1, padding: '5px 12px',
+                            fontSize: 11, fontWeight: 600, background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                            color: overviewMix === t.k ? '#2a1f08' : 'var(--ink-3)',
+                          }}>{t.l}</button>
+                      ))}
+                    </div>
+                  }>
+                  {activeMix.length === 0 ? (
+                    <div style={{ padding: '32px 12px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                      No {overviewMix} data yet. Issue POs to populate this view.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
+                      {activeMix.map(r => (
+                        <div key={r.c}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                            <span style={{ fontWeight: 500 }}>{r.c}</span>
+                            <span className="mono" style={{ color: 'var(--ink-3)' }}>${formatNumber(r.v, { decimals: 0 })} · {r.pct}%</span>
                           </div>
-                        ) : null;
-                      });
-                    })()}
-                    <button onClick={() => mode === 'customer' ? setCustomerViewViewedPO(null) : setVendorViewViewedPO(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      Close
-                    </button>
+                          <div style={{ height: 6, borderRadius: 999, background: 'rgba(180, 140, 60, 0.12)', overflow: 'hidden' }}>
+                            <div style={{
+                              width: `${Math.min(100, r.pct * 2.5)}%`, height: '100%',
+                              background: 'linear-gradient(90deg, oklch(0.88 0.13 82), oklch(0.72 0.14 62))',
+                              borderRadius: 999,
+                            }}/>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
+              </div>
+
+              {/* All POs table */}
+              <Card layered label="Purchase orders"
+                actions={
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div className="etched" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 10 }}>
+                      <IconSearch size={12} style={{ color: 'var(--ink-3)' }}/>
+                      <input value={overviewPoQuery} onChange={(e) => setOverviewPoQuery(e.target.value)}
+                        placeholder="Search PO or supplier…"
+                        style={{ border: 0, background: 'transparent', outline: 'none', fontSize: 12, width: 180, color: 'var(--ink)', fontFamily: 'inherit' }}/>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 10, background: 'rgba(180,140,60,0.08)' }}>
+                      {['All', 'Open', 'Accepted', 'Funded', 'Claimed'].map(f => (
+                        <button key={f} type="button" onClick={() => setOverviewPoFilter(f)}
+                          style={{
+                            padding: '5px 10px', borderRadius: 7, fontSize: 11, fontWeight: 600, border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                            background: overviewPoFilter === f ? '#2a1f08' : 'transparent',
+                            color: overviewPoFilter === f ? '#f9efd2' : 'var(--ink-2)',
+                            transition: 'all 0.15s ease',
+                          }}>{f}</button>
+                      ))}
+                    </div>
                   </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
+                }>
+                <div style={{ maxHeight: 340, overflowY: 'auto', borderRadius: 10, border: '1px solid rgba(180,140,60,0.08)' }}>
+                  <Table
+                    cols={[
+                      { k: 'po',       label: 'PO',       w: '180px',
+                        render: (r: SavedPO) => (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                            <span className="mono" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.poName}</span>
+                            {versionOf(r) > 1 && (
+                              <span className="mono" style={{
+                                fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                                background: 'rgba(180, 140, 60, 0.15)', color: 'var(--ink-2)',
+                                fontWeight: 600, flexShrink: 0,
+                              }}>v{versionOf(r)}</span>
+                            )}
+                          </span>
+                        ) },
+                      { k: 'supplier', label: 'Supplier', w: '1fr',
+                        render: (r: SavedPO) => {
+                          const lv = linkedVendors.find(v => v.classicAddress === r.vendorAddress);
+                          const name = lv?.company || lv?.name || (r.vendorAddress ? r.vendorAddress.slice(0, 8) + '…' : '—');
+                          return <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '100%' }}>{name}</span>;
+                        } },
+                      { k: 'age',      label: 'Age',      w: '70px',
+                        render: (r: SavedPO) => <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{ageString(r.dateIssued)}</span> },
+                      { k: 'total',    label: 'Total',    w: '110px', align: 'right',
+                        render: (r: SavedPO) => <span className="mono" style={{ fontWeight: 500 }}>${r.total}</span> },
+                      { k: 'stage',    label: 'Stage',    w: '110px',
+                        render: (r: SavedPO) => <Chip tone={stageToneMap[r.status] || 'neutral'}>{r.status}</Chip> },
+                    ]}
+                    rows={filteredPOs}
+                    onRow={async (r: SavedPO) => {
+                      setOverviewSelectedPO(r);
+                      setOverviewHistoryOpen(false);
+                      setOverviewHistoryAnchor(r);
+                      setOverviewViewedPOData(null);
+                      setOverviewPoLoadError(null);
+                      if (r.ipfsUri) {
+                        await viewPOFromUri(r.ipfsUri, r, setOverviewViewedPOData, setOverviewPoLoadError);
+                      }
+                    }}
+                    isRowActive={(r: SavedPO) => overviewSelectedPO?.issuanceId === r.issuanceId && overviewSelectedPO?.id === r.id}
+                    empty={overviewPoQuery ? `No POs match "${overviewPoQuery}"` : 'No POs at this stage yet.'}/>
+                </div>
+              </Card>
+
+              {/* Inline PO detail panel */}
+              {overviewSelectedPO && (
+                <div style={{ marginTop: 16 }}>
+                  <Card strong layered>
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <Chip tone={stageToneMap[overviewSelectedPO.status] || 'neutral'}>{overviewSelectedPO.status}</Chip>
+                          <button type="button"
+                            onClick={() => anchorLatestVersion > 1 && setOverviewHistoryOpen(!overviewHistoryOpen)}
+                            disabled={anchorLatestVersion === 1}
+                            title={anchorLatestVersion === 1 ? 'First version — no history yet' : `Click to ${overviewHistoryOpen ? 'hide' : 'view'} previous versions`}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              padding: '3px 9px', borderRadius: 6,
+                              background: anchorLatestVersion > 1
+                                ? (overviewHistoryOpen ? 'rgba(42, 31, 8, 0.9)' : 'rgba(180, 140, 60, 0.18)')
+                                : 'rgba(180, 140, 60, 0.08)',
+                              color: anchorLatestVersion > 1
+                                ? (overviewHistoryOpen ? '#f9efd2' : 'var(--ink-2)')
+                                : 'var(--ink-3)',
+                              border: 0,
+                              cursor: anchorLatestVersion > 1 ? 'pointer' : 'default',
+                              fontFamily: 'inherit', fontSize: 11, fontWeight: 600,
+                            }}>
+                            <IconLayer size={11}/> v{selectedVersion}
+                            {anchorLatestVersion > 1 && <span style={{ opacity: 0.6 }}>· history</span>}
+                          </button>
+                        </div>
+                        <h3 style={{ margin: 0, fontSize: 20, fontWeight: 500, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {overviewSelectedPO.poName}
+                        </h3>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                          {selectedVendor?.company || selectedVendor?.name || overviewSelectedPO.vendorAddress.slice(0, 10) + '…'}
+                          {' · '}{overviewSelectedPO.dateIssued}
+                          {' · '}{overviewSelectedPO.paymentTerms || '—'}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                        <div>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total</div>
+                          <div className="mono" style={{ fontSize: 24, fontWeight: 500 }}>${overviewSelectedPO.total}</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>Escrow · {overviewSelectedPO.escrowCurrency || 'XRP'}</div>
+                        </div>
+                        <button type="button"
+                          onClick={() => {
+                            setOverviewSelectedPO(null);
+                            setOverviewHistoryAnchor(null);
+                            setOverviewHistoryOpen(false);
+                            setOverviewViewedPOData(null);
+                            setOverviewPoLoadError(null);
+                          }}
+                          style={{
+                            padding: 6, borderRadius: 6, background: 'transparent',
+                            border: '1px solid rgba(180,140,60,0.2)', cursor: 'pointer',
+                            color: 'var(--ink-3)', fontFamily: 'inherit',
+                          }}
+                          title="Close detail">
+                          <IconX size={12}/>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Terms grid */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
+                      {[
+                        { k: 'Department',  v: overviewViewedPOData?.department || '—', mono: false },
+                        { k: 'Payment',     v: overviewSelectedPO.paymentTerms || overviewViewedPOData?.paymentTerms || '—', mono: false },
+                        { k: 'Delivery',    v: overviewViewedPOData?.deliveryTerms || '—', mono: false },
+                        { k: 'Escrow ccy',  v: overviewSelectedPO.escrowCurrency || 'XRP', mono: true },
+                      ].map(f => (
+                        <div key={f.k} className="etched" style={{ padding: 10, borderRadius: 10 }}>
+                          <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.k}</div>
+                          <div className={f.mono ? 'mono' : ''} style={{ fontSize: 12, fontWeight: 500, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.v}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Loading / error states */}
+                    {!overviewViewedPOData && !overviewPoLoadError && (
+                      <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                        Loading PO details from IPFS…
+                      </div>
+                    )}
+                    {overviewPoLoadError && (
+                      <div style={{ padding: 14, borderRadius: 12, background: 'rgba(220, 140, 120, 0.12)', border: '1px solid rgba(220, 140, 120, 0.3)', fontSize: 12, color: '#6a2a10', marginBottom: 14 }}>
+                        Could not load PO details: {overviewPoLoadError}
+                      </div>
+                    )}
+
+                    {/* Full PO body */}
+                    {overviewViewedPOData && (
+                      <>
+                        {overviewViewedPOData.description && (
+                          <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 14 }}>
+                            <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
+                            <div style={{ fontSize: 13, lineHeight: 1.5 }}>{overviewViewedPOData.description}</div>
+                          </div>
+                        )}
+
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                          Line items · {overviewViewedPOData.items?.length || 0}
+                        </div>
+                        <div style={{ border: '1px solid rgba(180,140,60,0.15)', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
+                          <div style={{
+                            display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10,
+                            padding: '10px 14px', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
+                            color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                            background: 'rgba(255, 248, 222, 0.5)',
+                            borderBottom: '1px solid rgba(180,140,60,0.15)',
+                          }}>
+                            <div>Item #</div>
+                            <div style={{ textAlign: 'right' }}>Qty</div>
+                            <div style={{ textAlign: 'right' }}>Unit</div>
+                            <div style={{ textAlign: 'right' }}>Total</div>
+                          </div>
+                          {(overviewViewedPOData.items || []).map((item, i) => (
+                            <div key={i} style={{
+                              display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10,
+                              padding: '10px 14px', alignItems: 'center', fontSize: 13,
+                              borderBottom: '1px solid rgba(180,140,60,0.08)',
+                            }}>
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.num}</span>
+                              <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                              <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
+                              <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
+                            </div>
+                          ))}
+                          {(overviewViewedPOData.items || []).length === 0 && (
+                            <div style={{ padding: 20, textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                              No line items on this PO.
+                            </div>
+                          )}
+                        </div>
+
+                        {overviewViewedPOData.attachments && overviewViewedPOData.attachments.length > 0 && (
+                          <>
+                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                              Attachments · {overviewViewedPOData.attachments.length}
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+                              {overviewViewedPOData.attachments.map((att, i) => (
+                                <div key={i} className="etched" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10 }}>
+                                  <div style={{
+                                    padding: 6, borderRadius: 6, background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10',
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  }}>
+                                    <IconFile size={14}/>
+                                  </div>
+                                  <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`}
+                                    target="_blank" rel="noopener noreferrer"
+                                    style={{
+                                      flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none',
+                                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                    }}
+                                    title={`Open ${att.name} on IPFS`}>
+                                    {att.name}
+                                  </a>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        <div style={{
+                          paddingTop: 12, marginBottom: 14,
+                          borderTop: '1px dashed rgba(180,140,60,0.2)',
+                        }}>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+                            On-chain references
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            {[
+                              { label: 'Issuance ID', value: overviewSelectedPO.issuanceId, copyable: true },
+                              { label: 'Tx hash',     value: overviewSelectedPO.txHash,     copyable: true },
+                              { label: 'Escrow seq',  value: overviewSelectedPO.escrowSequence ? String(overviewSelectedPO.escrowSequence) : '', copyable: true },
+                              { label: 'Yield',       value: overviewSelectedPO.yieldOptIn ? 'Opted in' : '', copyable: false },
+                            ].filter(r => r.value).map(r => {
+                              const v = r.value as string;
+                              const truncated = v.length > 22 ? `${v.slice(0, 12)}…${v.slice(-8)}` : v;
+                              return (
+                                <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', minWidth: 0 }}>
+                                  <span style={{ minWidth: 90, color: 'var(--ink-3)', fontSize: 10, letterSpacing: '0.05em', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>{r.label}</span>
+                                  <span className="mono" style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v}>
+                                    {truncated}
+                                  </span>
+                                  {r.copyable && (
+                                    <button type="button"
+                                      onClick={(e) => {
+                                        navigator.clipboard?.writeText(v);
+                                        const btn = e.currentTarget;
+                                        const original = btn.textContent;
+                                        btn.textContent = 'Copied';
+                                        setTimeout(() => { btn.textContent = original; }, 1500);
+                                      }}
+                                      style={{
+                                        background: 'transparent',
+                                        border: '1px solid rgba(180, 140, 60, 0.25)',
+                                        borderRadius: 6, padding: '3px 8px',
+                                        cursor: 'pointer', fontSize: 10, fontWeight: 500,
+                                        color: 'var(--ink-2)', fontFamily: 'inherit', minWidth: 54,
+                                      }}>
+                                      Copy
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div style={{
+                          display: 'flex', justifyContent: 'flex-end',
+                          paddingTop: 10, marginBottom: 14,
+                          borderTop: '1px dashed rgba(180,140,60,0.15)',
+                        }}>
+                          <div className="mono" style={{ fontSize: 13 }}>
+                            <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
+                            <span style={{ fontWeight: 600, fontSize: 18 }}>${overviewSelectedPO.total}</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Version history panel (toggleable) */}
+                    {overviewHistoryOpen && selectedHistory.length > 0 && (
+                      <div className="etched rise" style={{
+                        padding: 16, borderRadius: 12, marginBottom: 14,
+                        background: 'rgba(255, 248, 222, 0.4)',
+                      }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                          Previous versions · {selectedHistory.length} superseded
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {selectedHistory.map((hist, i) => {
+                            const isViewingThisVersion = overviewSelectedPO.issuanceId === hist.issuanceId && overviewSelectedPO.id === hist.id;
+                            return (
+                              <button type="button" key={hist.issuanceId || hist.id}
+                                onClick={async () => {
+                                  setOverviewSelectedPO(hist);
+                                  setOverviewViewedPOData(null);
+                                  setOverviewPoLoadError(null);
+                                  if (hist.ipfsUri) {
+                                    await viewPOFromUri(hist.ipfsUri, hist, setOverviewViewedPOData, setOverviewPoLoadError);
+                                  }
+                                }}
+                                style={{
+                                  display: 'grid', gridTemplateColumns: '60px 1fr 90px 110px 100px',
+                                  gap: 12, padding: '10px 12px', borderRadius: 10,
+                                  background: isViewingThisVersion
+                                    ? 'rgba(255, 248, 220, 0.85)'
+                                    : 'rgba(255, 255, 255, 0.4)',
+                                  border: isViewingThisVersion
+                                    ? '1px solid rgba(180, 140, 60, 0.35)'
+                                    : '1px solid rgba(180, 140, 60, 0.1)',
+                                  borderLeft: isViewingThisVersion
+                                    ? '3px solid oklch(0.72 0.15 62)'
+                                    : '1px solid rgba(180, 140, 60, 0.1)',
+                                  alignItems: 'center', fontSize: 12,
+                                  cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                                  transition: 'all 0.15s ease',
+                                }}
+                                onMouseEnter={!isViewingThisVersion ? (e) => { e.currentTarget.style.background = 'rgba(255, 248, 222, 0.5)'; } : undefined}
+                                onMouseLeave={!isViewingThisVersion ? (e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.4)'; } : undefined}
+                                title="Click to view this version's details">
+                                <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', fontWeight: 600 }}>
+                                  v{i + 1}
+                                </span>
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {hist.poName}
+                                </span>
+                                <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                  {hist.dateIssued}
+                                </span>
+                                <span className="mono" style={{ fontSize: 11, textAlign: 'right', fontWeight: 500 }}>
+                                  ${hist.total}
+                                </span>
+                                <span style={{ textAlign: 'right' }}>
+                                  <Chip tone="neutral">superseded</Chip>
+                                </span>
+                              </button>
+                            );
+                          })}
+                          {overviewHistoryAnchor && (() => {
+                            const latest = overviewHistoryAnchor;
+                            const isViewingLatest = overviewSelectedPO.issuanceId === latest.issuanceId && overviewSelectedPO.id === latest.id;
+                            return (
+                              <button type="button"
+                                onClick={async () => {
+                                  if (isViewingLatest) return;
+                                  setOverviewSelectedPO(latest);
+                                  setOverviewViewedPOData(null);
+                                  setOverviewPoLoadError(null);
+                                  if (latest.ipfsUri) {
+                                    await viewPOFromUri(latest.ipfsUri, latest, setOverviewViewedPOData, setOverviewPoLoadError);
+                                  }
+                                }}
+                                style={{
+                                  display: 'grid', gridTemplateColumns: '60px 1fr 90px 110px 100px',
+                                  gap: 12, padding: '10px 12px', borderRadius: 10,
+                                  background: isViewingLatest
+                                    ? 'rgba(255, 248, 220, 0.85)'
+                                    : 'linear-gradient(180deg, oklch(0.95 0.06 86), oklch(0.9 0.09 82))',
+                                  border: '1px solid rgba(180, 140, 60, 0.35)',
+                                  borderLeft: isViewingLatest
+                                    ? '3px solid oklch(0.72 0.15 62)'
+                                    : '1px solid rgba(180, 140, 60, 0.35)',
+                                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                                  alignItems: 'center', fontSize: 12,
+                                  cursor: isViewingLatest ? 'default' : 'pointer',
+                                  fontFamily: 'inherit', textAlign: 'left',
+                                  transition: 'all 0.15s ease',
+                                }}
+                                onMouseEnter={!isViewingLatest ? (e) => { e.currentTarget.style.filter = 'brightness(1.03)'; } : undefined}
+                                onMouseLeave={!isViewingLatest ? (e) => { e.currentTarget.style.filter = 'none'; } : undefined}
+                                title={isViewingLatest ? 'Currently viewing the latest version' : 'Click to return to the latest version'}>
+                                <span className="mono" style={{ fontSize: 10, color: 'var(--ink)', fontWeight: 700 }}>
+                                  v{anchorLatestVersion}
+                                </span>
+                                <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {latest.poName}
+                                  <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--ink-3)', fontWeight: 500 }}>(current)</span>
+                                </span>
+                                <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                  {latest.dateIssued}
+                                </span>
+                                <span className="mono" style={{ fontSize: 11, textAlign: 'right', fontWeight: 500 }}>
+                                  ${latest.total}
+                                </span>
+                                <span style={{ textAlign: 'right' }}>
+                                  <Chip tone={stageToneMap[latest.status] || 'neutral'}>{latest.status}</Chip>
+                                </span>
+                              </button>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textAlign: 'center' }}>
+                      Click into <strong style={{ color: 'var(--ink-2)' }}>Buy · Action</strong> to update, recall, or fund this PO.
+                    </div>
+                  </Card>
+                </div>
+              )}
+            </Page>
+          );
+        })()}
+        {activeTab === 'view' && mode === 'vendor' && (() => {
+          const now = new Date();
+
+          // Stage buckets
+          const bucketOf = (filter: (po: SavedPO) => boolean) => {
+            const pos = savedPOs.filter(filter);
+            const total = pos.reduce((s, p) => s + (parseFloat(p.total) || 0), 0);
+            return { count: pos.length, value: total };
+          };
+          const openBucket     = bucketOf(p => p.status === 'open');
+          const acceptedBucket = bucketOf(p => p.status === 'accepted' && !p.escrowSequence);
+          const fundedBucket   = bucketOf(p => p.status === 'funded');
+          const claimedBucket  = bucketOf(p => p.status === 'claimed');
+
+          const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+          const monthLabel = (d: Date) => ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+          const last12: { key: string; m: string }[] = [];
+          for (let i = 11; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            last12.push({ key: monthKey(d), m: monthLabel(d) });
+          }
+          const bucketize = (status: SavedPO['status']) => {
+            const map = new Map<string, number>();
+            for (const po of savedPOs) {
+              if (po.status !== status) continue;
+              const d = new Date(po.dateIssued);
+              if (isNaN(d.getTime())) continue;
+              const k = monthKey(d);
+              map.set(k, (map.get(k) || 0) + (parseFloat(po.total) || 0));
+            }
+            return last12.map(({ key, m }) => ({ m, v: map.get(key) || 0 }));
+          };
+          const fundedSeries = bucketize('funded');
+          const claimedSeries = bucketize('claimed');
+          const trailingTotal = [...fundedSeries, ...claimedSeries].reduce((s, d) => s + d.v, 0);
+
+          const buyerAgg = new Map<string, number>();
+          for (const po of savedPOs) {
+            const key = po.buyerAddress || 'unknown';
+            buyerAgg.set(key, (buyerAgg.get(key) || 0) + (parseFloat(po.total) || 0));
+          }
+          const totalAllPO = Array.from(buyerAgg.values()).reduce((s, v) => s + v, 0) || 1;
+          const buyerMix = Array.from(buyerAgg.entries())
+            .map(([addr, v]) => {
+              const lc = linkedCustomers.find(x => x.classicAddress === addr);
+              return { c: lc?.company || lc?.name || (addr === 'unknown' ? 'Unknown' : addr.slice(0, 8) + '…'), v, pct: Math.round((v / totalAllPO) * 100) };
+            })
+            .sort((a, b) => b.v - a.v)
+            .slice(0, 6);
+
+          const categoryAgg = new Map<string, number>();
+          let uncategorizedValue = 0;
+          const v2 = vendorInventoryV2 || [];
+          const catFreq = new Map<string, number>();
+          for (const inv of v2) {
+            if (inv.category) catFreq.set(inv.category, (catFreq.get(inv.category) || 0) + 1);
+          }
+          const topCategory = Array.from(catFreq.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+          for (const po of savedPOs) {
+            const poVal = parseFloat(po.total) || 0;
+            if (topCategory) {
+              categoryAgg.set(topCategory, (categoryAgg.get(topCategory) || 0) + poVal);
+            } else {
+              uncategorizedValue += poVal;
+            }
+          }
+          if (uncategorizedValue > 0) categoryAgg.set('Uncategorized', uncategorizedValue);
+          const totalCat = Array.from(categoryAgg.values()).reduce((s, v) => s + v, 0) || 1;
+          const categoryMix = Array.from(categoryAgg.entries())
+            .map(([c, v]) => ({ c, v, pct: Math.round((v / totalCat) * 100) }))
+            .sort((a, b) => b.v - a.v)
+            .slice(0, 6);
+
+          const stageMix = [
+            { c: 'Quoted',    v: openBucket.value,     pct: 0 },
+            { c: 'Confirmed', v: acceptedBucket.value, pct: 0 },
+            { c: 'Funded',    v: fundedBucket.value,   pct: 0 },
+            { c: 'Claimed',   v: claimedBucket.value,  pct: 0 },
+          ];
+          const stageMixTotal = stageMix.reduce((s, r) => s + r.v, 0) || 1;
+          stageMix.forEach(r => { r.pct = Math.round((r.v / stageMixTotal) * 100); });
+          const stageMixFiltered = stageMix.filter(r => r.v > 0);
+
+          const activeMix = vOvwMix === 'category' ? categoryMix
+                          : vOvwMix === 'buyer'    ? buyerMix
+                                                   : stageMixFiltered;
+
+          const stageFilterMap: Record<string, (po: SavedPO) => boolean> = {
+            All:      () => true,
+            Open:     (po) => po.status === 'open',
+            Accepted: (po) => po.status === 'accepted',
+            Funded:   (po) => po.status === 'funded',
+            Claimed:  (po) => po.status === 'claimed',
+          };
+          const poQ = vOvwPoQuery.trim().toLowerCase();
+          const latestPOs = savedPOs.filter(p => p.status !== 'superseded');
+          const allPOs = sortPOsNewestFirst(latestPOs.filter(stageFilterMap[vOvwPoFilter]));
+          const filteredPOs = !poQ ? allPOs : allPOs.filter(po => {
+            const lc = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+            const cname = (lc?.company || lc?.name || '').toLowerCase();
+            return (po.poName || '').toLowerCase().includes(poQ)
+              || (po.issuanceId || '').toLowerCase().includes(poQ)
+              || cname.includes(poQ);
+          });
+          const versionOf = (po: SavedPO) => getPOHistory(po).length + 1;
+          const selectedBuyer = vOvwSelectedPO ? linkedCustomers.find(c => c.classicAddress === vOvwSelectedPO.buyerAddress) : null;
+          const selectedHistory = vOvwHistoryAnchor ? getPOHistory(vOvwHistoryAnchor) : [];
+          const anchorLatestVersion = vOvwHistoryAnchor ? versionOf(vOvwHistoryAnchor) : 1;
+          const selectedVersion = vOvwSelectedPO ? versionOf(vOvwSelectedPO) : 1;
+
+          const ageString = (dateStr: string) => {
+            const d = new Date(dateStr);
+            if (isNaN(d.getTime())) return '—';
+            const diffMs = now.getTime() - d.getTime();
+            const diffH = Math.floor(diffMs / (1000 * 60 * 60));
+            if (diffH < 1) return 'now';
+            if (diffH < 24) return `${diffH}h`;
+            const diffD = Math.floor(diffH / 24);
+            if (diffD < 30) return `${diffD}d`;
+            const diffMo = Math.floor(diffD / 30);
+            return `${diffMo}mo`;
+          };
+
+          const stageToneMap: Record<string, 'gold' | 'blue' | 'green' | 'neutral' | 'red'> = {
+            open: 'gold', accepted: 'blue', funded: 'green', claimed: 'green', recalled: 'red', superseded: 'neutral', updated: 'gold',
+          };
+
+          return (
+            <Page
+              tag="Sell · Overview"
+              title="Sales & Fulfillment"
+              subtitle="Revenue, pipeline, and order flow across your active buyers."
+              actions={
+                <Btn variant="ghost" icon={IconRefresh}
+                  onClick={async () => {
+                    setIsRefreshing(true);
+                    await loadPOsFromLedger();
+                    setIsRefreshing(false);
+                  }}>
+                  {isRefreshing ? 'Refreshing…' : 'Refresh'}
+                </Btn>
+              }>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 20 }}>
+                {[
+                  { label: 'Quoted',    tone: 'gold' as const,    sub: 'Quoted POs',    b: openBucket },
+                  { label: 'Confirmed', tone: 'blue' as const,    sub: 'Confirmed POs', b: acceptedBucket },
+                  { label: 'Funded',    tone: 'green' as const,   sub: 'Funded POs',    b: fundedBucket },
+                  { label: 'Claimed',   tone: 'neutral' as const, sub: 'Claimed POs',   b: claimedBucket },
+                ].map(card => (
+                  <Card key={card.label}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                      <Chip tone={card.tone}>{card.label}</Chip>
+                    </div>
+                    <div className="mono" style={{ fontSize: 26, fontWeight: 500, letterSpacing: '-0.02em', lineHeight: 1 }}>
+                      ${formatNumber(card.b.value, { decimals: 0 })}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 11, color: 'var(--ink-3)' }}>
+                      <span>{card.sub}</span>
+                      <span className="mono" style={{ fontWeight: 600, color: 'var(--ink)' }}>{card.b.count}</span>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 16, marginBottom: 20 }}>
+                <Card layered
+                  label={<>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                      Trailing 12 months
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 600 }}>
+                      Revenue · <span className="mono" style={{ fontWeight: 500 }}>${formatNumber(trailingTotal, { decimals: 0 })}</span>
+                    </div>
+                  </>}
+                  actions={
+                    <div style={{ display: 'flex', gap: 12 }}>
+                      <LegendSwatch color="oklch(0.72 0.14 62)" label="Funded"/>
+                      <LegendSwatch color="oklch(0.82 0.13 148)" label="Claimed"/>
+                    </div>
+                  }>
+                  <StackedAreaChart
+                    bottomSeries={fundedSeries}
+                    topSeries={claimedSeries}
+                    bottomAccent="oklch(0.72 0.14 62)"
+                    topAccent="oklch(0.82 0.13 148)"/>
+                </Card>
+
+                <Card layered
+                  label={<>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                      Sold by {vOvwMix === 'stage' ? 'order stage' : vOvwMix}
+                    </div>
+                    <div style={{ fontSize: 16, fontWeight: 600 }}>
+                      {vOvwMix === 'category' ? 'Category mix' : vOvwMix === 'buyer' ? 'Top buyers' : 'Pipeline by stage'}
+                    </div>
+                  </>}
+                  actions={
+                    <div className="glass-strong" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', padding: 3, borderRadius: 10, position: 'relative' }}>
+                      {(() => {
+                        const segments = ['category', 'buyer', 'stage'] as const;
+                        const idx = Math.max(0, segments.indexOf(vOvwMix));
+                        return (
+                          <div style={{
+                            position: 'absolute', top: 3, bottom: 3, left: 3,
+                            width: `calc((100% - 6px) / 3)`,
+                            transform: `translateX(calc(${idx} * 100%))`,
+                            background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                            borderRadius: 7,
+                            transition: 'transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7)',
+                          }}/>
+                        );
+                      })()}
+                      {[
+                        { k: 'category' as const, l: 'Category' },
+                        { k: 'buyer' as const,    l: 'Buyer' },
+                        { k: 'stage' as const,    l: 'Stage' },
+                      ].map(t => (
+                        <button key={t.k} type="button" onClick={() => setVOvwMix(t.k)}
+                          style={{
+                            position: 'relative', zIndex: 1, padding: '5px 12px',
+                            fontSize: 11, fontWeight: 600, background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                            color: vOvwMix === t.k ? '#2a1f08' : 'var(--ink-3)',
+                            textAlign: 'center',
+                          }}>{t.l}</button>
+                      ))}
+                    </div>
+                  }>
+                  {activeMix.length === 0 ? (
+                    <div style={{ padding: '32px 12px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                      No {vOvwMix} data yet. Accept POs to populate this view.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 8 }}>
+                      {activeMix.map(r => (
+                        <div key={r.c}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                            <span style={{ fontWeight: 500 }}>{r.c}</span>
+                            <span className="mono" style={{ color: 'var(--ink-3)' }}>${formatNumber(r.v, { decimals: 0 })} · {r.pct}%</span>
+                          </div>
+                          <div style={{ height: 6, borderRadius: 999, background: 'rgba(180, 140, 60, 0.12)', overflow: 'hidden' }}>
+                            <div style={{
+                              width: `${Math.min(100, r.pct * 2.5)}%`, height: '100%',
+                              background: 'linear-gradient(90deg, oklch(0.88 0.13 82), oklch(0.72 0.14 62))',
+                              borderRadius: 999,
+                            }}/>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </Card>
+              </div>
+
+              <Card layered label="Purchase orders"
+                actions={
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <div className="etched" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 10 }}>
+                      <IconSearch size={12} style={{ color: 'var(--ink-3)' }}/>
+                      <input value={vOvwPoQuery} onChange={(e) => setVOvwPoQuery(e.target.value)}
+                        placeholder="Search PO or buyer…"
+                        style={{ border: 0, background: 'transparent', outline: 'none', fontSize: 12, width: 180, color: 'var(--ink)', fontFamily: 'inherit' }}/>
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, padding: 3, borderRadius: 10, background: 'rgba(180,140,60,0.08)' }}>
+                      {['All', 'Open', 'Accepted', 'Funded', 'Claimed'].map(f => (
+                        <button key={f} type="button" onClick={() => setVOvwPoFilter(f)}
+                          style={{
+                            padding: '5px 10px', borderRadius: 7, fontSize: 11, fontWeight: 600, border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                            background: vOvwPoFilter === f ? '#2a1f08' : 'transparent',
+                            color: vOvwPoFilter === f ? '#f9efd2' : 'var(--ink-2)',
+                            transition: 'all 0.15s ease',
+                          }}>{f}</button>
+                      ))}
+                    </div>
+                  </div>
+                }>
+                <div style={{ maxHeight: 340, overflowY: 'auto', borderRadius: 10, border: '1px solid rgba(180,140,60,0.08)' }}>
+                  <Table
+                    cols={[
+                      { k: 'po', label: 'PO', w: '180px',
+                        render: (r: SavedPO) => (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                            <span className="mono" style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.poName}</span>
+                            {versionOf(r) > 1 && (
+                              <span className="mono" style={{
+                                fontSize: 10, padding: '1px 6px', borderRadius: 4,
+                                background: 'rgba(180, 140, 60, 0.15)', color: 'var(--ink-2)',
+                                fontWeight: 600, flexShrink: 0,
+                              }}>v{versionOf(r)}</span>
+                            )}
+                          </span>
+                        ) },
+                      { k: 'buyer', label: 'Buyer', w: '1fr',
+                        render: (r: SavedPO) => {
+                          const lc = linkedCustomers.find(c => c.classicAddress === r.buyerAddress);
+                          const name = lc?.company || lc?.name || (r.buyerAddress ? r.buyerAddress.slice(0, 8) + '…' : '—');
+                          return <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '100%' }}>{name}</span>;
+                        } },
+                      { k: 'age', label: 'Age', w: '70px',
+                        render: (r: SavedPO) => <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{ageString(r.dateIssued)}</span> },
+                      { k: 'total', label: 'Total', w: '110px', align: 'right',
+                        render: (r: SavedPO) => <span className="mono" style={{ fontWeight: 500 }}>${r.total}</span> },
+                      { k: 'stage', label: 'Stage', w: '110px',
+                        render: (r: SavedPO) => <Chip tone={stageToneMap[r.status] || 'neutral'}>{r.status}</Chip> },
+                    ]}
+                    rows={filteredPOs}
+                    onRow={async (r: SavedPO) => {
+                      setVOvwSelectedPO(r);
+                      setVOvwHistoryOpen(false);
+                      setVOvwHistoryAnchor(r);
+                      setVOvwViewedPOData(null);
+                      setVOvwPoLoadError(null);
+                      if (r.ipfsUri) {
+                        await viewPOFromUri(r.ipfsUri, r, setVOvwViewedPOData, setVOvwPoLoadError);
+                      }
+                    }}
+                    isRowActive={(r: SavedPO) => vOvwSelectedPO?.issuanceId === r.issuanceId && vOvwSelectedPO?.id === r.id}
+                    empty={vOvwPoQuery ? `No POs match "${vOvwPoQuery}"` : 'No POs at this stage yet.'}/>
+                </div>
+              </Card>
+
+              {vOvwSelectedPO && (
+                <div style={{ marginTop: 16 }}>
+                  <Card strong layered>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                          <Chip tone={stageToneMap[vOvwSelectedPO.status] || 'neutral'}>{vOvwSelectedPO.status}</Chip>
+                          <button type="button"
+                            onClick={() => anchorLatestVersion > 1 && setVOvwHistoryOpen(!vOvwHistoryOpen)}
+                            disabled={anchorLatestVersion === 1}
+                            title={anchorLatestVersion === 1 ? 'First version — no history yet' : `Click to ${vOvwHistoryOpen ? 'hide' : 'view'} previous versions`}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: 5,
+                              padding: '3px 9px', borderRadius: 6,
+                              background: anchorLatestVersion > 1
+                                ? (vOvwHistoryOpen ? 'rgba(42, 31, 8, 0.9)' : 'rgba(180, 140, 60, 0.18)')
+                                : 'rgba(180, 140, 60, 0.08)',
+                              color: anchorLatestVersion > 1
+                                ? (vOvwHistoryOpen ? '#f9efd2' : 'var(--ink-2)')
+                                : 'var(--ink-3)',
+                              border: 0,
+                              cursor: anchorLatestVersion > 1 ? 'pointer' : 'default',
+                              fontFamily: 'inherit', fontSize: 11, fontWeight: 600,
+                            }}>
+                            <IconLayer size={11}/> v{selectedVersion}
+                            {anchorLatestVersion > 1 && <span style={{ opacity: 0.6 }}>· history</span>}
+                          </button>
+                        </div>
+                        <h3 style={{ margin: 0, fontSize: 20, fontWeight: 500, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {vOvwSelectedPO.poName}
+                        </h3>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                          {selectedBuyer?.company || selectedBuyer?.name || vOvwSelectedPO.buyerAddress.slice(0, 10) + '…'}
+                          {' · '}{vOvwSelectedPO.dateIssued}
+                          {' · '}{vOvwSelectedPO.paymentTerms || '—'}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                        <div>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total</div>
+                          <div className="mono" style={{ fontSize: 24, fontWeight: 500 }}>${vOvwSelectedPO.total}</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>Escrow · {vOvwSelectedPO.escrowCurrency || 'XRP'}</div>
+                        </div>
+                        <button type="button"
+                          onClick={() => {
+                            setVOvwSelectedPO(null);
+                            setVOvwHistoryAnchor(null);
+                            setVOvwHistoryOpen(false);
+                            setVOvwViewedPOData(null);
+                            setVOvwPoLoadError(null);
+                          }}
+                          style={{
+                            padding: 6, borderRadius: 6, background: 'transparent',
+                            border: '1px solid rgba(180,140,60,0.2)', cursor: 'pointer',
+                            color: 'var(--ink-3)', fontFamily: 'inherit',
+                          }}
+                          title="Close detail">
+                          <IconX size={12}/>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
+                      {[
+                        { k: 'Department',  v: vOvwViewedPOData?.department || '—', mono: false },
+                        { k: 'Payment',     v: vOvwSelectedPO.paymentTerms || vOvwViewedPOData?.paymentTerms || '—', mono: false },
+                        { k: 'Delivery',    v: vOvwViewedPOData?.deliveryTerms || '—', mono: false },
+                        { k: 'Escrow ccy',  v: vOvwSelectedPO.escrowCurrency || 'XRP', mono: true },
+                      ].map(f => (
+                        <div key={f.k} className="etched" style={{ padding: 10, borderRadius: 10 }}>
+                          <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.k}</div>
+                          <div className={f.mono ? 'mono' : ''} style={{ fontSize: 12, fontWeight: 500, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.v}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {!vOvwViewedPOData && !vOvwPoLoadError && (
+                      <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                        Loading PO details from IPFS…
+                      </div>
+                    )}
+                    {vOvwPoLoadError && (
+                      <div style={{ padding: 14, borderRadius: 12, background: 'rgba(220, 140, 120, 0.12)', border: '1px solid rgba(220, 140, 120, 0.3)', fontSize: 12, color: '#6a2a10', marginBottom: 14 }}>
+                        Could not load PO details: {vOvwPoLoadError}
+                      </div>
+                    )}
+
+                    {vOvwViewedPOData && (
+                      <>
+                        {vOvwViewedPOData.description && (
+                          <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 14 }}>
+                            <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
+                            <div style={{ fontSize: 13, lineHeight: 1.5 }}>{vOvwViewedPOData.description}</div>
+                          </div>
+                        )}
+
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                          Line items · {vOvwViewedPOData.items?.length || 0}
+                        </div>
+                        <div style={{ border: '1px solid rgba(180,140,60,0.15)', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
+                          <div style={{
+                            display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10,
+                            padding: '10px 14px', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
+                            color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace",
+                            background: 'rgba(255, 248, 222, 0.5)',
+                            borderBottom: '1px solid rgba(180,140,60,0.15)',
+                          }}>
+                            <div>Item #</div>
+                            <div style={{ textAlign: 'right' }}>Qty</div>
+                            <div style={{ textAlign: 'right' }}>Unit</div>
+                            <div style={{ textAlign: 'right' }}>Total</div>
+                          </div>
+                          {(vOvwViewedPOData.items || []).map((item, i) => (
+                            <div key={i} style={{
+                              display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10,
+                              padding: '10px 14px', alignItems: 'center', fontSize: 13,
+                              borderBottom: '1px solid rgba(180,140,60,0.08)',
+                            }}>
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.num}</span>
+                              <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                              <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
+                              <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
+                            </div>
+                          ))}
+                          {(vOvwViewedPOData.items || []).length === 0 && (
+                            <div style={{ padding: 20, textAlign: 'center', fontSize: 12, color: 'var(--ink-3)' }}>
+                              No line items on this PO.
+                            </div>
+                          )}
+                        </div>
+
+                        {vOvwViewedPOData.attachments && vOvwViewedPOData.attachments.length > 0 && (
+                          <>
+                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                              Attachments · {vOvwViewedPOData.attachments.length}
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+                              {vOvwViewedPOData.attachments.map((att, i) => (
+                                <div key={i} className="etched" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10 }}>
+                                  <div style={{ padding: 6, borderRadius: 6, background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <IconFile size={14}/>
+                                  </div>
+                                  <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`}
+                                    target="_blank" rel="noopener noreferrer"
+                                    style={{ flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                    title={`Open ${att.name} on IPFS`}>
+                                    {att.name}
+                                  </a>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+
+                        <div style={{
+                          paddingTop: 12, marginBottom: 14,
+                          borderTop: '1px dashed rgba(180,140,60,0.2)',
+                        }}>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+                            On-chain references
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            {[
+                              { label: 'Issuance ID', value: vOvwSelectedPO.issuanceId, copyable: true },
+                              { label: 'Tx hash',     value: vOvwSelectedPO.txHash,     copyable: true },
+                              { label: 'Escrow seq',  value: vOvwSelectedPO.escrowSequence ? String(vOvwSelectedPO.escrowSequence) : '', copyable: true },
+                              { label: 'Yield',       value: vOvwSelectedPO.yieldOptIn ? 'Opted in' : '', copyable: false },
+                            ].filter(r => r.value).map(r => {
+                              const v = r.value as string;
+                              const truncated = v.length > 22 ? `${v.slice(0, 12)}…${v.slice(-8)}` : v;
+                              return (
+                                <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', minWidth: 0 }}>
+                                  <span style={{ minWidth: 90, color: 'var(--ink-3)', fontSize: 10, letterSpacing: '0.05em', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>{r.label}</span>
+                                  <span className="mono" style={{ flex: 1, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v}>{truncated}</span>
+                                  {r.copyable && (
+                                    <button type="button"
+                                      onClick={(e) => {
+                                        navigator.clipboard?.writeText(v);
+                                        const btn = e.currentTarget;
+                                        const original = btn.textContent;
+                                        btn.textContent = 'Copied';
+                                        setTimeout(() => { btn.textContent = original; }, 1500);
+                                      }}
+                                      style={{
+                                        background: 'transparent',
+                                        border: '1px solid rgba(180, 140, 60, 0.25)',
+                                        borderRadius: 6, padding: '3px 8px',
+                                        cursor: 'pointer', fontSize: 10, fontWeight: 500,
+                                        color: 'var(--ink-2)', fontFamily: 'inherit', minWidth: 54,
+                                      }}>
+                                      Copy
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div style={{
+                          display: 'flex', justifyContent: 'flex-end',
+                          paddingTop: 10, marginBottom: 14,
+                          borderTop: '1px dashed rgba(180,140,60,0.15)',
+                        }}>
+                          <div className="mono" style={{ fontSize: 13 }}>
+                            <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
+                            <span style={{ fontWeight: 600, fontSize: 18 }}>${vOvwSelectedPO.total}</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {vOvwHistoryOpen && selectedHistory.length > 0 && (
+                      <div className="etched rise" style={{
+                        padding: 16, borderRadius: 12, marginTop: 4,
+                        background: 'rgba(255, 248, 222, 0.4)',
+                      }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                          Previous versions · {selectedHistory.length} superseded
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          {selectedHistory.map((hist, i) => {
+                            const isViewingThisVersion = vOvwSelectedPO.issuanceId === hist.issuanceId && vOvwSelectedPO.id === hist.id;
+                            return (
+                              <button type="button" key={hist.issuanceId || hist.id}
+                                onClick={async () => {
+                                  setVOvwSelectedPO(hist);
+                                  setVOvwViewedPOData(null);
+                                  setVOvwPoLoadError(null);
+                                  if (hist.ipfsUri) {
+                                    await viewPOFromUri(hist.ipfsUri, hist, setVOvwViewedPOData, setVOvwPoLoadError);
+                                  }
+                                }}
+                                style={{
+                                  display: 'grid', gridTemplateColumns: '60px 1fr 90px 110px 100px',
+                                  gap: 12, padding: '10px 12px', borderRadius: 10,
+                                  background: isViewingThisVersion ? 'rgba(255, 248, 220, 0.85)' : 'rgba(255, 255, 255, 0.4)',
+                                  border: isViewingThisVersion ? '1px solid rgba(180, 140, 60, 0.35)' : '1px solid rgba(180, 140, 60, 0.1)',
+                                  borderLeft: isViewingThisVersion ? '3px solid oklch(0.72 0.15 62)' : '1px solid rgba(180, 140, 60, 0.1)',
+                                  alignItems: 'center', fontSize: 12,
+                                  cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                                  transition: 'all 0.15s ease',
+                                }}
+                                title="Click to view this version's details">
+                                <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', fontWeight: 600 }}>v{i + 1}</span>
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hist.poName}</span>
+                                <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{hist.dateIssued}</span>
+                                <span className="mono" style={{ fontSize: 11, textAlign: 'right', fontWeight: 500 }}>${hist.total}</span>
+                                <span style={{ textAlign: 'right' }}><Chip tone="neutral">superseded</Chip></span>
+                              </button>
+                            );
+                          })}
+                          {vOvwHistoryAnchor && (() => {
+                            const latest = vOvwHistoryAnchor;
+                            const isViewingLatest = vOvwSelectedPO.issuanceId === latest.issuanceId && vOvwSelectedPO.id === latest.id;
+                            return (
+                              <button type="button"
+                                onClick={async () => {
+                                  if (isViewingLatest) return;
+                                  setVOvwSelectedPO(latest);
+                                  setVOvwViewedPOData(null);
+                                  setVOvwPoLoadError(null);
+                                  if (latest.ipfsUri) {
+                                    await viewPOFromUri(latest.ipfsUri, latest, setVOvwViewedPOData, setVOvwPoLoadError);
+                                  }
+                                }}
+                                style={{
+                                  display: 'grid', gridTemplateColumns: '60px 1fr 90px 110px 100px',
+                                  gap: 12, padding: '10px 12px', borderRadius: 10,
+                                  background: isViewingLatest ? 'rgba(255, 248, 220, 0.85)' : 'linear-gradient(180deg, oklch(0.95 0.06 86), oklch(0.9 0.09 82))',
+                                  border: '1px solid rgba(180, 140, 60, 0.35)',
+                                  borderLeft: isViewingLatest ? '3px solid oklch(0.72 0.15 62)' : '1px solid rgba(180, 140, 60, 0.35)',
+                                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                                  alignItems: 'center', fontSize: 12,
+                                  cursor: isViewingLatest ? 'default' : 'pointer',
+                                  fontFamily: 'inherit', textAlign: 'left',
+                                  transition: 'all 0.15s ease',
+                                }}
+                                title={isViewingLatest ? 'Currently viewing the latest version' : 'Click to return to the latest version'}>
+                                <span className="mono" style={{ fontSize: 10, color: 'var(--ink)', fontWeight: 700 }}>v{anchorLatestVersion}</span>
+                                <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {latest.poName}
+                                  <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--ink-3)', fontWeight: 500 }}>(current)</span>
+                                </span>
+                                <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{latest.dateIssued}</span>
+                                <span className="mono" style={{ fontSize: 11, textAlign: 'right', fontWeight: 500 }}>${latest.total}</span>
+                                <span style={{ textAlign: 'right' }}>
+                                  <Chip tone={stageToneMap[latest.status] || 'neutral'}>{latest.status}</Chip>
+                                </span>
+                              </button>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
+                  </Card>
+                </div>
+              )}
+            </Page>
+          );
+        })()}
         {activeTab === 'customerProfile' && hydrated && (
           <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
             <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>Profile</h2>
@@ -9118,338 +13698,6 @@ const addLinkedVendorByDID = async () => {
                     </button>
                   </div>
                 )}
-              </div>
-            )}
-          </div>
-        )}
-        {inventorySubTab === 'creditLines' && (
-          <div>
-            {/* ── Phase 6C: Credit Lines Panel ─────────────────────────────── */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-              <h3 style={{ color: '#553C9A', margin: 0 }}>Inventory Credit Lines</h3>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button onClick={refreshCreditLines} disabled={creditLinesLoading} style={{ padding: '8px 16px', borderRadius: '20px', border: '1px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', fontSize: '13px' }}>
-                  {creditLinesLoading ? '⏳ Loading...' : '↻ Refresh'}
-                </button>
-                <button onClick={() => setShowPledgeModal(true)} style={{ padding: '8px 18px', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #553C9A 0%, #7C5CBF 100%)', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}>
-                  + New Credit Line
-                </button>
-              </div>
-            </div>
-
-            {/* ── Credit line list ────────────────────────────────────────── */}
-            {creditLines.length === 0 && !creditLinesLoading && (
-              <div style={{ textAlign: 'center', padding: '40px', color: '#999', background: '#F9F5FF', borderRadius: '12px', border: '1px dashed #C4A8E8' }}>
-                <div style={{ fontSize: '32px', marginBottom: '12px' }}>🏦</div>
-                <div style={{ fontWeight: 'bold', marginBottom: '6px', color: '#553C9A' }}>No credit lines yet</div>
-                <div style={{ fontSize: '14px' }}>Pledge inventory NFTs as collateral to open a credit line with a licensed lender.</div>
-              </div>
-            )}
-
-            {creditLines.map(line => {
-              const balance     = parseFloat(line.currentBalance) || 0;
-              const limit       = parseFloat(line.creditLimit) || 0;
-              const available   = Math.max(0, limit - balance);
-              const pledgedItems = vendorInventoryV2.filter(i => line.pledgedNftIds.includes(i.nftId));
-              const itemsWithPricing = pledgedItems.map(i => ({
-                nftId: i.nftId, partNumber: i.partNumber, name: i.name,
-                quantityOnHand: i.quantityOnHand,
-                listPrice: i.listPrice || invPricingMap[i.nftId]?.listPrice || 0,
-              }));
-              const valuation = calculateCollateralValue(itemsWithPricing, line.haircutPct, balance);
-              const coverage  = computeCoverageRatio(valuation.grossValue, balance);
-              const coverageColor = coverage.status === 'healthy' ? '#27ae60' : coverage.status === 'warning' ? '#e67e22' : coverage.status === 'critical' ? '#e74c3c' : '#888';
-
-              return (
-                <div key={line.pledgeId} style={{ background: 'white', border: `1.5px solid ${line.status === 'active' ? '#C4A8E8' : '#ddd'}`, borderRadius: '14px', padding: '20px', marginBottom: '16px', boxShadow: '0 2px 8px rgba(85,60,154,0.08)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
-                    <div>
-                      <span style={{ fontWeight: 'bold', color: '#553C9A', fontSize: '15px' }}>{formatCreditLineId(line.pledgeId)}</span>
-                      <span style={{ marginLeft: '10px', fontSize: '12px', color: line.status === 'active' ? '#27ae60' : line.status === 'defaulted' ? '#e74c3c' : '#888', fontWeight: 'bold' }}>{formatCreditLineStatus(line.status)}</span>
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#999' }}>
-                      Opened {new Date(line.pledgeTimestamp * 1000).toLocaleDateString()}
-                    </div>
-                  </div>
-
-                  {/* Metrics row */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '14px' }}>
-                    {[
-                      { label: 'Credit Limit',  value: `$${limit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
-                      { label: 'Balance',        value: `$${balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
-                      { label: 'Available',      value: `$${available.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
-                      { label: 'Coverage',       value: coverage.status === 'no_balance' ? '—' : coverage.label, color: coverageColor },
-                    ].map(m => (
-                      <div key={m.label} style={{ background: '#F9F5FF', borderRadius: '8px', padding: '10px', textAlign: 'center' }}>
-                        <div style={{ fontSize: '11px', color: '#888', marginBottom: '4px' }}>{m.label}</div>
-                        <div style={{ fontWeight: 'bold', color: m.color || '#333', fontSize: '14px' }}>{m.value}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Collateral items */}
-                  <div style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
-                    <span style={{ fontWeight: 'bold' }}>{line.pledgedNftIds.length} item(s) pledged</span>
-                    {valuation.grossValue > 0 && (
-                      <span style={{ marginLeft: '8px' }}>— Collateral value: <strong>${valuation.grossValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
-                    )}
-                    {line.lenderAddress && (
-                      <span style={{ marginLeft: '8px', color: '#999' }}>Lender: {line.lenderAddress.slice(0, 8)}...{line.lenderAddress.slice(-4)}</span>
-                    )}
-                  </div>
-
-                  {/* Coverage warning banner */}
-                  {coverage.status === 'warning' && (
-                    <div style={{ background: '#FFF3CD', border: '1px solid #e67e22', borderRadius: '8px', padding: '8px 12px', marginBottom: '12px', fontSize: '13px', color: '#856404' }}>
-                      ⚠️ Collateral value is approaching minimum coverage. Consider adding more inventory or reducing your balance.
-                    </div>
-                  )}
-                  {coverage.status === 'critical' && (
-                    <div style={{ background: '#FFEAEA', border: '1px solid #e74c3c', borderRadius: '8px', padding: '8px 12px', marginBottom: '12px', fontSize: '13px', color: '#721c24' }}>
-                      🚨 Coverage is below minimum threshold. Margin notice sent to lender. Take action immediately.
-                    </div>
-                  )}
-
-                  {/* Action buttons */}
-                  {line.status === 'active' && (
-                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                      <button onClick={() => { setShowCreditLineDetail(line); setDrawAmount(''); setRepayAmount(''); }} style={{ padding: '7px 16px', borderRadius: '20px', border: '1.5px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
-                        Manage
-                      </button>
-                      {balance === 0 && (
-                        <button onClick={() => releaseCollateral(line)} disabled={creditLineActionLoading} style={{ padding: '7px 16px', borderRadius: '20px', border: 'none', background: '#27ae60', color: 'white', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold' }}>
-                          Release Collateral
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {/* ── Manage modal ────────────────────────────────────────────── */}
-            {showCreditLineDetail && (
-              <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div style={{ background: 'white', borderRadius: '16px', padding: '28px', maxWidth: '520px', width: '90%', maxHeight: '80vh', overflowY: 'auto' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                    <h3 style={{ margin: 0, color: '#553C9A' }}>{formatCreditLineId(showCreditLineDetail.pledgeId)}</h3>
-                    <button onClick={() => setShowCreditLineDetail(null)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#999' }}>✕</button>
-                  </div>
-
-                  <div style={{ marginBottom: '20px', fontSize: '14px', color: '#555' }}>
-                    {formatCreditLineSummary(showCreditLineDetail)}
-                  </div>
-
-                  {/* Draw down */}
-                  {getAvailableCredit(showCreditLineDetail) > 0 && (
-                    <div style={{ marginBottom: '20px', background: '#F9F5FF', borderRadius: '10px', padding: '16px' }}>
-                      <div style={{ fontWeight: 'bold', color: '#553C9A', marginBottom: '10px' }}>Draw Down</div>
-                      <div style={{ fontSize: '12px', color: '#888', marginBottom: '8px' }}>
-                        Available: ${getAvailableCredit(showCreditLineDetail).toFixed(2)} RLUSD
-                      </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <input
-                          type="number"
-                          value={drawAmount}
-                          onChange={e => setDrawAmount(e.target.value)}
-                          placeholder={`Min $${MIN_DRAW_AMOUNT}`}
-                          style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid #C4A8E8', fontSize: '14px' }}
-                        />
-                        <button onClick={() => drawFromCreditLine(showCreditLineDetail)} disabled={creditLineActionLoading || !drawAmount} style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#553C9A', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}>
-                          {creditLineActionLoading ? '⏳' : 'Draw'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Repay */}
-                  {parseFloat(showCreditLineDetail.currentBalance) > 0 && (
-                    <div style={{ marginBottom: '20px', background: '#F0FFF4', borderRadius: '10px', padding: '16px' }}>
-                      <div style={{ fontWeight: 'bold', color: '#27ae60', marginBottom: '10px' }}>Make Payment</div>
-                      <div style={{ fontSize: '12px', color: '#888', marginBottom: '8px' }}>
-                        Outstanding: ${parseFloat(showCreditLineDetail.currentBalance).toFixed(2)} RLUSD
-                      </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <input
-                          type="number"
-                          value={repayAmount}
-                          onChange={e => setRepayAmount(e.target.value)}
-                          placeholder="Amount to repay"
-                          style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', border: '1px solid #A8D5B5', fontSize: '14px' }}
-                        />
-                        <button onClick={() => repayCredit(showCreditLineDetail)} disabled={creditLineActionLoading || !repayAmount} style={{ padding: '8px 16px', borderRadius: '8px', border: 'none', background: '#27ae60', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}>
-                          {creditLineActionLoading ? '⏳' : 'Pay'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Draw history */}
-                  {showCreditLineDetail.draws.length > 0 && (
-                    <div style={{ marginBottom: '16px' }}>
-                      <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#553C9A', marginBottom: '8px' }}>Draw History</div>
-                      {showCreditLineDetail.draws.map(d => (
-                        <div key={d.drawId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '6px 0', borderBottom: '1px solid #f0f0f0', color: '#555' }}>
-                          <span>{new Date(d.timestamp * 1000).toLocaleDateString()}</span>
-                          <span style={{ color: '#553C9A', fontWeight: 'bold' }}>+${parseFloat(d.amount).toFixed(2)}</span>
-                          <span style={{ color: '#999' }}>Bal: ${parseFloat(d.newBalance).toFixed(2)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Repayment history */}
-                  {showCreditLineDetail.repayments.length > 0 && (
-                    <div style={{ marginBottom: '16px' }}>
-                      <div style={{ fontWeight: 'bold', fontSize: '13px', color: '#27ae60', marginBottom: '8px' }}>Payment History</div>
-                      {showCreditLineDetail.repayments.map(r => (
-                        <div key={r.repayId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', padding: '6px 0', borderBottom: '1px solid #f0f0f0', color: '#555' }}>
-                          <span>{new Date(r.timestamp * 1000).toLocaleDateString()}</span>
-                          <span style={{ color: '#27ae60', fontWeight: 'bold' }}>-${parseFloat(r.principalAmount).toFixed(2)}</span>
-                          <span style={{ color: '#999' }}>Int: ${parseFloat(r.interestAmount).toFixed(2)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Release button if balance is zero */}
-                  {parseFloat(showCreditLineDetail.currentBalance) === 0 && (
-                    <button onClick={() => releaseCollateral(showCreditLineDetail)} disabled={creditLineActionLoading} style={{ width: '100%', padding: '12px', borderRadius: '10px', border: 'none', background: '#27ae60', color: 'white', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px', marginTop: '8px' }}>
-                      🔓 Release Collateral
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* ── Pledge modal ─────────────────────────────────────────────── */}
-            {showPledgeModal && (
-              <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div style={{ background: 'white', borderRadius: '16px', padding: '28px', maxWidth: '580px', width: '90%', maxHeight: '85vh', overflowY: 'auto' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                    <h3 style={{ margin: 0, color: '#553C9A' }}>New Credit Line</h3>
-                    <button onClick={() => { setShowPledgeModal(false); setPledgeSelectedNfts([]); setLiveCollateralValuation(null); }} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#999' }}>✕</button>
-                  </div>
-
-                  {/* Lender address */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{ display: 'block', fontWeight: 'bold', color: '#553C9A', marginBottom: '6px', fontSize: '13px' }}>Lender Wallet Address</label>
-                    <input
-                      type="text"
-                      value={pledgeLenderAddress}
-                      onChange={e => setPledgeLenderAddress(e.target.value)}
-                      placeholder="r..."
-                      style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #C4A8E8', fontSize: '14px', boxSizing: 'border-box' }}
-                    />
-                  </div>
-
-                  {/* Haircut selector */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{ display: 'block', fontWeight: 'bold', color: '#553C9A', marginBottom: '6px', fontSize: '13px' }}>
-                      Advance Rate: {(pledgeHaircut * 100).toFixed(0)}% of collateral value
-                    </label>
-                    <input
-                      type="range" min="0.5" max="0.85" step="0.05"
-                      value={pledgeHaircut}
-                      onChange={e => {
-                        const h = parseFloat(e.target.value);
-                        setPledgeHaircut(h);
-                        if (liveCollateralValuation) {
-                          const updated = calculateCollateralValue(
-                            liveCollateralValuation.itemsIncluded.map(i => ({
-                              nftId: i.nftId, partNumber: i.partNumber, name: i.name,
-                              quantityOnHand: i.qty, listPrice: i.listPrice,
-                            })),
-                            h, 0
-                          );
-                          setLiveCollateralValuation(updated);
-                        }
-                      }}
-                      style={{ width: '100%' }}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#999' }}>
-                      <span>50%</span><span>85%</span>
-                    </div>
-                  </div>
-
-                  {/* Inventory item selector */}
-                  <div style={{ marginBottom: '16px' }}>
-                    <label style={{ display: 'block', fontWeight: 'bold', color: '#553C9A', marginBottom: '8px', fontSize: '13px' }}>
-                      Select Items to Pledge ({pledgeSelectedNfts.length} selected)
-                    </label>
-                    <div style={{ maxHeight: '220px', overflowY: 'auto', border: '1px solid #C4A8E8', borderRadius: '8px' }}>
-                      {vendorInventoryV2.filter(i => i.status !== 'discontinued' && !isPledged(i.nftId, creditLines)).map(item => {
-                        const selected  = pledgeSelectedNfts.includes(item.nftId);
-                        const price     = item.listPrice || invPricingMap[item.nftId]?.listPrice || 0;
-                        const lineValue = item.quantityOnHand * price;
-                        return (
-                          <div
-                            key={item.nftId}
-                            onClick={() => {
-                              const next = selected
-                                ? pledgeSelectedNfts.filter(id => id !== item.nftId)
-                                : [...pledgeSelectedNfts, item.nftId];
-                              setPledgeSelectedNfts(next);
-                              // Recalculate live valuation
-                              const selectedItems = vendorInventoryV2
-                                .filter(i => next.includes(i.nftId))
-                                .map(i => ({
-                                  nftId: i.nftId, partNumber: i.partNumber, name: i.name,
-                                  quantityOnHand: i.quantityOnHand,
-                                  listPrice: i.listPrice || invPricingMap[i.nftId]?.listPrice || 0,
-                                }));
-                              setLiveCollateralValuation(
-                                selectedItems.length > 0
-                                  ? calculateCollateralValue(selectedItems, pledgeHaircut, 0)
-                                  : null
-                              );
-                            }}
-                            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer', background: selected ? '#F0EAFF' : 'white' }}
-                          >
-                            <div>
-                              <div style={{ fontWeight: selected ? 'bold' : 'normal', color: selected ? '#553C9A' : '#333', fontSize: '13px' }}>{item.name}</div>
-                              <div style={{ fontSize: '11px', color: '#999' }}>{item.partNumber} · {item.quantityOnHand} {item.unit} on hand</div>
-                            </div>
-                            <div style={{ textAlign: 'right' }}>
-                              <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#553C9A' }}>${lineValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                              <div style={{ fontSize: '11px', color: '#999' }}>${price.toFixed(2)}/unit</div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {vendorInventoryV2.filter(i => i.status !== 'discontinued' && !isPledged(i.nftId, creditLines)).length === 0 && (
-                        <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '13px' }}>
-                          No available inventory items. Items already pledged or discontinued are excluded.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Live valuation summary */}
-                  {liveCollateralValuation && liveCollateralValuation.grossValue > 0 && (
-                    <div style={{ background: '#F9F5FF', borderRadius: '10px', padding: '14px', marginBottom: '16px' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', textAlign: 'center' }}>
-                        {[
-                          { label: 'Gross Value',    value: `$${liveCollateralValuation.grossValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
-                          { label: `Advance (${(pledgeHaircut*100).toFixed(0)}%)`, value: `$${liveCollateralValuation.lendableValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` },
-                          { label: 'Items',          value: `${liveCollateralValuation.itemsIncluded.length}` },
-                        ].map(m => (
-                          <div key={m.label}>
-                            <div style={{ fontSize: '11px', color: '#888' }}>{m.label}</div>
-                            <div style={{ fontWeight: 'bold', color: '#553C9A', fontSize: '15px' }}>{m.value}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={pledgeInventory}
-                    disabled={pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress || !liveCollateralValuation}
-                    style={{ width: '100%', padding: '13px', borderRadius: '10px', border: 'none', background: pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress ? '#ccc' : 'linear-gradient(90deg, #553C9A 0%, #7C5CBF 100%)', color: 'white', cursor: pledgeSubmitting ? 'wait' : 'pointer', fontWeight: 'bold', fontSize: '15px' }}>
-                    {pledgeSubmitting ? '⏳ Submitting...' : `Pledge ${pledgeSelectedNfts.length > 0 ? pledgeSelectedNfts.length + ' item(s)' : 'Items'} as Collateral`}
-                  </button>
-                </div>
               </div>
             )}
           </div>
@@ -9599,6 +13847,1780 @@ const addLinkedVendorByDID = async () => {
             )}
           </div>
         )}
+        {activeTab === 'financing' && (() => {
+          const credStatus = mode === 'vendor' ? vendorCredStatus : customerCredStatus;
+          const hasFinancingAccess = !!credStatus?.valid && credStatus.tier !== 'basic';
+
+          const verifiedChip = (
+            <span
+              title={hasFinancingAccess
+                ? 'Verified+ credential active — financing actions enabled.'
+                : 'Verified+ credential required to use financing actions.'}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '6px 12px', borderRadius: 999,
+                fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+                background: hasFinancingAccess ? 'rgba(140, 200, 130, 0.18)' : 'rgba(220, 180, 90, 0.18)',
+                color: hasFinancingAccess ? 'oklch(0.42 0.16 148)' : 'oklch(0.45 0.14 78)',
+                border: hasFinancingAccess
+                  ? '1px solid rgba(100, 180, 120, 0.35)'
+                  : '1px solid rgba(200, 160, 80, 0.35)',
+                cursor: 'help',
+              }}>
+              {hasFinancingAccess ? '✓ Verified+ access' : '⚠ Verified+ required'}
+            </span>
+          );
+
+          // ───────── Sell · Financing — sub-tabbed (PO Financing / Inventory Financing) ─────────
+          if (mode === 'vendor') {
+            const sellTitle = financingSubTab === 'po'
+              ? 'Working capital advances'
+              : 'Inventory-backed credit';
+            const sellSubtitle = financingSubTab === 'po'
+              ? 'Request advances against funded POs from licensed lenders. Repayment routes through escrow on claim.'
+              : 'Pledge SKU NFTs as collateral, draw down to working capital, repay to release.';
+
+            return (
+              <Page
+                tag="Sell · Financing"
+                title={sellTitle}
+                subtitle={sellSubtitle}
+                actions={
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    {verifiedChip}
+                    <div className="glass-strong" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', padding: 4, borderRadius: 14, position: 'relative' }}>
+                      <div style={{
+                        position: 'absolute', top: 4, bottom: 4, left: 4,
+                        width: 'calc((100% - 8px) / 2)',
+                        transform: `translateX(calc(${financingSubTab === 'po' ? 0 : 1} * 100%))`,
+                        background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                        borderRadius: 10,
+                        transition: 'transform 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.5)',
+                      }}/>
+                      {[{ k: 'po' as const, l: 'PO Financing' }, { k: 'inventory' as const, l: 'Inventory Financing' }].map(t => (
+                        <button key={t.k} type="button" onClick={() => setFinancingSubTab(t.k)}
+                          style={{
+                            position: 'relative', zIndex: 1, padding: '8px 18px', minWidth: 160,
+                            fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
+                            background: 'transparent', border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                            color: financingSubTab === t.k ? '#2a1f08' : 'var(--ink-3)',
+                            textAlign: 'center',
+                          }}>{t.l}</button>
+                      ))}
+                    </div>
+                  </div>
+                }>
+
+                {financingSubTab === 'po' && (() => {
+                  // ── Counterparty placeholder data (TODO: swap to live lender registry) ──
+                  // Same LENDERS array as Inventory Financing — single canonical lender within session.
+                  const LENDERS = [
+                    { id: 'helix',     name: 'Helix Capital',          wallet: '0x8c4a…2f91', apr: 7.82, asset: 'USDC · Base',     rating: 'A+' },
+                    { id: 'ridgefund', name: 'Ridge Trade Fund',       wallet: '0x2d91…b34e', apr: 8.15, asset: 'USDC · Base',     rating: 'A'  },
+                    { id: 'oakmoor',   name: 'Oakmoor Working Cap',    wallet: '0xa017…9cc1', apr: 7.40, asset: 'EUR-T · Polygon', rating: 'AA' },
+                    { id: 'halcyon',   name: 'Halcyon Yield Partners', wallet: '0x5e88…014d', apr: 8.95, asset: 'USDC · Base',     rating: 'A-' },
+                  ];
+                  const selectedLender = LENDERS.find(l => l.id === selectedLenderId) || LENDERS[0];
+
+                  // ── Eligibility for PO financing ──
+                  // - status === 'funded' (escrow exists, lifecycle past acceptance)
+                  // - escrowCurrency === 'RLUSD'
+                  // - daysUntilCancel > MIN_DAYS_UNTIL_CANCEL (handled at request time, not list-time)
+                  // - no active financing on this PO, OR last request was 'denied' (resubmit allowed)
+                  const fundedPOs = savedPOs.filter(p => p.status === 'funded' && p.escrowCurrency === 'RLUSD');
+                  const eligiblePOs = fundedPOs.filter(p => {
+                    const fr = financingStatusMap[p.issuanceId];
+                    return !fr || fr.status === 'denied';
+                  });
+
+                  const allRequests = financingRequests; // newest-first by handler convention
+                  const activeRequests = allRequests.filter(r =>
+                    r.status === 'pending_lender' || r.status === 'approved' || r.status === 'disbursed'
+                  );
+
+                  // ── KPI math ──
+                  const maxAdvanceable = eligiblePOs.reduce((s, p) =>
+                    s + (parseFloat(p.total) || 0) * 0.80, // 80% default advance — design assumption
+                    0
+                  );
+                  const avgLenderAPR = LENDERS.reduce((s, l) => s + l.apr, 0) / LENDERS.length;
+
+                  return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                    {/* ── Counterparty card (matches Inventory Financing pattern) ─── */}
+                    <Card layered
+                      style={{ position: 'relative', overflow: 'visible', zIndex: 50 }}
+                      label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Counterparty</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Request financing partner</div>
+                      </>}
+                      actions={<Chip tone="blue">DID verified · {LENDERS.length} connected · Devnet placeholder</Chip>}>
+                      <div style={{ position: 'relative' }}>
+                        <button onClick={() => setLenderPickerOpen(!lenderPickerOpen)}
+                          style={{
+                            width: '100%', padding: '12px 14px', borderRadius: 12,
+                            background: 'rgba(255, 253, 240, 0.7)',
+                            border: '1px solid rgba(180, 140, 60, 0.22)',
+                            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                            display: 'grid', gridTemplateColumns: '1fr auto auto auto auto', gap: 16, alignItems: 'center',
+                            textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit',
+                          }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{selectedLender.name}</div>
+                            <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{selectedLender.wallet} · {selectedLender.asset}</div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>APR</div>
+                            <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: 'oklch(0.5 0.14 240)' }}>{selectedLender.apr.toFixed(2)}%</div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Rating</div>
+                            <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{selectedLender.rating}</div>
+                          </div>
+                          <div style={{ fontSize: 14, color: 'var(--ink-3)', transform: lenderPickerOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</div>
+                        </button>
+
+                        {lenderPickerOpen && (
+                          <>
+                            <div onClick={() => setLenderPickerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }}/>
+                            <div style={{
+                              position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
+                              borderRadius: 12, padding: 4, zIndex: 60,
+                              background: 'oklch(0.98 0.02 86)',
+                              border: '1px solid rgba(180, 140, 60, 0.28)',
+                              boxShadow: '0 12px 32px -8px rgba(60,40,15,0.35), inset 0 1px 0 rgba(255,255,255,0.6)',
+                              maxHeight: 280, overflowY: 'auto',
+                            }}>
+                              {LENDERS.map(l => {
+                                const isSel = l.id === selectedLenderId;
+                                return (
+                                  <button key={l.id}
+                                    onClick={() => { setSelectedLenderId(l.id); setLenderPickerOpen(false); }}
+                                    style={{
+                                      width: '100%', padding: '10px 14px', borderRadius: 10,
+                                      background: isSel ? 'rgba(255, 220, 140, 0.45)' : 'transparent',
+                                      border: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+                                      display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 14, alignItems: 'center',
+                                      marginBottom: 2,
+                                    }}>
+                                    <div>
+                                      <div style={{ fontSize: 12.5, fontWeight: isSel ? 700 : 600, color: 'var(--ink)' }}>{l.name}</div>
+                                      <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>{l.wallet} · {l.asset}</div>
+                                    </div>
+                                    <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.5 0.14 240)', textAlign: 'right' }}>{l.apr.toFixed(2)}%</div>
+                                    <div className="mono" style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-2)', minWidth: 24, textAlign: 'right' }}>{l.rating}</div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </Card>
+
+                    {/* ── 3 KPI cards (Funded · eligible / Max advanceable / Avg APR) ── */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+                      <Card>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Funded POs · eligible</div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>{eligiblePOs.length}</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{fundedPOs.length} total funded</div>
+                        </div>
+                      </Card>
+                      <Card>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Max advanceable</div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>${formatNumber(maxAdvanceable, { decimals: 0 })}</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>at 80% advance · est.</div>
+                        </div>
+                      </Card>
+                      <Card>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Avg lender APR</div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2, color: 'oklch(0.5 0.14 240)' }}>{avgLenderAPR.toFixed(2)}%</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{LENDERS.length} partner{LENDERS.length === 1 ? '' : 's'}</div>
+                        </div>
+                      </Card>
+                    </div>
+
+                    {/* ── Master-detail: left rail of funded POs + right pane of selected detail ─── */}
+                    {(() => {
+                      // All funded RLUSD POs (eligible + non-eligible) — design fidelity per M2.
+                      const railPOs = fundedPOs;
+                      const q = poFinEligibleSearch.trim().toLowerCase();
+                      const filteredRail = !q ? railPOs : railPOs.filter(po => {
+                        const buyerOf = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+                        const buyerLabel = (buyerOf?.company || buyerOf?.name || '').toLowerCase();
+                        return (po.poName || '').toLowerCase().includes(q)
+                          || (po.issuanceId || '').toLowerCase().includes(q)
+                          || buyerLabel.includes(q)
+                          || (po.buyerAddress || '').toLowerCase().includes(q);
+                      });
+
+                      // Resolve the selected PO from current state
+                      const selectedPO = selectedFinancingPO
+                        ? railPOs.find(p => p.issuanceId === selectedFinancingPO) || null
+                        : null;
+                      const selectedReq = selectedPO ? financingStatusMap[selectedPO.issuanceId] : null;
+                      const selectedBuyerOf = selectedPO ? linkedCustomers.find(c => c.classicAddress === selectedPO.buyerAddress) : null;
+                      const selectedBuyerLabel = selectedBuyerOf?.company || selectedBuyerOf?.name
+                        || (selectedPO?.buyerAddress ? `${selectedPO.buyerAddress.slice(0, 6)}…${selectedPO.buyerAddress.slice(-4)}` : '—');
+
+                      // What state is the selected PO in?
+                      const selectedIsEligible = selectedPO && (!selectedReq || selectedReq.status === 'denied');
+
+                      // Helper for rail row chip
+                      const railChipFor = (po: SavedPO) => {
+                        const fr = financingStatusMap[po.issuanceId];
+                        if (!fr) return null;
+                        const tone: 'gold' | 'green' | 'blue' | 'neutral' | 'red' =
+                          fr.status === 'pending_lender' ? 'gold'    :
+                          fr.status === 'approved'       ? 'green'   :
+                          fr.status === 'disbursed'      ? 'blue'    :
+                          fr.status === 'repaid'         ? 'neutral' : 'red';
+                        const label =
+                          fr.status === 'pending_lender' ? 'Submitted' :
+                          fr.status === 'approved'       ? 'Approved'  :
+                          fr.status === 'disbursed'      ? 'Disbursed' :
+                          fr.status === 'repaid'         ? 'Repaid'    : 'Denied';
+                        return <Chip tone={tone}>{label}</Chip>;
+                      };
+
+                      return (
+                        <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, alignItems: 'flex-start' }}>
+                          {/* ───── Left rail · funded POs list ───── */}
+                          <Card layered
+                            label={<>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Funded POs</div>
+                              <div style={{ fontSize: 15, fontWeight: 600 }}>Select a PO</div>
+                            </>}
+                            actions={railPOs.length > 0 && <Chip tone="neutral">{railPOs.length}</Chip>}>
+
+                            {railPOs.length > 0 && (
+                              <div className="glass etched" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 12, marginBottom: 14 }}>
+                                <IconSearch size={14} style={{ color: 'var(--ink-3)' }}/>
+                                <input value={poFinEligibleSearch} onChange={e => setPoFinEligibleSearch(e.target.value)}
+                                  placeholder="Search POs…"
+                                  style={{ flex: 1, border: 0, background: 'transparent', outline: 'none', fontSize: 13, color: 'var(--ink)', fontFamily: 'inherit' }}/>
+                                {poFinEligibleSearch && (
+                                  <button type="button" onClick={() => setPoFinEligibleSearch('')}
+                                    style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 2 }}>
+                                    <IconX size={12}/>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            {railPOs.length === 0 ? (
+                              <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12, lineHeight: 1.6 }}>
+                                <div style={{ marginBottom: 6, color: 'var(--ink-2)', fontWeight: 500 }}>No funded POs yet</div>
+                                <div>POs appear here once buyers fund their escrow.</div>
+                              </div>
+                            ) : filteredRail.length === 0 ? (
+                              <div style={{ padding: 20, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12 }}>
+                                No POs match "<strong>{poFinEligibleSearch}</strong>"
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 580, overflowY: 'auto', overflowX: 'hidden' }}>
+                                {filteredRail.map(po => {
+                                  const active = po.issuanceId === selectedFinancingPO;
+                                  const fr = financingStatusMap[po.issuanceId];
+                                  const isHistorical = fr?.status === 'repaid';
+                                  return (
+                                    <button key={po.issuanceId}
+                                      onClick={() => setSelectedFinancingPO(po.issuanceId)}
+                                      style={{
+                                        padding: '12px 14px', borderRadius: 11,
+                                        background: active
+                                          ? 'linear-gradient(180deg, rgba(255,255,255,0.7), rgba(252,245,220,0.55))'
+                                          : 'rgba(255, 253, 240, 0.35)',
+                                        border: '1px solid ' + (active ? 'rgba(180,140,60,0.28)' : 'rgba(180,140,60,0.1)'),
+                                        boxShadow: active ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 4px 14px -6px rgba(160,110,40,0.25)' : 'none',
+                                        display: 'grid', gridTemplateColumns: '1fr auto', gap: 4, alignItems: 'center',
+                                        cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+                                        opacity: isHistorical ? 0.65 : 1,
+                                        transition: 'all 0.2s ease',
+                                      }}>
+                                      <div style={{ minWidth: 0 }}>
+                                        <div className="mono" style={{ fontSize: 11.5, fontWeight: 600, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{po.poName}</div>
+                                        <div style={{ fontSize: 11, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                          {(linkedCustomers.find(c => c.classicAddress === po.buyerAddress)?.company)
+                                            || (linkedCustomers.find(c => c.classicAddress === po.buyerAddress)?.name)
+                                            || (po.buyerAddress ? `${po.buyerAddress.slice(0, 6)}…${po.buyerAddress.slice(-4)}` : '—')}
+                                        </div>
+                                      </div>
+                                      <div style={{ textAlign: 'right' }}>
+                                        <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>${formatNumber(parseFloat(po.total) || 0, { decimals: 0 })}</div>
+                                        <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', marginTop: 2 }}>{po.paymentTerms || '—'}</div>
+                                      </div>
+                                      {railChipFor(po) && (
+                                        <div style={{ gridColumn: '1 / -1', marginTop: 6 }}>
+                                          {railChipFor(po)}
+                                        </div>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </Card>
+
+                          {/* ───── Right pane · selected PO detail ───── */}
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                            {!selectedPO ? (
+                              <Card layered>
+                                <div style={{ padding: 36, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12, lineHeight: 1.6 }}>
+                                  <div style={{ marginBottom: 8, color: 'var(--ink-2)', fontWeight: 500, fontSize: 14 }}>Pick a PO from the list to begin</div>
+                                  <div>The right pane will show advance details, request form, or status — depending on where the PO is in its financing lifecycle.</div>
+                                </div>
+                              </Card>
+                            ) : (
+                              <Card layered
+                                label={<>
+                                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>{selectedPO.poName} · {selectedBuyerLabel}</div>
+                                  <div style={{ fontSize: 18, fontWeight: 600 }}>
+                                    {selectedIsEligible ? 'Request PO advance' :
+                                     selectedReq?.status === 'pending_lender' ? 'Pending lender review' :
+                                     selectedReq?.status === 'approved'       ? 'Approved · awaiting disbursement' :
+                                     selectedReq?.status === 'disbursed'      ? 'Funds disbursed' :
+                                     'Repaid · closed'}
+                                  </div>
+                                </>}
+                                actions={
+                                  selectedIsEligible
+                                    ? <Chip tone="green">Funded · escrow live</Chip>
+                                    : selectedReq?.status === 'pending_lender' ? <Chip tone="gold">Pending lender</Chip>
+                                    : selectedReq?.status === 'approved'       ? <Chip tone="green">Approved</Chip>
+                                    : selectedReq?.status === 'disbursed'      ? <Chip tone="blue">Disbursed</Chip>
+                                    : <Chip tone="neutral">Repaid</Chip>
+                                }>
+
+                                {/* (PO metric strip removed — detail tabs Overview tab covers this and more) */}
+
+                                {/* State-driven body */}
+                                {selectedReq?.status === 'denied' && (
+                                  <div style={{
+                                    padding: 12, borderRadius: 10, marginBottom: 14,
+                                    background: 'rgba(220, 140, 120, 0.15)', border: '1px solid rgba(220, 140, 120, 0.35)',
+                                    fontSize: 12, color: '#6a2a10',
+                                  }}>
+                                    Previous request was denied{selectedReq.denialReason ? ` — ${selectedReq.denialReason}` : '.'} You can resubmit below, optionally to a different lender.
+                                  </div>
+                                )}
+
+                                {selectedIsEligible ? (
+                                  renderFinancingDrawer(selectedPO, 'financing')
+                                ) : (
+                                  /* Status block for non-eligible (pending/approved/disbursed/repaid) */
+                                  selectedReq && (
+                                    <div className="etched" style={{ padding: 16, borderRadius: 12 }}>
+                                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 14 }}>
+                                        <div>
+                                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Advance amount</div>
+                                          <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: 'oklch(0.45 0.14 240)', marginTop: 3 }}>${formatNumber(parseFloat(selectedReq.requestedAmount) || 0, { decimals: 2 })}</div>
+                                        </div>
+                                        <div>
+                                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Advance rate</div>
+                                          <div className="mono" style={{ fontSize: 14, fontWeight: 500, marginTop: 3 }}>{Math.round(selectedReq.advanceRate * 100)}%</div>
+                                        </div>
+                                        <div>
+                                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>APR</div>
+                                          <div className="mono" style={{ fontSize: 14, fontWeight: 500, marginTop: 3 }}>{selectedReq.approvedAPR !== undefined ? `${(selectedReq.approvedAPR * 100).toFixed(2)}%` : '—'}</div>
+                                        </div>
+                                        <div>
+                                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Lender</div>
+                                          <div className="mono" style={{ fontSize: 11.5, fontWeight: 500, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {selectedReq.lenderAddress ? `${selectedReq.lenderAddress.slice(0, 6)}…${selectedReq.lenderAddress.slice(-4)}` : '—'}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.5, fontStyle: 'italic', marginBottom: 10 }}>
+                                        {selectedReq.status === 'pending_lender' && 'Lender is reviewing the request. No action needed from you right now.'}
+                                        {selectedReq.status === 'approved'       && 'Lender approved the advance. Funds will arrive when disbursement runs on-chain.'}
+                                        {selectedReq.status === 'disbursed'      && 'Funds disbursed to your wallet. Repayment routes through escrow on PO claim.'}
+                                        {selectedReq.status === 'repaid'         && 'This advance has been fully repaid through escrow. Closed.'}
+                                      </div>
+                                      {(selectedReq.requestTxHash || selectedReq.disbursementTxHash) && (
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 11 }}>
+                                          {selectedReq.requestTxHash && (
+                                            <a href={`https://devnet.xrpl.org/transactions/${selectedReq.requestTxHash}`}
+                                              target="_blank" rel="noopener noreferrer"
+                                              className="mono"
+                                              style={{ color: 'oklch(0.5 0.14 240)', textDecoration: 'none' }}>
+                                              request tx ↗
+                                            </a>
+                                          )}
+                                          {selectedReq.disbursementTxHash && (
+                                            <a href={`https://devnet.xrpl.org/transactions/${selectedReq.disbursementTxHash}`}
+                                              target="_blank" rel="noopener noreferrer"
+                                              className="mono"
+                                              style={{ color: 'oklch(0.5 0.14 240)', textDecoration: 'none' }}>
+                                              disbursement tx ↗
+                                            </a>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                )}
+
+                                {/* ── PO detail tabs (Overview / Profile / Inventory) — independent state from Sell · Action ─── */}
+                                <div style={{ marginTop: 18, paddingTop: 18, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
+                                  {renderActionDetailTabs(financingViewedPO, financingPoLoadError, selectedPO, financingDetailTab, setFinancingDetailTab)}
+                                </div>
+                              </Card>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* ── Activity · Financing requests (all states, sorted newest-first) ─── */}
+                    <Card layered
+                      label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Activity</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Financing requests</div>
+                      </>}
+                      actions={allRequests.length > 0 && <Chip tone="neutral">{allRequests.length} total</Chip>}>
+
+                      {/* Search */}
+                      {allRequests.length > 0 && (
+                        <div className="glass etched" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 12, marginBottom: 14 }}>
+                          <IconSearch size={14} style={{ color: 'var(--ink-3)' }}/>
+                          <input value={poFinActivitySearch} onChange={e => setPoFinActivitySearch(e.target.value)}
+                            placeholder="Search by PO, lender, status, or request ID…"
+                            style={{ flex: 1, border: 0, background: 'transparent', outline: 'none', fontSize: 13, color: 'var(--ink)', fontFamily: 'inherit' }}/>
+                          {poFinActivitySearch && (
+                            <button type="button" onClick={() => setPoFinActivitySearch('')}
+                              style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 2 }}>
+                              <IconX size={12}/>
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {(() => {
+                        const q = poFinActivitySearch.trim().toLowerCase();
+                        const filteredActivity = !q ? allRequests : allRequests.filter(req => {
+                          const po = savedPOs.find(p => p.issuanceId === req.poIssuanceId);
+                          return (po?.poName || '').toLowerCase().includes(q)
+                            || (req.lenderAddress || '').toLowerCase().includes(q)
+                            || (req.status || '').toLowerCase().includes(q)
+                            || (req.requestId || '').toLowerCase().includes(q);
+                        });
+                        if (allRequests.length === 0) {
+                          return (
+                            <div style={{ padding: 22, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12 }}>
+                              No financing requests yet — pick a funded PO above and click <strong>Request advance</strong> to begin.
+                            </div>
+                          );
+                        }
+                        if (filteredActivity.length === 0) {
+                          return (
+                            <div style={{ padding: 24, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12, lineHeight: 1.6 }}>
+                              No requests match "<strong>{poFinActivitySearch}</strong>"
+                            </div>
+                          );
+                        }
+                        return (
+                        <div style={{ maxHeight: 360, overflowY: 'auto', overflowX: 'hidden' }}>
+                          {/* Header row */}
+                          <div className="mono" style={{
+                            display: 'grid', gridTemplateColumns: 'minmax(0, 0.9fr) minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr)',
+                            columnGap: 12,
+                            padding: '10px 14px', borderBottom: '1px solid rgba(180,140,60,0.15)',
+                            fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)',
+                            position: 'sticky', top: 0, background: 'rgba(255, 248, 222, 0.95)', zIndex: 1,
+                          }}>
+                            <span>Request</span>
+                            <span>PO</span>
+                            <span style={{ textAlign: 'right' }}>Amount</span>
+                            <span style={{ textAlign: 'right' }}>APR</span>
+                            <span>Lender</span>
+                            <span style={{ textAlign: 'right' }}>Submitted</span>
+                            <span style={{ textAlign: 'right' }}>Status</span>
+                          </div>
+                          {/* Body rows */}
+                          {filteredActivity
+                            .slice()
+                            .sort((a, b) => (b.requestTimestamp || 0) - (a.requestTimestamp || 0))
+                            .map((req, i, arr) => {
+                              const po = savedPOs.find(p => p.issuanceId === req.poIssuanceId);
+                              const tone: 'gold' | 'green' | 'blue' | 'neutral' | 'red' =
+                                req.status === 'pending_lender' ? 'gold'    :
+                                req.status === 'approved'       ? 'green'   :
+                                req.status === 'disbursed'      ? 'blue'    :
+                                req.status === 'repaid'         ? 'neutral' :
+                                'red'; // denied
+                              const label =
+                                req.status === 'pending_lender' ? 'Pending'   :
+                                req.status === 'approved'       ? 'Approved'  :
+                                req.status === 'disbursed'      ? 'Disbursed' :
+                                req.status === 'repaid'         ? 'Repaid'    :
+                                'Denied';
+                              const aprDisplay = req.approvedAPR !== undefined
+                                ? `${(req.approvedAPR * 100).toFixed(2)}%`
+                                : '—';
+                              return (
+                                <div key={req.requestId} style={{
+                                  display: 'grid', gridTemplateColumns: 'minmax(0, 0.9fr) minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr)',
+                                  columnGap: 12,
+                                  padding: '12px 14px',
+                                  borderBottom: i < arr.length - 1 ? '1px solid rgba(180,140,60,0.08)' : 'none',
+                                  alignItems: 'center', fontSize: 12,
+                                }}>
+                                  <span className="mono" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{req.requestId.slice(0, 8)}</span>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{po?.poName || req.poIssuanceId.slice(0, 12)}</span>
+                                  <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${formatNumber(parseFloat(req.requestedAmount) || 0, { decimals: 0 })}</span>
+                                  <span className="mono" style={{ textAlign: 'right', color: 'var(--ink-2)' }}>{aprDisplay}</span>
+                                  <span className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {req.lenderAddress ? `${req.lenderAddress.slice(0, 6)}…${req.lenderAddress.slice(-4)}` : '—'}
+                                  </span>
+                                  <span className="mono" style={{ fontSize: 11, textAlign: 'right', color: 'var(--ink-3)' }}>
+                                    {req.requestTimestamp ? new Date(req.requestTimestamp * 1000).toLocaleDateString() : '—'}
+                                  </span>
+                                  <span style={{ textAlign: 'right' }}>
+                                    <Chip tone={tone}>{label}</Chip>
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                        );
+                      })()}
+                    </Card>
+                  </div>
+                  );
+                })()}
+
+                {financingSubTab === 'inventory' && (() => {
+                  // ── Counterparty placeholder data (TODO: swap to live lender registry) ──
+                  const LENDERS = [
+                    { id: 'helix',     name: 'Helix Capital',          wallet: '0x8c4a…2f91', apr: 7.82, asset: 'USDC · Base',     rating: 'A+' },
+                    { id: 'ridgefund', name: 'Ridge Trade Fund',       wallet: '0x2d91…b34e', apr: 8.15, asset: 'USDC · Base',     rating: 'A'  },
+                    { id: 'oakmoor',   name: 'Oakmoor Working Cap',    wallet: '0xa017…9cc1', apr: 7.40, asset: 'EUR-T · Polygon', rating: 'AA' },
+                    { id: 'halcyon',   name: 'Halcyon Yield Partners', wallet: '0x5e88…014d', apr: 8.95, asset: 'USDC · Base',     rating: 'A-' },
+                  ];
+                  const selectedLender = LENDERS.find(l => l.id === selectedLenderId) || LENDERS[0];
+
+                  return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                    {/* ── Counterparty card ─────────────────────────────────── */}
+                    <Card layered
+                      style={{ position: 'relative', overflow: 'visible', zIndex: 50 }}
+                      label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Counterparty</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Request financing partner</div>
+                      </>}
+                      actions={<Chip tone="blue">DID verified · {LENDERS.length} connected · Devnet placeholder</Chip>}>
+                      <div style={{ position: 'relative' }}>
+                        <button onClick={() => setLenderPickerOpen(!lenderPickerOpen)}
+                          style={{
+                            width: '100%', padding: '12px 14px', borderRadius: 12,
+                            background: 'rgba(255, 253, 240, 0.7)',
+                            border: '1px solid rgba(180, 140, 60, 0.22)',
+                            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                            display: 'grid', gridTemplateColumns: '1fr auto auto auto auto', gap: 16, alignItems: 'center',
+                            textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit',
+                          }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{selectedLender.name}</div>
+                            <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{selectedLender.wallet} · {selectedLender.asset}</div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>APR</div>
+                            <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: 'oklch(0.5 0.14 240)' }}>{selectedLender.apr.toFixed(2)}%</div>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Rating</div>
+                            <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{selectedLender.rating}</div>
+                          </div>
+                          <div style={{ fontSize: 14, color: 'var(--ink-3)', transform: lenderPickerOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</div>
+                        </button>
+
+                        {lenderPickerOpen && (
+                          <>
+                            {/* Click-outside dismiss layer */}
+                            <div onClick={() => setLenderPickerOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 40 }}/>
+                            {/* Popover (solid background — no transparency) */}
+                            <div style={{
+                              position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
+                              borderRadius: 12, padding: 4, zIndex: 60,
+                              background: 'oklch(0.98 0.02 86)',
+                              border: '1px solid rgba(180, 140, 60, 0.28)',
+                              boxShadow: '0 12px 32px -8px rgba(60,40,15,0.35), inset 0 1px 0 rgba(255,255,255,0.6)',
+                              maxHeight: 280, overflowY: 'auto',
+                            }}>
+                              {LENDERS.map(l => {
+                                const isSel = l.id === selectedLenderId;
+                                return (
+                                  <button key={l.id}
+                                    onClick={() => { setSelectedLenderId(l.id); setLenderPickerOpen(false); }}
+                                    style={{
+                                      width: '100%', padding: '10px 14px', borderRadius: 10,
+                                      background: isSel ? 'rgba(255, 220, 140, 0.45)' : 'transparent',
+                                      border: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+                                      display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 14, alignItems: 'center',
+                                      marginBottom: 2,
+                                    }}>
+                                    <div>
+                                      <div style={{ fontSize: 12.5, fontWeight: isSel ? 700 : 600, color: 'var(--ink)' }}>{l.name}</div>
+                                      <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2 }}>{l.wallet} · {l.asset}</div>
+                                    </div>
+                                    <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.5 0.14 240)', textAlign: 'right' }}>{l.apr.toFixed(2)}%</div>
+                                    <div className="mono" style={{ fontSize: 11, fontWeight: 600, color: 'var(--ink-2)', minWidth: 24, textAlign: 'right' }}>{l.rating}</div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </Card>
+
+                    {/* Action bar (Refresh only — "+ New credit line" replaced by Configure card CTA below) */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                      <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                        {creditLines.length === 0
+                          ? 'No credit lines open. Configure & open a line below to begin.'
+                          : `${creditLines.filter(l => l.status === 'active').length} active line${creditLines.filter(l => l.status === 'active').length === 1 ? '' : 's'} · ${creditLines.length} total`}
+                      </div>
+                      <Btn variant="ghost" icon={IconRefresh}
+                        onClick={refreshCreditLines}
+                        disabled={creditLinesLoading}>
+                        {creditLinesLoading ? 'Loading…' : 'Refresh'}
+                      </Btn>
+                    </div>
+
+                    {/* ── Aggregate KPIs (matches Claude Design financing.jsx) ─────────── */}
+                    {(() => {
+                      // Inventory aggregates (live from vendorInventoryV2 + invPricingMap)
+                      const inventoryItems = vendorInventoryV2.filter(i => i.status !== 'discontinued');
+                      const itemValue = (i: any) => (i.quantityOnHand || 0) * (i.listPrice || invPricingMap[i.nftId]?.listPrice || 0);
+                      const totalInvValue = inventoryItems.reduce((s, i) => s + itemValue(i), 0);
+
+                      // "Pledged collateral" reflects the Configure slider's exploration view
+                      const pledgedValueExplore = totalInvValue * (pledgeExplorePct / 100);
+                      const creditLimitExplore  = pledgedValueExplore * (advanceExplorePct / 100);
+
+                      // Estimated APR (placeholder — TODO: swap to lender-published rate when registry ships)
+                      const derivedAPR = selectedLender.apr + (advanceExplorePct - 60) * 0.06;
+
+                      return (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                          <Card>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Total inventory value</div>
+                              <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>${formatNumber(totalInvValue, { decimals: 0 })}</div>
+                              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{inventoryItems.length} active SKU{inventoryItems.length === 1 ? '' : 's'}</div>
+                            </div>
+                          </Card>
+                          <Card>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Pledged collateral</div>
+                              <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>${formatNumber(pledgedValueExplore, { decimals: 0 })}</div>
+                              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{pledgeExplorePct}% of inventory</div>
+                            </div>
+                          </Card>
+                          <Card>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Credit limit</div>
+                              <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>${formatNumber(creditLimitExplore, { decimals: 0 })}</div>
+                              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{advanceExplorePct}% advance rate</div>
+                            </div>
+                          </Card>
+                          <Card>
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Published APR</div>
+                              <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2, color: 'oklch(0.5 0.14 240)' }}>{derivedAPR.toFixed(2)}%</div>
+                              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>est. · {selectedLender.name}</div>
+                            </div>
+                          </Card>
+                        </div>
+                      );
+                    })()}
+
+                    {/* ── Configure (span 2) + Collateral table (span 2) ──────── */}
+                    {(() => {
+                      // Inventory ranked by line value (uses live invPricingMap fallback)
+                      const inventoryItems = vendorInventoryV2.filter(i => i.status !== 'discontinued');
+                      const itemsRanked = inventoryItems
+                        .map(i => {
+                          const resolvedPrice = i.listPrice || invPricingMap[i.nftId]?.listPrice || 0;
+                          return { ...i, resolvedPrice, lineValue: (i.quantityOnHand || 0) * resolvedPrice };
+                        })
+                        .sort((a, b) => b.lineValue - a.lineValue);
+                      const totalInvValue = itemsRanked.reduce((s, i) => s + i.lineValue, 0);
+
+                      // Configure card live values
+                      const pledgedValueExplore = totalInvValue * (pledgeExplorePct / 100);
+                      const creditLimitExplore  = pledgedValueExplore * (advanceExplorePct / 100);
+                      const derivedAPR = selectedLender.apr + (advanceExplorePct - 60) * 0.06;
+                      const monthlyCarry = creditLimitExplore * (derivedAPR / 100) / 12;
+
+                      // Pledge handoff: pre-fill modal with lender + haircut + auto-selected items
+                      const openCreditLineFromConfigure = () => {
+                        if (!hasFinancingAccess) return;
+                        // Pre-fill lender (placeholder wallet display string — user overrides with real r-address)
+                        setPledgeLenderAddress(selectedLender.wallet);
+                        // Pre-fill haircut from Configure's advance rate
+                        setPledgeHaircut(advanceExplorePct / 100);
+                        // Auto-select top-N items by value, excluding already-pledged (one-pledge-per-NFT enforced)
+                        const eligible = itemsRanked.filter(i => !isPledged(i.nftId, creditLines));
+                        const target = totalInvValue * (pledgeExplorePct / 100);
+                        const picked: any[] = [];
+                        let acc = 0;
+                        for (const it of eligible) {
+                          picked.push(it);
+                          acc += it.lineValue;
+                          if (acc >= target) break;
+                        }
+                        const pickedIds = picked.map(p => p.nftId);
+                        setPledgeSelectedNfts(pickedIds);
+                        if (picked.length > 0) {
+                          const valuationItems = picked.map(p => ({
+                            nftId: p.nftId, partNumber: p.partNumber, name: p.name,
+                            quantityOnHand: p.quantityOnHand,
+                            listPrice: p.resolvedPrice,
+                          }));
+                          setLiveCollateralValuation(calculateCollateralValue(valuationItems, advanceExplorePct / 100, 0));
+                        } else {
+                          setLiveCollateralValuation(null);
+                        }
+                        setShowPledgeModal(true);
+                      };
+
+                      return (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, alignItems: 'start' }}>
+                          {/* ───── Configure card (span 2) ───── */}
+                          <div style={{ gridColumn: 'span 2' }}>
+                            <Card layered
+                              label={<>
+                                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Configure</div>
+                                <div style={{ fontSize: 16, fontWeight: 600 }}>Inventory credit line</div>
+                              </>}>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                                {/* Pledge slider */}
+                                <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 500 }}>Inventory to pledge</span>
+                                    <span className="mono" style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>{pledgeExplorePct}%</span>
+                                  </div>
+                                  <input type="range" min={10} max={100} step={5}
+                                    value={pledgeExplorePct}
+                                    onChange={e => setPledgeExplorePct(Number(e.target.value))}
+                                    style={{
+                                      width: '100%', height: 6, borderRadius: 999, WebkitAppearance: 'none', appearance: 'none', outline: 'none',
+                                      background: `linear-gradient(90deg, oklch(0.78 0.14 78) 0%, oklch(0.78 0.14 78) ${(pledgeExplorePct - 10) / 90 * 100}%, rgba(180,140,60,0.15) ${(pledgeExplorePct - 10) / 90 * 100}%)`,
+                                    }}/>
+                                  <div className="mono" style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--ink-3)' }}>
+                                    <span>10%</span><span>100%</span>
+                                  </div>
+                                  <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 8 }}>
+                                    ~{(() => {
+                                      let acc = 0;
+                                      const target = totalInvValue * (pledgeExplorePct / 100);
+                                      for (let i = 0; i < itemsRanked.length; i++) {
+                                        acc += itemsRanked[i].lineValue;
+                                        if (acc >= target) return i + 1;
+                                      }
+                                      return itemsRanked.length;
+                                    })()} highest-value SKUs · ${formatNumber(pledgedValueExplore, { decimals: 0 })} collateral
+                                  </div>
+                                </div>
+
+                                {/* Advance slider */}
+                                <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+                                    <span style={{ fontSize: 13, fontWeight: 500 }}>Advance rate on collateral</span>
+                                    <span className="mono" style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>{advanceExplorePct}%</span>
+                                  </div>
+                                  <input type="range" min={40} max={85} step={5}
+                                    value={advanceExplorePct}
+                                    onChange={e => setAdvanceExplorePct(Number(e.target.value))}
+                                    style={{
+                                      width: '100%', height: 6, borderRadius: 999, WebkitAppearance: 'none', appearance: 'none', outline: 'none',
+                                      background: `linear-gradient(90deg, oklch(0.72 0.14 240) 0%, oklch(0.72 0.14 240) ${(advanceExplorePct - 40) / 45 * 100}%, rgba(180,140,60,0.15) ${(advanceExplorePct - 40) / 45 * 100}%)`,
+                                    }}/>
+                                  <div className="mono" style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 10, color: 'var(--ink-3)' }}>
+                                    <span>40%</span><span>85%</span>
+                                  </div>
+                                  <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 8 }}>
+                                    Unlocks ${formatNumber(creditLimitExplore, { decimals: 0 })} against pledged value
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Etched stats strip */}
+                              <div className="etched" style={{
+                                padding: 14, borderRadius: 12, marginTop: 16,
+                                display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14,
+                              }}>
+                                <div>
+                                  <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Principal</div>
+                                  <div className="mono" style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em', marginTop: 3 }}>${formatNumber(creditLimitExplore, { decimals: 0 })}</div>
+                                </div>
+                                <div>
+                                  <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Monthly carry (est.)</div>
+                                  <div className="mono" style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em', marginTop: 3 }}>${formatNumber(monthlyCarry, { decimals: 0 })}</div>
+                                </div>
+                                <div>
+                                  <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>APR (est.)</div>
+                                  <div className="mono" style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em', marginTop: 3, color: 'oklch(0.5 0.14 240)' }}>{derivedAPR.toFixed(2)}%</div>
+                                </div>
+                              </div>
+
+                              {/* Open credit line CTA — replaces the old "+ New credit line" button */}
+                              <button onClick={openCreditLineFromConfigure}
+                                disabled={!hasFinancingAccess || itemsRanked.length === 0}
+                                title={!hasFinancingAccess
+                                  ? 'Verified+ credential required to open a credit line.'
+                                  : itemsRanked.length === 0 ? 'No active inventory available to pledge.' : undefined}
+                                style={{
+                                  width: '100%', padding: 13, borderRadius: 12, border: 'none', marginTop: 16,
+                                  background: !hasFinancingAccess || itemsRanked.length === 0
+                                    ? 'rgba(180, 180, 180, 0.5)'
+                                    : 'linear-gradient(180deg, oklch(0.72 0.14 240), oklch(0.5 0.16 240))',
+                                  color: !hasFinancingAccess || itemsRanked.length === 0 ? '#fff' : '#f9efd2',
+                                  cursor: !hasFinancingAccess || itemsRanked.length === 0 ? 'not-allowed' : 'pointer',
+                                  fontWeight: 600, fontSize: 13.5, fontFamily: 'inherit',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                                  boxShadow: !hasFinancingAccess || itemsRanked.length === 0
+                                    ? 'none'
+                                    : 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 14px -4px oklch(0.5 0.16 240 / 0.4)',
+                                  transition: 'all 0.3s ease',
+                                }}>
+                                <IconArrowRight size={14}/>
+                                Open credit line · ${formatNumber(creditLimitExplore, { decimals: 0 })}
+                              </button>
+                            </Card>
+                          </div>
+
+                          {/* ───── Collateral table (span 2) ───── */}
+                          <div style={{ gridColumn: 'span 2' }}>
+                            <Card layered
+                              label={<>
+                                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Collateral</div>
+                                <div style={{ fontSize: 16, fontWeight: 600 }}>Pledged inventory · {itemsRanked.length} SKU{itemsRanked.length === 1 ? '' : 's'}</div>
+                              </>}
+                              actions={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <Chip tone="neutral">{itemsRanked.filter(i => isPledged(i.nftId, creditLines)).length} pledged</Chip>
+                                <Btn variant="ghost" icon={IconBox}
+                                  onClick={() => {
+                                    if (!hasFinancingAccess) return;
+                                    setPledgeLenderAddress(selectedLender.wallet);
+                                    setPledgeHaircut(advanceExplorePct / 100);
+                                    setPledgeSelectedNfts([]);
+                                    setLiveCollateralValuation(null);
+                                    setShowPledgeModal(true);
+                                  }}
+                                  disabled={!hasFinancingAccess || itemsRanked.length === 0}
+                                  title={!hasFinancingAccess
+                                    ? 'Verified+ credential required.'
+                                    : itemsRanked.length === 0 ? 'No active inventory available.' : 'Open the pledge modal to pick items manually.'}
+                                  style={(!hasFinancingAccess || itemsRanked.length === 0) ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}>
+                                  Adjust mix
+                                </Btn>
+                              </div>}>
+                              {/* Caption — moved out of header label so it spans full Card width */}
+                              <div style={{ fontSize: 11.5, color: 'var(--ink-3)', marginTop: -6, marginBottom: 14, lineHeight: 1.55 }}>
+                                Status updates as lines open &amp; release. Use Configure above to auto-pick top-value items, or Adjust mix to choose manually.
+                              </div>
+                              {itemsRanked.length === 0 ? (
+                                <div style={{ padding: 32, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12, lineHeight: 1.6 }}>
+                                  <div style={{ marginBottom: 6, color: 'var(--ink-2)', fontWeight: 500 }}>No active inventory loaded</div>
+                                  <div>If you have SKUs in Sell · Inventory, they'll appear here once the chain sync completes. Otherwise, add SKUs in Sell · Inventory first to make collateral available.</div>
+                                </div>
+                              ) : (
+                                <div style={{ maxHeight: 280, overflowY: 'auto', overflowX: 'hidden' }}>
+                                  {/* Header row */}
+                                  <div className="mono" style={{
+                                    display: 'grid', gridTemplateColumns: 'minmax(0, 0.9fr) minmax(0, 2.2fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr)',
+                                    padding: '8px 12px', borderBottom: '1px solid rgba(180,140,60,0.15)',
+                                    fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)',
+                                    position: 'sticky', top: 0, background: 'rgba(255, 248, 222, 0.95)', zIndex: 1,
+                                  }}>
+                                    <span>SKU</span>
+                                    <span>Item</span>
+                                    <span style={{ textAlign: 'right' }}>On hand</span>
+                                    <span style={{ textAlign: 'right' }}>Value</span>
+                                    <span style={{ textAlign: 'right' }}>Status</span>
+                                  </div>
+                                  {/* Body rows */}
+                                  {itemsRanked.map((k, i) => {
+                                    const pledged = isPledged(k.nftId, creditLines);
+                                    const skuTag = (k as any).sku && String((k as any).sku).trim()
+                                      ? String((k as any).sku).trim()
+                                      : (k.nftId ? k.nftId.slice(-8).toUpperCase() : '');
+                                    return (
+                                      <div key={k.nftId} style={{
+                                        display: 'grid', gridTemplateColumns: 'minmax(0, 0.9fr) minmax(0, 2.2fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr)',
+                                        padding: '10px 12px',
+                                        borderBottom: i < itemsRanked.length - 1 ? '1px solid rgba(180,140,60,0.08)' : 'none',
+                                        alignItems: 'center',
+                                        opacity: pledged ? 1 : 0.7,
+                                        transition: 'opacity 0.25s ease',
+                                      }}>
+                                        <span className="mono" style={{ fontSize: 11, fontWeight: 600 }}>{skuTag}</span>
+                                        <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{k.name}</span>
+                                        <span className="mono" style={{ fontSize: 11, textAlign: 'right', color: 'var(--ink-2)' }}>{formatNumber(k.quantityOnHand || 0, { decimals: 0 })} {k.unit || ''}</span>
+                                        <span className="mono" style={{ fontSize: 12, textAlign: 'right', fontWeight: 600 }}>${formatNumber(k.lineValue, { decimals: 0 })}</span>
+                                        <span style={{ textAlign: 'right' }}>
+                                          {pledged
+                                            ? <Chip tone="blue">Pledged</Chip>
+                                            : <Chip tone="neutral">Free</Chip>}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </Card>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Empty state (now: shown only when there are no credit lines AT ALL) */}
+                    {creditLines.length === 0 && !creditLinesLoading && (
+                      <Card>
+                        <div style={{ padding: 48, textAlign: 'center' }}>
+                          <div style={{ fontSize: 32, marginBottom: 12, opacity: 0.55 }}>🏦</div>
+                          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>No credit lines yet</div>
+                          <div style={{ fontSize: 12.5, color: 'var(--ink-3)', maxWidth: 380, margin: '0 auto', lineHeight: 1.5 }}>
+                            Use the <strong>Configure</strong> panel above to dial in your pledge mix and advance rate, then click <strong>Open credit line</strong> to commit.
+                          </div>
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* Active credit lines wrapped in a parent layered Card with section label */}
+                    {creditLines.filter(l => l.status === 'active').length > 0 && (
+                      <Card layered
+                        label={<>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>Open lines</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>Active credit lines</div>
+                        </>}
+                        actions={<Chip tone="green">{creditLines.filter(l => l.status === 'active').length} active</Chip>}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                          {creditLines.filter(l => l.status === 'active').map(line => {
+                      const balance     = parseFloat(line.currentBalance) || 0;
+                      const limit       = parseFloat(line.creditLimit)    || 0;
+                      const available   = Math.max(0, limit - balance);
+                      const pledgedItems = vendorInventoryV2.filter(i => line.pledgedNftIds.includes(i.nftId));
+                      const itemsWithPricing = pledgedItems.map(i => ({
+                        nftId: i.nftId, partNumber: i.partNumber, name: i.name,
+                        quantityOnHand: i.quantityOnHand,
+                        listPrice: i.listPrice || invPricingMap[i.nftId]?.listPrice || 0,
+                      }));
+                      const valuation = calculateCollateralValue(itemsWithPricing, line.haircutPct, balance);
+                      const coverage  = computeCoverageRatio(valuation.grossValue, balance);
+                      const statusTone: 'green' | 'gold' | 'red' | 'neutral' =
+                        line.status === 'active'    ? 'green' :
+                        line.status === 'defaulted' ? 'red'   :
+                        'neutral';
+
+                      return (
+                        <Card key={line.pledgeId}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <span className="mono" style={{ fontWeight: 600, fontSize: 14, color: 'var(--ink)' }}>{formatCreditLineId(line.pledgeId)}</span>
+                              <Chip tone={statusTone}>{
+                                line.status === 'active'    ? 'Active'    :
+                                line.status === 'defaulted' ? 'Defaulted' :
+                                'Released'
+                              }</Chip>
+                            </div>
+                            <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                              Opened {new Date(line.pledgeTimestamp * 1000).toLocaleDateString()}
+                            </div>
+                          </div>
+
+                          <div className="etched" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', padding: 14, borderRadius: 12, marginBottom: 12 }}>
+                            {[
+                              { label: 'Limit',     value: `$${formatNumber(limit,     { decimals: 2 })}` },
+                              { label: 'Balance',   value: `$${formatNumber(balance,   { decimals: 2 })}` },
+                              { label: 'Available', value: `$${formatNumber(available, { decimals: 2 })}`, accent: 'oklch(0.45 0.14 148)' },
+                              { label: 'Coverage',  value: coverage.status === 'no_balance' ? '—' : coverage.label,
+                                accent: coverage.status === 'healthy'  ? 'oklch(0.45 0.14 148)' :
+                                        coverage.status === 'warning'  ? 'oklch(0.55 0.16 70)'  :
+                                        coverage.status === 'critical' ? 'oklch(0.55 0.18 25)'  : undefined },
+                            ].map(m => (
+                              <div key={m.label} style={{ textAlign: 'center' }}>
+                                <div className="mono" style={{ fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>{m.label}</div>
+                                <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: m.accent || 'var(--ink)' }}>{m.value}</div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, color: 'var(--ink-3)', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+                            <span>
+                              <span style={{ fontWeight: 600, color: 'var(--ink-2)' }}>{line.pledgedNftIds.length} item{line.pledgedNftIds.length === 1 ? '' : 's'} pledged</span>
+                              {valuation.grossValue > 0 && (
+                                <span style={{ marginLeft: 10 }}>
+                                  · Collateral <span className="mono" style={{ fontWeight: 600, color: 'var(--ink-2)' }}>${formatNumber(valuation.grossValue, { decimals: 2 })}</span>
+                                </span>
+                              )}
+                            </span>
+                            {line.lenderAddress && (
+                              <span className="mono" style={{ fontSize: 11 }}>
+                                Lender: {line.lenderAddress.slice(0, 8)}…{line.lenderAddress.slice(-4)}
+                              </span>
+                            )}
+                          </div>
+
+                          {coverage.status === 'warning' && (
+                            <div style={{ background: 'rgba(255, 220, 140, 0.25)', border: '1px solid rgba(200, 160, 60, 0.4)', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 12, color: 'oklch(0.4 0.12 70)' }}>
+                              ⚠ Collateral value is approaching the minimum coverage ratio. Add inventory or reduce balance to restore headroom.
+                            </div>
+                          )}
+                          {coverage.status === 'critical' && (
+                            <div style={{ background: 'rgba(240, 180, 175, 0.25)', border: '1px solid rgba(200, 80, 70, 0.45)', borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 12, color: 'oklch(0.4 0.16 25)' }}>
+                              🚨 Coverage is below the minimum threshold. A margin notice has been sent to the lender. Take action immediately.
+                            </div>
+                          )}
+
+                          {line.status === 'active' && (
+                            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                              <Btn variant="ghost"
+                                onClick={() => { setShowCreditLineDetail(line); setDrawAmount(''); setRepayAmount(''); }}
+                                disabled={!hasFinancingAccess}
+                                title={!hasFinancingAccess ? 'Verified+ credential required.' : undefined}
+                                style={!hasFinancingAccess ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}>
+                                Manage
+                              </Btn>
+                              {balance === 0 && (
+                                <Btn variant="gold" icon={IconCheck}
+                                  onClick={() => releaseCollateral(line)}
+                                  disabled={creditLineActionLoading || !hasFinancingAccess}
+                                  title={!hasFinancingAccess ? 'Verified+ credential required.' : undefined}
+                                  style={!hasFinancingAccess ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}>
+                                  Release collateral
+                                </Btn>
+                              )}
+                            </div>
+                          )}
+                        </Card>
+                      );
+                    })}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* ── Manage modal ────────────────────────────────────────── */}
+                    {showCreditLineDetail && (
+                      <div onClick={() => setShowCreditLineDetail(null)} style={{
+                        position: 'fixed', inset: 0, background: 'rgba(40, 25, 8, 0.45)', backdropFilter: 'blur(4px)',
+                        zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+                      }}>
+                        <div onClick={e => e.stopPropagation()} className="glass-strong" style={{
+                          borderRadius: 18, padding: 28, maxWidth: 540, width: '100%',
+                          maxHeight: '85vh', overflowY: 'auto',
+                          boxShadow: '0 20px 60px -10px rgba(60,40,15,0.35)',
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }}>
+                            <div>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>Credit line</div>
+                              <div className="mono" style={{ fontSize: 17, fontWeight: 600, color: 'var(--ink)' }}>{formatCreditLineId(showCreditLineDetail.pledgeId)}</div>
+                            </div>
+                            <button onClick={() => setShowCreditLineDetail(null)} style={{ background: 'transparent', border: 0, fontSize: 18, color: 'var(--ink-3)', cursor: 'pointer', padding: 6 }}>✕</button>
+                          </div>
+
+                          <div className="etched" style={{ padding: 12, borderRadius: 10, marginBottom: 18, fontSize: 12.5, color: 'var(--ink-2)' }}>
+                            {formatCreditLineSummary(showCreditLineDetail)}
+                          </div>
+
+                          {getAvailableCredit(showCreditLineDetail) > 0 && (
+                            <div style={{ marginBottom: 16, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180, 140, 60, 0.18)', borderRadius: 12, padding: 14 }}>
+                              <div style={{ fontWeight: 600, color: 'var(--ink)', fontSize: 13, marginBottom: 8 }}>Draw down</div>
+                              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 8 }}>
+                                Available: ${getAvailableCredit(showCreditLineDetail).toFixed(2)} RLUSD
+                              </div>
+                              <div style={{ display: 'flex', gap: 8 }}>
+                                <input type="number" value={drawAmount} onChange={e => setDrawAmount(e.target.value)}
+                                  placeholder={`Min $${MIN_DRAW_AMOUNT}`}
+                                  style={{ flex: 1, padding: '9px 12px', borderRadius: 10, border: '1px solid rgba(180, 140, 60, 0.28)', fontSize: 13, fontFamily: 'inherit', background: 'rgba(255,255,255,0.6)' }}/>
+                                <Btn variant="gold"
+                                  onClick={() => drawFromCreditLine(showCreditLineDetail)}
+                                  disabled={creditLineActionLoading || !drawAmount}>
+                                  {creditLineActionLoading ? 'Submitting…' : 'Draw'}
+                                </Btn>
+                              </div>
+                            </div>
+                          )}
+
+                          {parseFloat(showCreditLineDetail.currentBalance) > 0 && (
+                            <div style={{ marginBottom: 16, background: 'rgba(220, 240, 220, 0.4)', border: '1px solid rgba(100, 180, 120, 0.25)', borderRadius: 12, padding: 14 }}>
+                              <div style={{ fontWeight: 600, color: 'oklch(0.42 0.16 148)', fontSize: 13, marginBottom: 8 }}>Make payment</div>
+                              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 8 }}>
+                                Outstanding: ${parseFloat(showCreditLineDetail.currentBalance).toFixed(2)} RLUSD
+                              </div>
+                              <div style={{ display: 'flex', gap: 8 }}>
+                                <input type="number" value={repayAmount} onChange={e => setRepayAmount(e.target.value)}
+                                  placeholder="Amount to repay"
+                                  style={{ flex: 1, padding: '9px 12px', borderRadius: 10, border: '1px solid rgba(100, 180, 120, 0.35)', fontSize: 13, fontFamily: 'inherit', background: 'rgba(255,255,255,0.6)' }}/>
+                                <button onClick={() => repayCredit(showCreditLineDetail)}
+                                  disabled={creditLineActionLoading || !repayAmount}
+                                  style={{
+                                    padding: '9px 18px', borderRadius: 999, border: 'none',
+                                    background: creditLineActionLoading || !repayAmount
+                                      ? 'rgba(180, 180, 180, 0.5)'
+                                      : 'linear-gradient(180deg, oklch(0.72 0.13 148), oklch(0.55 0.15 148))',
+                                    color: '#fff', cursor: creditLineActionLoading ? 'wait' : 'pointer',
+                                    fontWeight: 600, fontSize: 12.5, fontFamily: 'inherit',
+                                  }}>
+                                  {creditLineActionLoading ? 'Submitting…' : 'Pay'}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {showCreditLineDetail.draws.length > 0 && (
+                            <div style={{ marginBottom: 14 }}>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>Draw history</div>
+                              {showCreditLineDetail.draws.map(d => (
+                                <div key={d.drawId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '6px 0', borderBottom: '1px solid rgba(180,140,60,0.08)', color: 'var(--ink-2)' }}>
+                                  <span className="mono">{new Date(d.timestamp * 1000).toLocaleDateString()}</span>
+                                  <span className="mono" style={{ fontWeight: 600 }}>+${parseFloat(d.amount).toFixed(2)}</span>
+                                  <span className="mono" style={{ color: 'var(--ink-3)' }}>Bal: ${parseFloat(d.newBalance).toFixed(2)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {showCreditLineDetail.repayments.length > 0 && (
+                            <div style={{ marginBottom: 14 }}>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'oklch(0.42 0.16 148)', marginBottom: 8 }}>Payment history</div>
+                              {showCreditLineDetail.repayments.map(r => (
+                                <div key={r.repayId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '6px 0', borderBottom: '1px solid rgba(180,140,60,0.08)', color: 'var(--ink-2)' }}>
+                                  <span className="mono">{new Date(r.timestamp * 1000).toLocaleDateString()}</span>
+                                  <span className="mono" style={{ fontWeight: 600, color: 'oklch(0.42 0.16 148)' }}>-${parseFloat(r.principalAmount).toFixed(2)}</span>
+                                  <span className="mono" style={{ color: 'var(--ink-3)' }}>Int: ${parseFloat(r.interestAmount).toFixed(2)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {parseFloat(showCreditLineDetail.currentBalance) === 0 && (
+                            <button onClick={() => releaseCollateral(showCreditLineDetail)}
+                              disabled={creditLineActionLoading}
+                              style={{
+                                width: '100%', padding: 13, borderRadius: 12, border: 'none',
+                                background: creditLineActionLoading
+                                  ? 'rgba(180,180,180,0.5)'
+                                  : 'linear-gradient(180deg, oklch(0.72 0.13 148), oklch(0.55 0.15 148))',
+                                color: '#fff', cursor: creditLineActionLoading ? 'wait' : 'pointer',
+                                fontWeight: 600, fontSize: 13.5, fontFamily: 'inherit', marginTop: 8,
+                              }}>
+                              🔓 Release collateral
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── New credit line modal ───────────────────────────────── */}
+                    {showPledgeModal && (
+                      <div onClick={() => { setShowPledgeModal(false); setPledgeSelectedNfts([]); setLiveCollateralValuation(null); }} style={{
+                        position: 'fixed', inset: 0, background: 'rgba(40, 25, 8, 0.45)', backdropFilter: 'blur(4px)',
+                        zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+                      }}>
+                        <div onClick={e => e.stopPropagation()} className="glass-strong" style={{
+                          borderRadius: 18, padding: 28, maxWidth: 600, width: '100%',
+                          maxHeight: '88vh', overflowY: 'auto',
+                          boxShadow: '0 20px 60px -10px rgba(60,40,15,0.35)',
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18 }}>
+                            <div>
+                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>New line</div>
+                              <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--ink)', letterSpacing: '-0.01em' }}>Open credit line</div>
+                            </div>
+                            <button onClick={() => { setShowPledgeModal(false); setPledgeSelectedNfts([]); setLiveCollateralValuation(null); }} style={{ background: 'transparent', border: 0, fontSize: 18, color: 'var(--ink-3)', cursor: 'pointer', padding: 6 }}>✕</button>
+                          </div>
+
+                          <div style={{ marginBottom: 14 }}>
+                            <label className="mono" style={{ display: 'block', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Lender wallet address</label>
+                            <input type="text" value={pledgeLenderAddress} onChange={e => setPledgeLenderAddress(e.target.value)}
+                              placeholder="r..."
+                              style={{ width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(180, 140, 60, 0.28)', fontSize: 13, fontFamily: 'inherit', boxSizing: 'border-box', background: 'rgba(255,255,255,0.6)' }}/>
+                          </div>
+
+                          <div style={{ marginBottom: 14 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+                              <label className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Advance rate</label>
+                              <span className="mono" style={{ fontSize: 18, fontWeight: 600, color: 'var(--ink)' }}>{(pledgeHaircut * 100).toFixed(0)}%</span>
+                            </div>
+                            <input type="range" min="0.5" max="0.85" step="0.05"
+                              value={pledgeHaircut}
+                              onChange={e => {
+                                const h = parseFloat(e.target.value);
+                                setPledgeHaircut(h);
+                                if (liveCollateralValuation) {
+                                  const updated = calculateCollateralValue(
+                                    liveCollateralValuation.itemsIncluded.map(i => ({
+                                      nftId: i.nftId, partNumber: i.partNumber, name: i.name,
+                                      quantityOnHand: i.qty, listPrice: i.listPrice,
+                                    })),
+                                    h, 0
+                                  );
+                                  setLiveCollateralValuation(updated);
+                                }
+                              }}
+                              style={{
+                                width: '100%', height: 6, borderRadius: 999, WebkitAppearance: 'none', appearance: 'none', outline: 'none',
+                                background: `linear-gradient(90deg, oklch(0.78 0.14 78) 0%, oklch(0.78 0.14 78) ${((pledgeHaircut - 0.5) / 0.35) * 100}%, rgba(180,140,60,0.15) ${((pledgeHaircut - 0.5) / 0.35) * 100}%)`,
+                              }}/>
+                            <div className="mono" style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--ink-3)', marginTop: 4 }}>
+                              <span>50%</span><span>85%</span>
+                            </div>
+                          </div>
+
+                          <div style={{ marginBottom: 14 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+                              <label className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Items to pledge</label>
+                              <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{pledgeSelectedNfts.length} selected</span>
+                            </div>
+                            <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid rgba(180, 140, 60, 0.22)', borderRadius: 10, background: 'rgba(255, 248, 222, 0.3)' }}>
+                              {vendorInventoryV2.filter(i => i.status !== 'discontinued' && !isPledged(i.nftId, creditLines)).map(item => {
+                                const selected  = pledgeSelectedNfts.includes(item.nftId);
+                                const price     = item.listPrice || invPricingMap[item.nftId]?.listPrice || 0;
+                                const lineValue = item.quantityOnHand * price;
+                                return (
+                                  <div key={item.nftId}
+                                    onClick={() => {
+                                      const next = selected
+                                        ? pledgeSelectedNfts.filter(id => id !== item.nftId)
+                                        : [...pledgeSelectedNfts, item.nftId];
+                                      setPledgeSelectedNfts(next);
+                                      const selectedItems = vendorInventoryV2
+                                        .filter(i => next.includes(i.nftId))
+                                        .map(i => ({
+                                          nftId: i.nftId, partNumber: i.partNumber, name: i.name,
+                                          quantityOnHand: i.quantityOnHand,
+                                          listPrice: i.listPrice || invPricingMap[i.nftId]?.listPrice || 0,
+                                        }));
+                                      setLiveCollateralValuation(
+                                        selectedItems.length > 0
+                                          ? calculateCollateralValue(selectedItems, pledgeHaircut, 0)
+                                          : null
+                                      );
+                                    }}
+                                    style={{
+                                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                      padding: '10px 14px', borderBottom: '1px solid rgba(180,140,60,0.08)',
+                                      cursor: 'pointer',
+                                      background: selected ? 'rgba(255, 220, 140, 0.35)' : 'transparent',
+                                    }}>
+                                    <div>
+                                      <div style={{ fontSize: 12.5, fontWeight: selected ? 600 : 500, color: 'var(--ink)' }}>{item.name}</div>
+                                      <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{item.partNumber} · {item.quantityOnHand} {item.unit} on hand</div>
+                                    </div>
+                                    <div style={{ textAlign: 'right' }}>
+                                      <div className="mono" style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ink)' }}>${formatNumber(lineValue, { decimals: 2 })}</div>
+                                      <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>${price.toFixed(2)}/unit</div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {vendorInventoryV2.filter(i => i.status !== 'discontinued' && !isPledged(i.nftId, creditLines)).length === 0 && (
+                                <div style={{ padding: 20, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12 }}>
+                                  No available inventory items. Already-pledged or discontinued items are excluded.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {liveCollateralValuation && liveCollateralValuation.grossValue > 0 && (
+                            <div className="etched" style={{ padding: 14, borderRadius: 12, marginBottom: 16 }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14, textAlign: 'center' }}>
+                                {[
+                                  { label: 'Gross value', value: `$${formatNumber(liveCollateralValuation.grossValue, { decimals: 2 })}` },
+                                  { label: `Advance (${(pledgeHaircut*100).toFixed(0)}%)`, value: `$${formatNumber(liveCollateralValuation.lendableValue, { decimals: 2 })}`, accent: 'oklch(0.45 0.14 148)' },
+                                  { label: 'Items', value: `${liveCollateralValuation.itemsIncluded.length}` },
+                                ].map(m => (
+                                  <div key={m.label}>
+                                    <div className="mono" style={{ fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>{m.label}</div>
+                                    <div className="mono" style={{ fontSize: 16, fontWeight: 600, color: m.accent || 'var(--ink)' }}>{m.value}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          <button onClick={pledgeInventory}
+                            disabled={pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress || !liveCollateralValuation || !hasFinancingAccess}
+                            title={!hasFinancingAccess ? 'Verified+ credential required.' : undefined}
+                            style={{
+                              width: '100%', padding: 13, borderRadius: 12, border: 'none',
+                              background: pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress || !hasFinancingAccess
+                                ? 'rgba(180, 180, 180, 0.5)'
+                                : 'linear-gradient(180deg, oklch(0.85 0.13 82), oklch(0.7 0.15 62))',
+                              color: pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress || !hasFinancingAccess ? '#fff' : '#2a1f08',
+                              cursor: pledgeSubmitting ? 'wait' : (pledgeSelectedNfts.length === 0 || !pledgeLenderAddress || !hasFinancingAccess ? 'not-allowed' : 'pointer'),
+                              fontWeight: 600, fontSize: 13.5, fontFamily: 'inherit',
+                              boxShadow: pledgeSubmitting || pledgeSelectedNfts.length === 0 || !pledgeLenderAddress || !hasFinancingAccess
+                                ? 'none'
+                                : 'inset 0 1px 0 rgba(255,255,255,0.7), 0 4px 14px -4px rgba(200,150,50,0.5)',
+                            }}>
+                            {pledgeSubmitting ? 'Submitting…' : `Pledge ${pledgeSelectedNfts.length > 0 ? pledgeSelectedNfts.length + ' item' + (pledgeSelectedNfts.length === 1 ? '' : 's') : 'items'} as collateral`}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Activity · Credit line requests (all states) ───────── */}
+                    <Card layered
+                      label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Activity</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Credit line requests</div>
+                      </>}
+                      actions={creditLines.length > 0 && <Chip tone="neutral">{creditLines.length} total</Chip>}>
+                      {creditLines.length === 0 ? (
+                        <div style={{ padding: 22, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12 }}>
+                          No credit line requests yet — open one above to begin.
+                        </div>
+                      ) : (
+                        <div>
+                          {/* Header row */}
+                          <div className="mono" style={{
+                            display: 'grid', gridTemplateColumns: '120px 1fr 110px 160px 110px 110px',
+                            columnGap: 12,
+                            padding: '10px 14px', borderBottom: '1px solid rgba(180,140,60,0.15)',
+                            fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)',
+                          }}>
+                            <span>Request</span>
+                            <span style={{ textAlign: 'right' }}>Limit</span>
+                            <span style={{ textAlign: 'right' }}>Pledge / Adv</span>
+                            <span>Lender</span>
+                            <span style={{ textAlign: 'right' }}>Submitted</span>
+                            <span style={{ textAlign: 'right' }}>Status</span>
+                          </div>
+                          {/* Body rows */}
+                          {creditLines
+                            .slice()
+                            .sort((a, b) => (b.pledgeTimestamp || 0) - (a.pledgeTimestamp || 0))
+                            .map((line, i, arr) => {
+                              const limit = parseFloat(line.creditLimit) || 0;
+                              const advancePctLine = Math.round((line.haircutPct || 0) * 100);
+                              const statusTone: 'green' | 'gold' | 'red' | 'neutral' =
+                                line.status === 'active'    ? 'green'   :
+                                line.status === 'defaulted' ? 'red'     :
+                                line.status === 'released'  ? 'neutral' :
+                                'neutral';
+                              const statusLabel =
+                                line.status === 'active'    ? 'Active'    :
+                                line.status === 'defaulted' ? 'Defaulted' :
+                                line.status === 'released'  ? 'Released'  :
+                                (formatCreditLineStatus(line.status) || line.status);
+                              return (
+                                <div key={line.pledgeId} style={{
+                                  display: 'grid', gridTemplateColumns: '120px 1fr 110px 160px 110px 110px',
+                                  columnGap: 12,
+                                  padding: '12px 14px',
+                                  borderBottom: i < arr.length - 1 ? '1px solid rgba(180,140,60,0.08)' : 'none',
+                                  alignItems: 'center', fontSize: 12,
+                                }}>
+                                  <span className="mono" style={{ fontWeight: 600 }}>{formatCreditLineId(line.pledgeId)}</span>
+                                  <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${formatNumber(limit, { decimals: 0 })}</span>
+                                  <span className="mono" style={{ textAlign: 'right', color: 'var(--ink-2)' }}>
+                                    {line.pledgedNftIds.length} · {advancePctLine}%
+                                  </span>
+                                  <span className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {line.lenderAddress
+                                      ? `${line.lenderAddress.slice(0, 6)}…${line.lenderAddress.slice(-4)}`
+                                      : '—'}
+                                  </span>
+                                  <span className="mono" style={{ fontSize: 11, textAlign: 'right', color: 'var(--ink-3)' }}>
+                                    {line.pledgeTimestamp ? new Date(line.pledgeTimestamp * 1000).toLocaleDateString() : '—'}
+                                  </span>
+                                  <span style={{ textAlign: 'right' }}>
+                                    <Chip tone={statusTone}>{statusLabel}</Chip>
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </Card>
+                  </div>
+                  );
+                })()}
+              </Page>
+            );
+          }
+
+          // ───────── Buy · Financing — single page (escrow yield monitor) ─────────
+          return (
+            <Page
+              tag="Buy · Financing"
+              title="Escrow yield"
+              subtitle="Funded POs earn yield in permissioned escrow pools until claimed by the seller. Balances are tokenized and redeemable on demand."
+              actions={
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {verifiedChip}
+                </div>
+              }>
+              {(() => {
+                // ── Live yield position math ──
+                const accruing  = yieldPositions.filter(p => p.status === 'accruing');
+                const adapter   = yieldPartnerRegistry.get(selectedPartnerId);
+
+                // Per-position computed metrics (memoized inline)
+                const enriched = accruing.map(pos => {
+                  const days = Math.max(0, (Date.now() / 1000 - pos.optInTimestamp) / 86400);
+                  const accrued = adapter ? parseFloat(adapter.calculateAccrued(pos.principalAmount, pos.lockedAPR, days)) : 0;
+                  const netAccrued = adapter
+                    ? accrued * (1 - adapter.feeStructure.partnerFeeFraction - adapter.feeStructure.scpoFeeFraction)
+                    : 0;
+                  return { pos, days, accrued, netAccrued };
+                });
+
+                const totalEscrow = accruing.reduce((s, p) => s + parseFloat(p.principalAmount || '0'), 0);
+                const totalEarned = enriched.reduce((s, e) => s + e.netAccrued, 0);
+                const blendedAPY  = totalEscrow > 0
+                  ? accruing.reduce((s, p) => s + p.lockedAPR * parseFloat(p.principalAmount || '0'), 0) / totalEscrow * 100
+                  : 0;
+                const avgDays = totalEscrow > 0
+                  ? enriched.reduce((s, e) => s + e.days * parseFloat(e.pos.principalAmount || '0'), 0) / totalEscrow
+                  : 0;
+
+                // ── Last-12-months bucketing for Escrow pool balance chart ──
+                // Each position contributes principal to the bucket of its opt-in month and onward.
+                // Positions exit at estimatedClaimDate (or stay until "now" if accruing).
+                const now = new Date();
+                const months: { m: string; key: string; tsStart: number; tsEnd: number }[] = [];
+                for (let i = 11; i >= 0; i--) {
+                  const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+                  const dEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+                  const monthLabel = d.toLocaleDateString('en-US', { month: 'short' });
+                  months.push({
+                    m: monthLabel,
+                    key: `${d.getFullYear()}-${d.getMonth()}`,
+                    tsStart: d.getTime() / 1000,
+                    tsEnd: dEnd.getTime() / 1000,
+                  });
+                }
+                const poolSeries = months.map(b => {
+                  const balance = yieldPositions.reduce((s, p) => {
+                    const optIn = p.optInTimestamp;
+                    const exitTs = p.status === 'withdrawn'
+                      ? (p.estimatedClaimDate || b.tsEnd)
+                      : Number.POSITIVE_INFINITY;
+                    if (optIn <= b.tsEnd && exitTs >= b.tsStart) {
+                      return s + parseFloat(p.principalAmount || '0');
+                    }
+                    return s;
+                  }, 0);
+                  return { m: b.m, v: balance };
+                });
+
+                // ── Pool mix (single-partner devnet) ──
+                const partnerName = adapter?.partnerName || 'SC.PO Default Pool';
+
+                // ── Sorted positions for the live table ──
+                const sortedEnriched = [...enriched].sort((a, b) => {
+                  if (buyFinPosSortKey === 'value')  return parseFloat(b.pos.principalAmount) - parseFloat(a.pos.principalAmount);
+                  if (buyFinPosSortKey === 'days')   return b.days - a.days;
+                  if (buyFinPosSortKey === 'earned') return b.netAccrued - a.netAccrued;
+                  return b.pos.lockedAPR - a.pos.lockedAPR;
+                });
+
+                // ── Activity table (all positions, with search) ──
+                const q = buyFinActivitySearch.trim().toLowerCase();
+                const filteredActivity = !q ? yieldPositions : yieldPositions.filter(p => {
+                  const po = savedPOs.find(sp => sp.issuanceId === p.poIssuanceId);
+                  return (po?.poName || '').toLowerCase().includes(q)
+                    || (p.poIssuanceId || '').toLowerCase().includes(q)
+                    || (p.partnerId || '').toLowerCase().includes(q)
+                    || (p.status || '').toLowerCase().includes(q);
+                });
+
+                // ── Empty-state if no positions exist at all ──
+                if (yieldPositions.length === 0) {
+                  return (
+                    <Card>
+                      <div style={{ padding: 56, textAlign: 'center' }}>
+                        <div style={{ fontSize: 36, marginBottom: 14, opacity: 0.55 }}>🌱</div>
+                        <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--ink)', marginBottom: 8 }}>You haven't opted into escrow yield yet</div>
+                        <div style={{ fontSize: 13, color: 'var(--ink-3)', maxWidth: 480, margin: '0 auto 18px', lineHeight: 1.6 }}>
+                          When you fund an RLUSD escrow on a PO, your locked principal can earn yield in a permissioned pool until the seller claims it. Yield accrues automatically and routes back to your wallet on claim.
+                        </div>
+                        <div style={{ fontSize: 12.5, color: 'var(--ink-3)', maxWidth: 460, margin: '0 auto', lineHeight: 1.6 }}>
+                          Next time you fund an escrow on <strong>Buy · Action</strong>, toggle <strong>Yield opt-in</strong> before signing.
+                        </div>
+                      </div>
+                    </Card>
+                  );
+                }
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                    {/* ── 4 KPI cards ─── */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                      <Card>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>In escrow</div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>${formatNumber(totalEscrow, { decimals: 0 })}</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>{accruing.length} accruing PO{accruing.length === 1 ? '' : 's'}</div>
+                        </div>
+                      </Card>
+                      <Card>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Yield earned · period</div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2, color: 'oklch(0.45 0.14 148)' }}>${formatNumber(totalEarned, { decimals: 2 })}</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>accrued live · unclaimed</div>
+                        </div>
+                      </Card>
+                      <Card>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Blended APY</div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2, color: 'oklch(0.5 0.14 240)' }}>{blendedAPY.toFixed(2)}%</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>weighted by escrow value</div>
+                        </div>
+                      </Card>
+                      <Card>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 4, padding: '4px 0' }}>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Avg time in pool</div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', marginTop: 2 }}>{avgDays.toFixed(0)}d</div>
+                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>across all funded POs</div>
+                        </div>
+                      </Card>
+                    </div>
+
+                    {/* ── Charts ─── */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: 16 }}>
+                      {/* Escrow pool balance — real bucketed data */}
+                      <Card layered
+                        label={<>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Trailing 12 months</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>Escrow pool balance · <span className="mono" style={{ fontWeight: 500 }}>${formatNumber(poolSeries[poolSeries.length - 1]?.v || 0, { decimals: 0 })}</span></div>
+                        </>}
+                        actions={<LegendSwatch color="oklch(0.68 0.16 148)" label="In pool"/>}>
+                        <StackedAreaChart
+                          bottomSeries={poolSeries}
+                          topSeries={[]}
+                          bottomAccent="oklch(0.68 0.16 148)"
+                        />
+                      </Card>
+
+                      {/* Yield earned cumulative — placeholder */}
+                      <Card layered
+                        label={<>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Cumulative</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>Yield earned · over time</div>
+                        </>}
+                        actions={<Chip tone="gold">Demo data · coming soon</Chip>}>
+                        <div style={{
+                          height: 180,
+                          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                          color: 'var(--ink-3)', fontSize: 12, lineHeight: 1.6, textAlign: 'center', padding: 18,
+                        }}>
+                          <div style={{ fontSize: 22, marginBottom: 8, opacity: 0.5 }}>📈</div>
+                          <div style={{ color: 'var(--ink-2)', fontWeight: 500, marginBottom: 4 }}>Coming soon</div>
+                          <div>Real yield earnings will populate here once positions begin to settle. Stay opted in to grow this number — every funded escrow earns until claim.</div>
+                        </div>
+                      </Card>
+                    </div>
+
+                    {/* ── Partner detail panel (single-partner devnet) ─── */}
+                    <Card layered
+                      label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Pool partner</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>{partnerName}</div>
+                      </>}
+                      actions={<div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <Chip tone="green">Active · primary pool</Chip>
+                        <Chip tone="gold">Demo data</Chip>
+                      </div>}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+                        <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Strategy</div>
+                          <div style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>Short-duration USDC money market</div>
+                          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.5 }}>Conservative · low-volatility</div>
+                        </div>
+                        <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Pool size</div>
+                          <div className="mono" style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em', marginTop: 4 }}>$24.8M</div>
+                          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 6 }}>total under management</div>
+                        </div>
+                        <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Participants</div>
+                          <div className="mono" style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em', marginTop: 4 }}>1,247</div>
+                          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 6 }}>active escrow positions</div>
+                        </div>
+                        <div className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Risk profile</div>
+                          <div style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>Conservative</div>
+                          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.5 }}>1–3 month avg duration</div>
+                        </div>
+                      </div>
+                    </Card>
+
+                    {/* ── POs earning yield · sortable table ─── */}
+                    <Card layered
+                      label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Live</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>POs earning yield · {accruing.length}</div>
+                      </>}
+                      actions={<div className="glass-strong" style={{ display: 'flex', padding: 3, borderRadius: 10, gap: 2 }}>
+                        {[
+                          { k: 'days' as const,   l: 'Days'   },
+                          { k: 'value' as const,  l: 'Value'  },
+                          { k: 'earned' as const, l: 'Earned' },
+                          { k: 'apy' as const,    l: 'APY'    },
+                        ].map(s => (
+                          <button key={s.k} type="button" onClick={() => setBuyFinPosSortKey(s.k)}
+                            style={{
+                              padding: '6px 10px', borderRadius: 7, fontSize: 11.5, fontWeight: 600,
+                              background: buyFinPosSortKey === s.k ? '#2a1f08' : 'transparent',
+                              color: buyFinPosSortKey === s.k ? '#f9efd2' : 'var(--ink-2)',
+                              border: 0, cursor: 'pointer', fontFamily: 'inherit',
+                              transition: 'all 0.2s ease',
+                            }}>{s.l}</button>
+                        ))}
+                      </div>}>
+
+                      {accruing.length === 0 ? (
+                        <div style={{ padding: 22, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12 }}>
+                          No active positions right now. Withdrawn / settled positions appear in Activity below.
+                        </div>
+                      ) : (
+                        <div style={{ maxHeight: 420, overflowY: 'auto', overflowX: 'hidden' }}>
+                          {/* Header row */}
+                          <div className="mono" style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr)',
+                            columnGap: 12,
+                            padding: '10px 14px', borderBottom: '1px solid rgba(180,140,60,0.15)',
+                            fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)',
+                            position: 'sticky', top: 0, background: 'rgba(255, 248, 222, 0.95)', zIndex: 1,
+                          }}>
+                            <span>PO</span>
+                            <span>Supplier</span>
+                            <span style={{ textAlign: 'right' }}>Value</span>
+                            <span style={{ textAlign: 'right' }}>Days</span>
+                            <span style={{ textAlign: 'right' }}>APY</span>
+                            <span>Pool</span>
+                            <span style={{ textAlign: 'right' }}>Earned (est.)</span>
+                          </div>
+                          {/* Body rows */}
+                          {sortedEnriched.map((e, i) => {
+                            const po = savedPOs.find(p => p.issuanceId === e.pos.poIssuanceId);
+                            const vendorOf = linkedVendors.find(v => v.classicAddress === e.pos.vendorAddress);
+                            const supplierLabel = vendorOf?.company || vendorOf?.name
+                              || (e.pos.vendorAddress ? `${e.pos.vendorAddress.slice(0, 6)}…${e.pos.vendorAddress.slice(-4)}` : '—');
+                            return (
+                              <div key={e.pos.positionId} style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1.4fr) minmax(0, 0.9fr) minmax(0, 0.7fr) minmax(0, 0.7fr) minmax(0, 1fr) minmax(0, 1fr)',
+                                columnGap: 12,
+                                padding: '12px 14px',
+                                borderBottom: i < sortedEnriched.length - 1 ? '1px solid rgba(180,140,60,0.08)' : 'none',
+                                alignItems: 'center', fontSize: 12,
+                              }}>
+                                <span className="mono" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{po?.poName || e.pos.poIssuanceId.slice(0, 12)}</span>
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{supplierLabel}</span>
+                                <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${formatNumber(parseFloat(e.pos.principalAmount) || 0, { decimals: 0 })}</span>
+                                <span className="mono" style={{ textAlign: 'right', color: 'var(--ink-2)' }}>{e.days.toFixed(1)}d</span>
+                                <span className="mono" style={{ textAlign: 'right', color: 'oklch(0.5 0.14 240)', fontWeight: 600 }}>{(e.pos.lockedAPR * 100).toFixed(2)}%</span>
+                                <span className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{adapter?.partnerName || e.pos.partnerId}</span>
+                                <span className="mono" style={{ textAlign: 'right', fontWeight: 600, color: 'oklch(0.45 0.14 148)' }}>${formatNumber(e.netAccrued, { decimals: 4 })}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </Card>
+
+                    {/* ── Activity table · all positions ─── */}
+                    <Card layered
+                      label={<>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Activity</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Yield positions · all states</div>
+                      </>}
+                      actions={yieldPositions.length > 0 && <Chip tone="neutral">{yieldPositions.length} total</Chip>}>
+
+                      {yieldPositions.length > 0 && (
+                        <div className="glass etched" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 12, marginBottom: 14 }}>
+                          <IconSearch size={14} style={{ color: 'var(--ink-3)' }}/>
+                          <input value={buyFinActivitySearch} onChange={ev => setBuyFinActivitySearch(ev.target.value)}
+                            placeholder="Search by PO, partner, or status…"
+                            style={{ flex: 1, border: 0, background: 'transparent', outline: 'none', fontSize: 13, color: 'var(--ink)', fontFamily: 'inherit' }}/>
+                          {buyFinActivitySearch && (
+                            <button type="button" onClick={() => setBuyFinActivitySearch('')}
+                              style={{ color: 'var(--ink-3)', background: 'transparent', border: 0, cursor: 'pointer', padding: 2 }}>
+                              <IconX size={12}/>
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {filteredActivity.length === 0 ? (
+                        <div style={{ padding: 22, textAlign: 'center', color: 'var(--ink-3)', fontSize: 12 }}>
+                          {q ? <>No positions match "<strong>{buyFinActivitySearch}</strong>"</> : 'No yield positions yet.'}
+                        </div>
+                      ) : (
+                        <div style={{ maxHeight: 360, overflowY: 'auto', overflowX: 'hidden' }}>
+                          <div className="mono" style={{
+                            display: 'grid',
+                            gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr)',
+                            columnGap: 12,
+                            padding: '10px 14px', borderBottom: '1px solid rgba(180,140,60,0.15)',
+                            fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--ink-3)',
+                            position: 'sticky', top: 0, background: 'rgba(255, 248, 222, 0.95)', zIndex: 1,
+                          }}>
+                            <span>Position</span>
+                            <span>PO</span>
+                            <span style={{ textAlign: 'right' }}>Principal</span>
+                            <span style={{ textAlign: 'right' }}>APY</span>
+                            <span style={{ textAlign: 'right' }}>Opt-in date</span>
+                            <span style={{ textAlign: 'right' }}>Status</span>
+                          </div>
+                          {filteredActivity
+                            .slice()
+                            .sort((a, b) => (b.optInTimestamp || 0) - (a.optInTimestamp || 0))
+                            .map((pos, i, arr) => {
+                              const po = savedPOs.find(p => p.issuanceId === pos.poIssuanceId);
+                              const tone: 'green' | 'neutral' | 'red' =
+                                pos.status === 'accruing' ? 'green' :
+                                pos.status === 'withdrawn' ? 'neutral' :
+                                'red';
+                              const label =
+                                pos.status === 'accruing' ? 'Accruing' :
+                                pos.status === 'withdrawn' ? 'Withdrawn' :
+                                'Cancelled';
+                              return (
+                                <div key={pos.positionId} style={{
+                                  display: 'grid',
+                                  gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 0.9fr)',
+                                  columnGap: 12,
+                                  padding: '12px 14px',
+                                  borderBottom: i < arr.length - 1 ? '1px solid rgba(180,140,60,0.08)' : 'none',
+                                  alignItems: 'center', fontSize: 12,
+                                }}>
+                                  <span className="mono" style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pos.positionId.slice(0, 10)}</span>
+                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{po?.poName || pos.poIssuanceId.slice(0, 12)}</span>
+                                  <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${formatNumber(parseFloat(pos.principalAmount) || 0, { decimals: 2 })}</span>
+                                  <span className="mono" style={{ textAlign: 'right', color: 'oklch(0.5 0.14 240)' }}>{(pos.lockedAPR * 100).toFixed(2)}%</span>
+                                  <span className="mono" style={{ fontSize: 11, textAlign: 'right', color: 'var(--ink-3)' }}>
+                                    {pos.optInTimestamp ? new Date(pos.optInTimestamp * 1000).toLocaleDateString() : '—'}
+                                  </span>
+                                  <span style={{ textAlign: 'right' }}>
+                                    <Chip tone={tone}>{label}</Chip>
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                    </Card>
+                  </div>
+                );
+              })()}
+            </Page>
+          );
+        })()}
         {activeTab === 'accounting' && (
           <div id="scpo-accounting-print" style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
             <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '8px' }}>Accounting</h2>
@@ -12342,6 +18364,13 @@ const addLinkedVendorByDID = async () => {
                           v: newVersion,
                           vu: newVendorUri,
                           su: newSharedUri,
+                          // Preserve original dateAdded + sku from the previous version
+                          // if present; stamp/seed today only as a last resort.
+                          ...({
+                            da: (inventoryDetailItem as any)?.dateAdded || new Date().toLocaleDateString(),
+                            du: new Date().toLocaleDateString(),
+                            sk: (inventoryDetailItem as any)?.sku || '',
+                          } as any),
                         };
                         // Preserve the existing MPT issuance ID and qty from the old item
                         // The MPT issuance is not re-created on version updates — same token tracks qty
@@ -12645,7 +18674,9 @@ const addLinkedVendorByDID = async () => {
             </div>
           );
         })()}
+          </main>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
