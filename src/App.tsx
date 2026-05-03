@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import * as xrpl from 'xrpl';
 import type { EscrowCreate, EscrowFinish, Payment, AccountSet, Transaction, Memo, AccountTxResponse, AccountInfoResponse, AccountNFTsResponse, AccountNFToken } from 'xrpl';
 import CryptoJS from 'crypto-js';
@@ -51,6 +51,7 @@ import {
   fetchEscrowDetails,
   MAX_ADVANCE_RATE,
   MIN_DAYS_UNTIL_CANCEL,
+  SCPO_FINANCE_FEE_RATE,
 } from './utils/financeHelpers';
 import {
   CreditLine,
@@ -813,114 +814,6 @@ const YieldBadge: React.FC<{ poIssuanceId: string; positions: YieldPosition[] }>
 };
 
 // ── Phase 6A: Yield Dashboard Component ──────────────────────────────────────
-const YieldDashboard: React.FC<{
-  positions: YieldPosition[];
-  summary: YieldSummary | null;
-  loading: boolean;
-  partnerRegistry: Map<string, any>;
-  onRefresh: () => void;
-}> = ({ positions, summary, loading, partnerRegistry, onRefresh }) => {
-  const fmtU = (s: string) => { const n = parseFloat(s); return isNaN(n) ? '$0.00' : `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`; };
-  const fmtP = (n: number) => `${(n * 100).toFixed(2)}%`;
-  if (loading) return <div style={{ textAlign: 'center', padding: '40px', color: '#68D391' }}>Loading yield positions...</div>;
-  const accruing  = positions.filter(p => p.status === 'accruing');
-  const completed = positions.filter(p => p.status === 'withdrawn');
-  return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
-        <button onClick={onRefresh} style={{ padding: '6px 14px', borderRadius: '8px', border: '1px solid #68D391', background: 'white', color: '#276749', fontWeight: 'bold', fontSize: '12px', cursor: 'pointer' }}>↻ Refresh</button>
-      </div>
-      {summary && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px', marginBottom: '24px' }}>
-          {[
-            { label: 'Principal Accruing', value: fmtU(summary.totalPrincipalAccruing), sub: `${summary.activePOCount} active POs`, color: '#276749', border: '#68D391' },
-            { label: 'Accrued So Far',     value: fmtU(summary.totalAccruedActiveEstimate), sub: 'estimated', color: '#2B6CB0', border: '#90CDF4' },
-            { label: 'Net Received (YTD)', value: fmtU(summary.totalNetReceivedThisYear), sub: 'after all fees', color: '#553C9A', border: '#B794F4' },
-            { label: 'Avg APY',            value: fmtP(summary.averageAPY), sub: 'opted-in escrows', color: '#C05621', border: '#FBD38D' },
-          ].map(c => (
-            <div key={c.label} style={{ background: 'white', border: `2px solid ${c.border}`, borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
-              <div style={{ fontSize: '10px', fontWeight: 'bold', color: c.color, marginBottom: '4px', textTransform: 'uppercase' }}>{c.label}</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#1A202C' }}>{c.value}</div>
-              <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{c.sub}</div>
-            </div>
-          ))}
-        </div>
-      )}
-      <h4 style={{ fontSize: '13px', fontWeight: 'bold', color: '#276749', marginBottom: '10px', textTransform: 'uppercase' }}>🌱 Currently Accruing ({accruing.length})</h4>
-      {accruing.length === 0 ? (
-        <p style={{ color: '#999', fontSize: '13px', textAlign: 'center', padding: '20px' }}>No active yield positions. Opt in when funding an RLUSD escrow.</p>
-      ) : (
-        <div style={{ overflowX: 'auto', marginBottom: '24px' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-            <thead><tr style={{ background: '#F0FFF4', borderBottom: '2px solid #C6F6D5' }}>
-              {['PO Issuance', 'Principal', 'Partner', 'Rate', 'Days In', 'Accrued (est.)', 'Est. at Term'].map(h => (
-                <th key={h} style={{ padding: '8px 12px', textAlign: h === 'PO Issuance' ? 'left' : 'right', color: '#276749', fontWeight: 'bold' }}>{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {accruing.filter((pos, idx, self) => self.findIndex(p => p.positionId === pos.positionId) === idx).map((pos, idx) => {
-                const adapter = partnerRegistry.get(pos.partnerId);
-                const days = yieldDaysElapsed(pos.optInTimestamp);
-                const accrued = adapter ? computeAccruedYield(pos, adapter) : '0';
-                const netAccrued = adapter ? (parseFloat(accrued) * (1 - adapter.feeStructure.partnerFeeFraction - adapter.feeStructure.scpoFeeFraction)).toFixed(6) : '0';
-                const estDays = pos.estimatedClaimDate ? Math.max(0, (pos.estimatedClaimDate - pos.optInTimestamp) / 86400) : 30;
-                const estTotal = adapter ? adapter.calculateAccrued(pos.principalAmount, pos.lockedAPR, estDays) : '0';
-                const estNet = adapter ? (parseFloat(estTotal) * (1 - adapter.feeStructure.partnerFeeFraction - adapter.feeStructure.scpoFeeFraction)).toFixed(6) : '0';
-                return (
-                  <tr key={pos.positionId} style={{ borderBottom: '1px solid #C6F6D5', background: idx % 2 === 0 ? 'white' : '#F0FFF4' }}>
-                    <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: '11px' }}>{pos.poIssuanceId.slice(0, 12)}...</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 'bold', color: '#276749' }}>{fmtU(pos.principalAmount)}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#666' }}>{adapter?.partnerName || pos.partnerId}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#553C9A', fontWeight: 'bold' }}>{fmtP(pos.lockedAPR)}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#666' }}>{days.toFixed(1)}d</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#276749', fontWeight: 'bold' }}>{fmtU(netAccrued)}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#2B6CB0' }}>{fmtU(estNet)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {completed.length > 0 && (
-        <>
-          <h4 style={{ fontSize: '13px', fontWeight: 'bold', color: '#4A5568', marginBottom: '10px', textTransform: 'uppercase' }}>✅ Completed ({completed.length})</h4>
-          <div style={{ overflowX: 'auto', marginBottom: '24px' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-              <thead><tr style={{ background: '#EDF2F7', borderBottom: '2px solid #CBD5E0' }}>
-                {['PO Issuance', 'Principal', 'Gross Yield', 'SC.PO Fee', 'Partner Fee', 'Net to You'].map(h => (
-                  <th key={h} style={{ padding: '8px 12px', textAlign: h === 'PO Issuance' ? 'left' : 'right', color: '#4A5568', fontWeight: 'bold' }}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody>
-                {completed.map((pos, idx) => (
-                  <tr key={pos.positionId} style={{ borderBottom: '1px solid #EDF2F7', background: idx % 2 === 0 ? 'white' : '#F7FAFC' }}>
-                    <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: '11px' }}>{pos.poIssuanceId.slice(0, 12)}...</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#666' }}>{fmtU(pos.principalAmount)}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#276749' }}>{fmtU(pos.grossYieldAtClaim || '0')}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#E53E3E' }}>-{fmtU(pos.scFeeAtClaim || '0')}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', color: '#E53E3E' }}>-{fmtU(pos.partnerFeeAtClaim || '0')}</td>
-                    <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 'bold', color: '#276749' }}>{fmtU(pos.netYieldToBuyer || '0')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-      {summary && (parseFloat(summary.totalGrossThisYear) > 0 || parseFloat(summary.totalNetReceivedThisYear) > 0) && (
-        <div style={{ background: '#FFFBEB', border: '1px solid #FBD38D', borderRadius: '10px', padding: '16px' }}>
-          <h4 style={{ fontSize: '13px', fontWeight: 'bold', color: '#C05621', marginBottom: '12px', textTransform: 'uppercase' }}>📊 Annual Summary ({new Date().getFullYear()})</h4>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px', fontSize: '13px' }}>
-            {[['Gross Yield Generated', fmtU(summary.totalGrossThisYear)], ['Fees Paid', fmtU(summary.totalFeesThisYear)], ['Net Yield Received', fmtU(summary.totalNetReceivedThisYear)], ['Effective APY', fmtP(summary.averageAPY)]].map(([l, v]) => (
-              <div key={l}><span style={{ color: '#92400E' }}>{l}:</span><span style={{ fontWeight: 'bold', marginLeft: '8px' }}>{v}</span></div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
 
 export default function App() {
   const [mode, setMode] = useState<'customer' | 'vendor'>('customer');
@@ -1074,6 +967,32 @@ export default function App() {
 
   // ── Financing tab sub-tab state (Sell mode only — Buy mode is a single page) ─
   const [financingSubTab, setFinancingSubTab] = useState<'po' | 'inventory'>('po');
+  // ── Accounting tab ──
+  const [acctApar, setAcctApar] = useState<'payable' | 'receivable'>(mode === 'vendor' ? 'receivable' : 'payable');
+  const [acctView, setAcctView] = useState<'payables' | 'cashflow' | 'journal' | 'onchain' | 'fees' | 'yield' | 'tax'>('payables');
+  // Auto-redirect away from vendor-hidden tabs (yield, tax) when mode flips to vendor.
+  // Hidden tabs are removed from the pill row in vendor mode (Patch 2.3-A3); this effect
+  // ensures the active tab doesn't become orphan-state if user was on a now-hidden tab.
+  useEffect(() => {
+    if (mode === 'vendor' && (acctView === 'yield' || acctView === 'tax')) {
+      setAcctView('payables');
+    }
+  }, [mode, acctView]);
+  const [acctPeriodOpen, setAcctPeriodOpen] = useState(false);
+  const [acctPayablesQuery, setAcctPayablesQuery] = useState('');
+  const [acctPayablesFilter, setAcctPayablesFilter] = useState<string>('All');
+  const [acctJournalQuery, setAcctJournalQuery] = useState('');
+  const [acctJournalFilter, setAcctJournalFilter] = useState<string>('All');
+  const [acctCopiedHash, setAcctCopiedHash] = useState<string | null>(null);
+  const [acctOnchainQuery, setAcctOnchainQuery] = useState('');
+  const [acctOnchainSelectedPO, setAcctOnchainSelectedPO] = useState<string | null>(null);
+  const [acctOnchainFilter, setAcctOnchainFilter] = useState<string>('All');
+  // ── Phase 2.1: Cash Flow ──
+  const [acctCashflowQuery,  setAcctCashflowQuery]  = useState<string>('');
+  const [acctCashflowFilter, setAcctCashflowFilter] = useState<'all' | 'outflows' | 'inflows' | 'yield'>('all');
+  const [acctFeesQuery,  setAcctFeesQuery]  = useState<string>('');
+  const [acctFeesFilter, setAcctFeesFilter] = useState<string>('All');
+  const [acctYieldQuery, setAcctYieldQuery] = useState<string>('');
 
   // ── Inventory Financing — Counterparty selector + Configure card state ─────
   // TODO: replace LENDERS placeholder with live lender registry once partner directory ships on-chain.
@@ -1184,6 +1103,47 @@ export default function App() {
   const [savedPOs, setSavedPOs] = useState<SavedPO[]>([]);
   const [customerProfile, setCustomerProfile] = useState<Profile>({ company: '', name: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
   const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
+
+  // ── User identity set: addresses owned by the user across all profiles ──
+  // Future-proof for unified-profile world: when one wallet covers both buy + sell,
+  // this Set collapses to size 1 and consumer code (cashflow, journal, etc.) doesn't change.
+  const userAddrs = useMemo(() => {
+    const set = new Set<string>();
+    if (customerProfile?.classicAddress) set.add(customerProfile.classicAddress);
+    if (vendorProfile?.classicAddress)   set.add(vendorProfile.classicAddress);
+    return set;
+  }, [customerProfile?.classicAddress, vendorProfile?.classicAddress]);
+
+  // ── Role-derived helpers (Bug #4 extraction — Session 6 Phase 2.6) ──
+  // Single source of truth for per-PO role + lens-aware perspective. Used by
+  // Payables, Cash Flow, Journal, and On-Chain Proof IIFEs in the Accounting tab.
+  // Strict semantics:
+  //   'internal' = literal self-PO (po.buyerAddress === po.vendorAddress)
+  //   'both'     = user owns both addresses but they're DISTINCT (dual-profile testing,
+  //                or future legitimate dual-entity ownership). Real two-party trade.
+  //   'buyer'    = user is on the buyer side only
+  //   'vendor'   = user is on the vendor side only
+  //   'none'     = defensive; shouldn't happen on user's own savedPOs
+  type UserRole = 'buyer' | 'vendor' | 'both' | 'internal' | 'none';
+  type Perspective = 'buyer-side' | 'vendor-side' | 'self';
+  const userRoleOnPO = (po: SavedPO): UserRole => {
+    if (po.buyerAddress === po.vendorAddress && userAddrs.has(po.buyerAddress)) return 'internal';
+    const isBuyer  = userAddrs.has(po.buyerAddress);
+    const isVendor = userAddrs.has(po.vendorAddress);
+    if (isBuyer && isVendor) return 'both';
+    if (isBuyer)  return 'buyer';
+    if (isVendor) return 'vendor';
+    return 'none';
+  };
+  const effectivePerspective = (po: SavedPO): Perspective => {
+    const role = userRoleOnPO(po);
+    if (role === 'internal') return 'self';
+    if (role === 'buyer')    return 'buyer-side';
+    if (role === 'vendor')   return 'vendor-side';
+    if (role === 'both')     return acctApar === 'payable' ? 'buyer-side' : 'vendor-side';
+    return 'buyer-side';
+  };
+
   const [publicProfiles, setPublicProfiles] = useState<{ [uuid: string]: PublicProfile }>({});
   const [customerLinkedVendorUUIDs, setCustomerLinkedVendorUUIDs] = useState<string[]>([]);
   const [vendorLinkedCustomerUUIDs, setVendorLinkedCustomerUUIDs] = useState<string[]>([]);
@@ -1535,7 +1495,7 @@ export default function App() {
         lenderAddress:   financingLenderAddress,
         vendorAddress:   wallet.classicAddress,
         buyerAddress:    po.buyerAddress,
-        scpoFeeRate:     0.01,
+        scpoFeeRate:     SCPO_FINANCE_FEE_RATE,
         publishedAPR:    financingLenderAPR,
         escrowSequence:  po.escrowSequence,
         requestedAt:     new Date().toISOString(),
@@ -6429,7 +6389,7 @@ const getUpdatablePOs = () => {
         setYieldPositions(validPositions);
         setYieldSummary(computeYieldSummary(validPositions, yieldPartnerRegistry));
         setYieldLoading(false);
-      }).catch((e) => { console.error('[YieldDashboard] scan error:', e); setYieldLoading(false); });
+      }).catch((e) => { console.error('[BuyFinancing] yield scan error:', e); setYieldLoading(false); });
     }
 
     // Audit log only on Accounting (existing behavior preserved).
@@ -15622,1824 +15582,2105 @@ const addLinkedVendorByDID = async () => {
             </Page>
           );
         })()}
-        {activeTab === 'accounting' && (
-          <div id="scpo-accounting-print" style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '8px' }}>Accounting</h2>
-            <p style={{ textAlign: 'center', color: '#999', marginBottom: '24px', fontSize: '14px' }}>
-              {mode === 'customer' ? 'Financial reports for your purchase orders and escrow activity.' : 'Financial reports for your receivables and escrow activity.'}
-            </p>
+        {activeTab === 'accounting' && (() => {
+          const now = new Date();
+          const currentYear = now.getFullYear();
+          const currentMonth = now.getMonth();
+          const currentQuarter = Math.floor(currentMonth / 3);
+          const periodLabel = (() => {
+            if (taxPeriod === 'month')    return `${now.toLocaleString('default', { month: 'short' })} ${currentYear}`;
+            if (taxPeriod === 'quarter')  return `Q${currentQuarter + 1} ${currentYear}`;
+            if (taxPeriod === 'year')     return `FY ${currentYear}`;
+            if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return `${taxCustomStart} → ${taxCustomEnd}`;
+            return 'Custom range';
+          })();
 
-            {/* 5.6 — Global Tax Period Filter */}
-            {(() => {
-              const now = new Date();
-              const currentYear = now.getFullYear();
-              const currentMonth = now.getMonth();
-              const currentQuarter = Math.floor(currentMonth / 3);
+          const ACCT_VIEWS: Array<{ k: typeof acctView; l: string }> = [
+            { k: 'payables', l: acctApar === 'payable' ? 'Payables' : 'Receivables' },
+            { k: 'cashflow', l: 'Cash Flow' },
+            { k: 'journal',  l: 'Journal Entries' },
+            { k: 'onchain',  l: 'On-Chain Proof' },
+            { k: 'fees',     l: 'Platform Fees' },
+            // Customer-mode-only views (Phase 2.3 + 2.4):
+            ...(mode === 'customer' ? [
+              { k: 'yield' as const, l: 'Escrow Yield' },
+              { k: 'tax'   as const, l: '1099 Data' },
+            ] : []),
+          ];
 
-              const periodOptions = [
-                { label: 'This Month', value: 'month' },
-                { label: 'This Quarter', value: 'quarter' },
-                { label: 'This Year', value: 'year' },
-                { label: 'Custom Range', value: 'custom' },
-              ];
+          return (
+            <Page
+              tag={`${mode === 'vendor' ? 'Sell' : 'Buy'} · Accounting`}
+              title={acctApar === 'payable' ? 'Accounts Payable' : 'Accounts Receivable'}
+              subtitle="One general ledger across every financial lens — filter the view, summaries update to match."
+              actions={
+                <div className="glass-strong" style={{
+                  display: 'flex', padding: 4, borderRadius: 14, position: 'relative',
+                }}>
+                  <div style={{
+                    position: 'absolute', top: 4, bottom: 4,
+                    left: acctApar === 'payable' ? 4 : 'calc(50% + 0px)',
+                    width: 'calc(50% - 4px)',
+                    background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                    borderRadius: 10,
+                    transition: 'left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.5)',
+                  }}/>
+                  {(['payable', 'receivable'] as const).map(k => (
+                    <button key={k} onClick={() => setAcctApar(k)}
+                      style={{
+                        position: 'relative', zIndex: 1, padding: '8px 18px', minWidth: 120,
+                        fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
+                        color: acctApar === k ? '#1a1505' : 'var(--ink-2)',
+                        background: 'transparent', border: 'none', cursor: 'pointer',
+                        transition: 'color 0.2s ease', textTransform: 'capitalize',
+                      }}>
+                      {k}
+                    </button>
+                  ))}
+                </div>
+              }
+            >
 
-              const getPeriodLabel = () => {
-                if (taxPeriod === 'month') return `${now.toLocaleString('default', { month: 'long' })} ${currentYear}`;
-                if (taxPeriod === 'quarter') return `Q${currentQuarter + 1} ${currentYear}`;
-                if (taxPeriod === 'year') return `FY ${currentYear}`;
-                if (taxCustomStart && taxCustomEnd) return `${taxCustomStart} → ${taxCustomEnd}`;
-                return 'Custom Range';
-              };
-
-              return (
-                <div style={{ background: 'white', border: '1.5px solid #D88F2E', borderRadius: '14px', padding: '16px 20px', marginBottom: '24px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#D88F2E', whiteSpace: 'nowrap' }}>📅 Tax Period:</span>
-                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                      {periodOptions.map(opt => (
-                        <button
-                          key={opt.value}
-                          onClick={() => setTaxPeriod(opt.value as any)}
-                          style={{ padding: '5px 14px', borderRadius: '20px', border: '1.5px solid #D88F2E', background: taxPeriod === opt.value ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white', color: taxPeriod === opt.value ? 'white' : '#D88F2E', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
+              <Card layered
+                label={
+                  <div>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                      General Ledger · {acctApar === 'payable' ? 'Payable' : 'Receivable'}
                     </div>
-                    <span style={{ fontSize: '12px', color: '#999', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
-                      Showing: <strong style={{ color: '#D88F2E' }}>{getPeriodLabel()}</strong>
-                    </span>
+                    <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>
+                      {ACCT_VIEWS.find(v => v.k === acctView)?.l}
+                    </div>
                   </div>
-                  {taxPeriod === 'custom' && (
-                    <div style={{ display: 'flex', gap: '12px', marginTop: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <label style={{ fontSize: '12px', color: '#666', whiteSpace: 'nowrap' }}>From:</label>
-                        <input
-                          type="date"
-                          value={taxCustomStart}
-                          onChange={e => setTaxCustomStart(e.target.value)}
-                          style={{ padding: '5px 10px', borderRadius: '8px', border: '1.5px solid #D88F2E', fontSize: '12px', color: '#333' }}
-                        />
-                      </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <label style={{ fontSize: '12px', color: '#666', whiteSpace: 'nowrap' }}>To:</label>
-                        <input
-                          type="date"
-                          value={taxCustomEnd}
-                          onChange={e => setTaxCustomEnd(e.target.value)}
-                          style={{ padding: '5px 10px', borderRadius: '8px', border: '1.5px solid #D88F2E', fontSize: '12px', color: '#333' }}
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* 5.2 / 5.3 — AP / AR Aging Report */}
-            {(() => {
-              const now = new Date();
-              const currentYear = now.getFullYear();
-              const currentMonth = now.getMonth();
-              const currentQuarter = Math.floor(currentMonth / 3);
-
-              // Compute tax period window
-              const getTaxWindow = (): { start: Date; end: Date } => {
-                if (taxPeriod === 'month') return { start: new Date(currentYear, currentMonth, 1), end: new Date(currentYear, currentMonth + 1, 0) };
-                if (taxPeriod === 'quarter') return { start: new Date(currentYear, currentQuarter * 3, 1), end: new Date(currentYear, currentQuarter * 3 + 3, 0) };
-                if (taxPeriod === 'year') return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart), end: new Date(taxCustomEnd) };
-                return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-              };
-
-              const { start: periodStart, end: periodEnd } = getTaxWindow();
-
-              const inTaxPeriod = (dateStr: string) => {
-                const d = new Date(dateStr);
-                return d >= periodStart && d <= periodEnd;
-              };
-
-              // Separate POs by status category — filtered by tax period
-              const fundedPOs = savedPOs.filter(po => po.status === 'funded' && inTaxPeriod(po.dateIssued));
-              const pendingAcceptancePOs = mode === 'customer'
-                ? savedPOs.filter(po => po.status === 'open' && inTaxPeriod(po.dateIssued))
-                : [];
-              const unfundedAcceptedPOs = mode === 'customer'
-                ? savedPOs.filter(po => po.status === 'accepted' && inTaxPeriod(po.dateIssued))
-                : savedPOs.filter(po => (po.status === 'accepted' || po.status === 'open') && inTaxPeriod(po.dateIssued));
-
-              // Only unfunded accepted POs go into aging buckets
-              const withAging = unfundedAcceptedPOs.map(po => {
-                const issueDate = new Date(po.dateIssued);
-                const days = parseInt((po.paymentTerms || '0').split(' ')[0]) || 0;
-                const dueDate = new Date(issueDate.getTime() + days * 86400000);
-                const daysUntilDue = Math.ceil((dueDate.getTime() - now.getTime()) / 86400000);
-                const daysPastDue = -daysUntilDue;
-
-                let bucket: 'current' | '30' | '60' | '90+';
-                if (daysUntilDue >= 0) bucket = 'current';
-                else if (daysPastDue <= 30) bucket = '30';
-                else if (daysPastDue <= 60) bucket = '60';
-                else bucket = '90+';
-
-                return { ...po, dueDate, daysUntilDue, bucket };
-              });
-
-              const bucketTotals = {
-                current: withAging.filter(p => p.bucket === 'current').reduce((s, p) => s + parseFloat(p.total || '0'), 0),
-                '30': withAging.filter(p => p.bucket === '30').reduce((s, p) => s + parseFloat(p.total || '0'), 0),
-                '60': withAging.filter(p => p.bucket === '60').reduce((s, p) => s + parseFloat(p.total || '0'), 0),
-                '90+': withAging.filter(p => p.bucket === '90+').reduce((s, p) => s + parseFloat(p.total || '0'), 0),
-              };
-
-              const agingTotal = Object.values(bucketTotals).reduce((s, v) => s + v, 0);
-              const fundedTotal = fundedPOs.reduce((s, p) => s + parseFloat(p.total || '0'), 0);
-              const grandTotal = agingTotal + fundedTotal;
-
-              const bucketColor = (bucket: string) => {
-                if (bucket === 'current') return '#27ae60';
-                if (bucket === '30') return '#f39c12';
-                if (bucket === '60') return '#e67e22';
-                return '#e74c3c';
-              };
-
-              const bucketLabel = (bucket: string) => {
-                if (bucket === 'current') return 'Current';
-                if (bucket === '30') return '1–30 Days Past Due';
-                if (bucket === '60') return '31–60 Days Past Due';
-                return '61+ Days Past Due';
-              };
-
-              const renderTable = (
-                rows: any[],
-                showAging: boolean,
-                emptyMsg: string
-              ) => rows.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#999', fontSize: '13px', margin: '8px 0 0' }}>{emptyMsg}</p>
-              ) : (
-                <div style={{ overflowX: 'auto', marginTop: '8px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0', borderBottom: '2px solid #FFE0B2' }}>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>PO Name</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>{mode === 'customer' ? 'Vendor' : 'Buyer'}</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Issued</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Due Date</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Terms</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'right', color: '#D88F2E', fontWeight: 'bold' }}>Amount</th>
-                        <th style={{ padding: '10px 12px', textAlign: 'center', color: '#D88F2E', fontWeight: 'bold' }}>Status</th>
-                        {showAging && <th style={{ padding: '10px 12px', textAlign: 'center', color: '#D88F2E', fontWeight: 'bold' }}>Aging</th>}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((po, idx) => {
-                        const counterparty = mode === 'customer' ? po.vendorAddress : po.buyerAddress;
-                        const shortAddr = counterparty ? `${counterparty.slice(0, 6)}...${counterparty.slice(-4)}` : '—';
-                        const dueDateStr = po.dueDate
-                          ? `${po.dueDate.getMonth() + 1}/${po.dueDate.getDate()}/${po.dueDate.getFullYear()}`
-                          : '—';
-                        return (
-                          <tr key={po.issuanceId} style={{ borderBottom: '1px solid #FFE0B2', background: idx % 2 === 0 ? 'white' : '#FFFDF8' }}>
-                            <td style={{ padding: '10px 12px', color: '#333', fontWeight: 'bold' }}>{po.poName}</td>
-                            <td style={{ padding: '10px 12px' }}>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                <span
-                                  style={{ color: '#2196F3', fontFamily: 'monospace', fontSize: '12px', cursor: 'pointer', textDecoration: 'underline' }}
-                                  onClick={() => {
-                                    setProfilesModalPO(po);
-                                    setProfilesModalIndex(mode === 'customer' ? 1 : 0);
-                                    setShowProfilesModal(true);
-                                  }}
-                                >
-                                  {shortAddr}
-                                </span>
-                                <span
-                                  style={{ color: '#999', fontSize: '11px', cursor: 'pointer' }}
-                                  onClick={() => copyToClipboard(counterparty, 'Wallet address')}
-                                  title="Copy full address"
-                                >
-                                  📋
-                                </span>
-                              </div>
-                            </td>
-                            <td style={{ padding: '10px 12px', color: '#666' }}>{po.dateIssued}</td>
-                            <td style={{ padding: '10px 12px', color: '#666' }}>{dueDateStr}</td>
-                            <td style={{ padding: '10px 12px', color: '#666' }}>{po.paymentTerms || '—'}</td>
-                            <td style={{ padding: '10px 12px', textAlign: 'right', color: '#333', fontWeight: 'bold' }}>${parseFloat(po.total || '0').toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                            <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                              <span style={{ background: '#FFF3E0', color: '#D88F2E', borderRadius: '999px', padding: '2px 10px', fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase' }}>{po.status}</span>
-                            </td>
-                            {showAging && po.bucket && (
-                              <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                                <span style={{ background: bucketColor(po.bucket) + '22', color: bucketColor(po.bucket), borderRadius: '999px', padding: '2px 10px', fontSize: '11px', fontWeight: 'bold' }}>
-                                  {po.daysUntilDue !== undefined && po.daysUntilDue >= 0 ? `Due in ${po.daysUntilDue}d` : `${po.daysUntilDue !== undefined ? -po.daysUntilDue : '?'}d overdue`}
-                                </span>
-                              </td>
-                            )}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              );
-
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                  <h3 style={{ color: '#D88F2E', margin: '0 0 16px' }}>
-                    {mode === 'customer' ? '📋 Accounts Payable' : '📋 Accounts Receivable'}
-                  </h3>
-
-                  {/* Section 1: Aging buckets — unfunded accepted POs only */}
-                  <div style={{ marginBottom: '24px' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#555', marginBottom: '10px' }}>
-                      {mode === 'customer' ? 'Accepted — Awaiting Escrow Funding' : 'Accepted — Awaiting Escrow Funding by Buyer'}
-                    </div>
-                    <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                      {(['current', '30', '60', '90+'] as const).map(bucket => (
-                        <div key={bucket} style={{ flex: 1, minWidth: '110px', background: 'white', border: `2px solid ${bucketColor(bucket)}`, borderRadius: '10px', padding: '10px', textAlign: 'center' }}>
-                          <div style={{ fontSize: '10px', fontWeight: 'bold', color: bucketColor(bucket), marginBottom: '4px', textTransform: 'uppercase' }}>
-                            {bucketLabel(bucket)}
-                          </div>
-                          <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#333' }}>
-                            ${bucketTotals[bucket].toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </div>
-                          <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>
-                            {withAging.filter(p => p.bucket === bucket).length} PO{withAging.filter(p => p.bucket === bucket).length !== 1 ? 's' : ''}
-                          </div>
+                }
+                actions={
+                  <div style={{ position: 'relative' }}>
+                    <Btn variant="ghost" icon={IconCalendar}
+                      onClick={() => setAcctPeriodOpen(o => !o)}>
+                      {periodLabel}
+                    </Btn>
+                    {acctPeriodOpen && (
+                      <div className="glass" style={{
+                        position: 'absolute', top: 'calc(100% + 6px)', right: 0,
+                        zIndex: 50, padding: 14, borderRadius: 14, minWidth: 280,
+                        boxShadow: '0 12px 40px -8px rgba(40, 25, 5, 0.18), 0 4px 12px -4px rgba(40, 25, 5, 0.08)',
+                      }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
+                          Tax period
                         </div>
-                      ))}
-                    </div>
-                    {renderTable(withAging.sort((a, b) => new Date(b.dateIssued).getTime() - new Date(a.dateIssued).getTime()), true, 'No accepted unfunded POs.')}
-                  </div>
-
-                  {/* Section 2: Funded — Awaiting Claim */}
-                  <div style={{ marginBottom: mode === 'customer' && pendingAcceptancePOs.length > 0 ? '24px' : '0' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#555', marginBottom: '10px' }}>
-                      💵 Funded — Awaiting Claim
-                      <span style={{ marginLeft: '10px', fontSize: '12px', color: '#27ae60', fontWeight: 'normal' }}>
-                        Payment secured in escrow
-                      </span>
-                    </div>
-                    {renderTable(
-                      fundedPOs.map(po => {
-                        const issueDate = new Date(po.dateIssued);
-                        const days = parseInt((po.paymentTerms || '0').split(' ')[0]) || 0;
-                        const dueDate = new Date(issueDate.getTime() + days * 86400000);
-                        return { ...po, dueDate };
-                      }),
-                      false,
-                      'No funded POs awaiting claim.'
-                    )}
-                  </div>
-
-                  {/* Section 3: Customer only — Pending Acceptance */}
-                  {mode === 'customer' && (
-                    <div style={{ marginTop: '24px' }}>
-                      <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#555', marginBottom: '10px' }}>
-                        ⏳ Open — Pending Vendor Acceptance
-                      </div>
-                      {renderTable(
-                        pendingAcceptancePOs.map(po => {
-                          const issueDate = new Date(po.dateIssued);
-                          const days = parseInt((po.paymentTerms || '0').split(' ')[0]) || 0;
-                          const dueDate = new Date(issueDate.getTime() + days * 86400000);
-                          return { ...po, dueDate };
-                        }),
-                        false,
-                        'No POs pending vendor acceptance.'
-                      )}
-                    </div>
-                  )}
-
-                  {/* Grand Total */}
-                  <div style={{ textAlign: 'right', fontSize: '14px', fontWeight: 'bold', color: '#D88F2E', marginTop: '20px', borderTop: '1px solid #FFE0B2', paddingTop: '12px' }}>
-                    Total Outstanding: ${grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* 5.4 — Cash Flow Summary */}
-            {(() => {
-              const now = Date.now();
-              const periodMs: Record<string, number> = {
-                '30':  30  * 86400000,
-                '90':  90  * 86400000,
-                '180': 180 * 86400000,
-                '365': 365 * 86400000,
-                'all': Infinity,
-              };
-             // Apply tax period window to cash flow if set
-              const getTaxCutoffs = () => {
-                const n = new Date();
-                const yr = n.getFullYear();
-                const mo = n.getMonth();
-                const qtr = Math.floor(mo / 3);
-                if (taxPeriod === 'month') return { start: new Date(yr, mo, 1).getTime(), end: new Date(yr, mo + 1, 0).getTime() };
-                if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(), end: new Date(yr, qtr * 3 + 3, 0).getTime() };
-                if (taxPeriod === 'year') return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31).getTime() };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() };
-                return { start: cfPeriod === 'all' ? 0 : now - periodMs[cfPeriod], end: Infinity };
-              };
-              const { start: cfStart, end: cfEnd } = getTaxCutoffs();
-              const cutoff = cfStart;
-              const periodEntries = auditLog.filter(e => e.timestamp >= cutoff && e.timestamp <= cfEnd);
-
-              // Outflows — FUND_ESCROW entries, amount in payload
-              const outflowEntries = periodEntries
-                .filter(e => e.action === 'FUND_ESCROW')
-                .map(e => ({
-                  date: e.date,
-                  timestamp: e.timestamp,
-                  poName: e.payload?.poName || e.ref.slice(0, 8),
-                  amount: parseFloat(e.payload?.amount || '0'),
-                  currency: (e.payload?.currency || 'RLUSD') as string,
-                  txHash: e.txHash,
-                  ref: e.ref,
-                }));
-
-              // Inflows — CLAIM_PO entries, match amount from savedPOs
-              const inflowEntries = periodEntries
-                .filter(e => e.action === 'CLAIM_PO')
-                .map(e => {
-                  const matchedPO = savedPOs.find(p => p.issuanceId === e.ref);
-                  return {
-                    date: e.date,
-                    timestamp: e.timestamp,
-                    poName: matchedPO?.poName || e.ref.slice(0, 8),
-                    amount: parseFloat(matchedPO?.total || '0'),
-                    currency: matchedPO?.escrowCurrency || 'RLUSD',
-                    txHash: e.txHash,
-                    ref: e.ref,
-                    isYield: false,
-                  };
-                });
-
-              // ── Phase 6A: Yield inflows (customer mode only) ──────────────────
-              // Add net yield received as separate inflow entries
-              const yieldInflowEntries = mode === 'customer'
-                ? yieldPositions
-                    .filter(p =>
-                      p.status === 'withdrawn' &&
-                      parseFloat(p.netYieldToBuyer || '0') > 0 &&
-                      p.withdrawTimestamp &&
-                      p.withdrawTimestamp * 1000 >= cfStart &&
-                      p.withdrawTimestamp * 1000 <= cfEnd
-                    )
-                    .map(p => {
-                      const matchedPO = savedPOs.find(po => po.issuanceId === p.poIssuanceId);
-                      return {
-                        date: new Date(p.withdrawTimestamp! * 1000).toLocaleDateString(),
-                        timestamp: p.withdrawTimestamp! * 1000,
-                        poName: `${matchedPO?.poName || p.poIssuanceId.slice(0, 8)} (Yield)`,
-                        amount: parseFloat(p.netYieldToBuyer || '0'),
-                        currency: 'RLUSD',
-                        txHash: p.withdrawTxHash || '',
-                        ref: p.poIssuanceId,
-                        isYield: true,
-                      };
-                    })
-                : [];
-
-              const allInflowEntries = [...inflowEntries, ...yieldInflowEntries];
-              const totalOutflows = outflowEntries.reduce((s, e) => s + e.amount, 0);
-              const totalInflows = allInflowEntries.reduce((s, e) => s + e.amount, 0);
-              const totalYieldInflows = yieldInflowEntries.reduce((s, e) => s + e.amount, 0);
-              const netFlow = totalInflows - totalOutflows;
-
-              const periodLabel: Record<string, string> = {
-                '30': 'Last 30 Days', '90': 'Last 90 Days',
-                '180': 'Last 180 Days', '365': 'Last 12 Months', 'all': 'All Time'
-              };
-
-              const fmtUSD = (n: number) => `$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-              const renderCFTable = (entries: typeof outflowEntries, type: 'inflow' | 'outflow') =>
-                entries.length === 0 ? (
-                  <p style={{ textAlign: 'center', color: '#999', fontSize: '13px', margin: '8px 0' }}>
-                    No {type === 'inflow' ? 'claims' : 'escrow fundings'} in this period.
-                  </p>
-                ) : (
-                  <div style={{ overflowX: 'auto', marginTop: '8px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', borderBottom: '2px solid #FFE0B2' }}>
-                          <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Date</th>
-                          <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>PO</th>
-                          <th style={{ padding: '8px 12px', textAlign: 'right', color: '#D88F2E', fontWeight: 'bold' }}>Amount</th>
-                          <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Currency</th>
-                          <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Tx Hash</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {entries.sort((a, b) => b.timestamp - a.timestamp).map((e, idx) => (
-                          <tr key={e.txHash || idx} style={{ borderBottom: '1px solid #FFE0B2', background: idx % 2 === 0 ? 'white' : '#FFFDF8' }}>
-                            <td style={{ padding: '8px 12px', color: '#666' }}>{e.date}</td>
-                            <td style={{ padding: '8px 12px', color: '#333', fontWeight: 'bold' }}>{e.poName}</td>
-                            <td style={{ padding: '8px 12px', textAlign: 'right', color: type === 'inflow' ? '#27ae60' : '#e74c3c', fontWeight: 'bold' }}>
-                              {type === 'inflow' ? '+' : '-'}{fmtUSD(e.amount)}
-                            </td>
-                            <td style={{ padding: '8px 12px', color: '#666' }}>{e.currency}</td>
-                            <td style={{ padding: '8px 12px', color: '#666', fontFamily: 'monospace', fontSize: '11px' }}>
-                              {e.txHash ? `${e.txHash.slice(0, 8)}...${e.txHash.slice(-6)}` : '—'}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                );
-
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
-                    <h3 style={{ color: '#D88F2E', margin: 0 }}>💵 Cash Flow Summary</h3>
-                    <select
-                      value={cfPeriod}
-                      onChange={e => setCfPeriod(e.target.value as any)}
-                      style={{ padding: '6px 14px', borderRadius: '20px', border: '1.5px solid #D88F2E', background: 'white', color: '#D88F2E', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer' }}
-                    >
-                      <option value="30">Last 30 Days</option>
-                      <option value="90">Last 90 Days</option>
-                      <option value="180">Last 180 Days</option>
-                      <option value="365">Last 12 Months</option>
-                      <option value="all">All Time</option>
-                    </select>
-                  </div>
-
-                  {auditLogLoading ? (
-                    <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>Loading transactions...</p>
-                  ) : (
-                    <>
-                      {/* Summary Cards — order by mode priority */}
-                      <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
-                        {mode === 'customer' ? (
-                          <>
-                            <div style={{ flex: 2, minWidth: '160px', background: 'white', border: '2px solid #e74c3c', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
-                              <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#e74c3c', marginBottom: '4px', textTransform: 'uppercase' }}>Escrow Outflows</div>
-                              <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#e74c3c' }}>-{fmtUSD(totalOutflows)}</div>
-                              <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{outflowEntries.length} escrow{outflowEntries.length !== 1 ? 's' : ''} funded</div>
-                            </div>
-                            <div style={{ flex: 1, minWidth: '130px', background: 'white', border: '2px solid #27ae60', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
-                              <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#27ae60', marginBottom: '4px', textTransform: 'uppercase' }}>Escrow Inflows</div>
-                              <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#27ae60' }}>+{fmtUSD(totalInflows)}</div>
-                              <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{inflowEntries.length} claim{inflowEntries.length !== 1 ? 's' : ''} received{totalYieldInflows > 0 ? ` · ${fmtUSD(totalYieldInflows)} yield` : ''}</div>
-                            </div>
-                          </>
-                        ) : (
-                          <>
-                            <div style={{ flex: 2, minWidth: '160px', background: 'white', border: '2px solid #27ae60', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
-                              <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#27ae60', marginBottom: '4px', textTransform: 'uppercase' }}>Escrow Inflows</div>
-                              <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#27ae60' }}>+{fmtUSD(totalInflows)}</div>
-                              <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{inflowEntries.length} claim{inflowEntries.length !== 1 ? 's' : ''} received{totalYieldInflows > 0 ? ` · ${fmtUSD(totalYieldInflows)} yield` : ''}</div>
-                            </div>
-                            <div style={{ flex: 1, minWidth: '130px', background: 'white', border: '2px solid #e74c3c', borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
-                              <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#e74c3c', marginBottom: '4px', textTransform: 'uppercase' }}>Escrow Outflows</div>
-                              <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#e74c3c' }}>-{fmtUSD(totalOutflows)}</div>
-                              <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{outflowEntries.length} escrow{outflowEntries.length !== 1 ? 's' : ''} funded</div>
-                            </div>
-                          </>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                          {([
+                            { k: 'month',   l: 'This Month'   },
+                            { k: 'quarter', l: 'This Quarter' },
+                            { k: 'year',    l: 'This Year'    },
+                            { k: 'custom',  l: 'Custom Range' },
+                          ] as const).map(opt => (
+                            <button key={opt.k}
+                              onClick={() => {
+                                setTaxPeriod(opt.k);
+                                if (opt.k !== 'custom') setAcctPeriodOpen(false);
+                              }}
+                              style={{
+                                padding: '8px 12px', borderRadius: 8, fontSize: 13,
+                                textAlign: 'left', cursor: 'pointer',
+                                border: '1px solid rgba(180, 140, 60, 0.15)',
+                                background: taxPeriod === opt.k
+                                  ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))'
+                                  : 'rgba(255, 248, 222, 0.4)',
+                                color: taxPeriod === opt.k ? '#1a1505' : 'var(--ink-2)',
+                                fontWeight: taxPeriod === opt.k ? 600 : 500,
+                                transition: 'all 0.15s ease',
+                              }}>
+                              {opt.l}
+                            </button>
+                          ))}
+                        </div>
+                        {taxPeriod === 'custom' && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 10, borderTop: '1px solid rgba(180,140,60,0.15)' }}>
+                            <label style={{ fontSize: 11, color: 'var(--ink-3)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              Start date
+                              <input type="date" value={taxCustomStart}
+                                onChange={e => setTaxCustomStart(e.target.value)}
+                                style={inpStyle}/>
+                            </label>
+                            <label style={{ fontSize: 11, color: 'var(--ink-3)', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              End date
+                              <input type="date" value={taxCustomEnd}
+                                onChange={e => setTaxCustomEnd(e.target.value)}
+                                style={inpStyle}/>
+                            </label>
+                            <Btn variant="primary" onClick={() => setAcctPeriodOpen(false)} style={{ marginTop: 4 }}>
+                              Apply
+                            </Btn>
+                          </div>
                         )}
-                        <div style={{ flex: 1, minWidth: '130px', background: 'white', border: `2px solid ${netFlow >= 0 ? '#27ae60' : '#e74c3c'}`, borderRadius: '10px', padding: '14px', textAlign: 'center' }}>
-                          <div style={{ fontSize: '11px', fontWeight: 'bold', color: netFlow >= 0 ? '#27ae60' : '#e74c3c', marginBottom: '4px', textTransform: 'uppercase' }}>Net Flow</div>
-                          <div style={{ fontSize: '20px', fontWeight: 'bold', color: netFlow >= 0 ? '#27ae60' : '#e74c3c' }}>
-                            {netFlow >= 0 ? '+' : '-'}{fmtUSD(netFlow)}
-                          </div>
-                          <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{periodLabel[cfPeriod]}</div>
-                        </div>
                       </div>
+                    )}
+                  </div>
+                }
+              >
 
-                      {/* Tables — order by mode priority */}
-                      {mode === 'customer' ? (
-                        <>
-                          <div style={{ marginBottom: '20px' }}>
-                            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#e74c3c', marginBottom: '6px' }}>⬆️ Escrow Fundings (Outflows)</div>
-                            {renderCFTable(outflowEntries, 'outflow')}
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#27ae60', marginBottom: '6px' }}>⬇️ Escrow Claims (Inflows)</div>
-                            {renderCFTable(allInflowEntries, 'inflow')}
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div style={{ marginBottom: '20px' }}>
-                            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#27ae60', marginBottom: '6px' }}>⬇️ Escrow Claims (Inflows)</div>
-                            {renderCFTable(allInflowEntries, 'inflow')}
-                          </div>
-                          <div>
-                            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#e74c3c', marginBottom: '6px' }}>⬆️ Escrow Fundings (Outflows)</div>
-                            {renderCFTable(outflowEntries, 'outflow')}
-                          </div>
-                        </>
-                      )}
-                    </>
-                  )}
+                {/* Sub-tab pill row */}
+                <div style={{
+                  display: 'flex', flexWrap: 'wrap', gap: 4, padding: 4, borderRadius: 12,
+                  background: 'rgba(180,140,60,0.08)', marginBottom: 20,
+                }}>
+                  {ACCT_VIEWS.map(v => (
+                    <button key={v.k} onClick={() => setAcctView(v.k)}
+                      style={{
+                        padding: '7px 14px', borderRadius: 8, fontSize: 11.5, fontWeight: 600,
+                        cursor: 'pointer', whiteSpace: 'nowrap', border: 'none',
+                        background: acctView === v.k ? '#2a1f08' : 'transparent',
+                        color: acctView === v.k ? '#f9efd2' : 'var(--ink-2)',
+                        transition: 'all 0.15s ease',
+                      }}>
+                      {v.l}
+                    </button>
+                  ))}
                 </div>
-              );
-            })()}
 
-            {/* 5.5 — Journal Entries */}
-            {(() => {
-              const buildJournalEntries = (po: SavedPO) => {
-                const amt = parseFloat(po.total || '0');
-                const cur = po.escrowCurrency || 'RLUSD';
-                const fmtAmt = `$${amt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur}`;
-                const entries: { date: string; event: string; debit: string; credit: string; amount: string; txHash: string; isMemo: boolean }[] = [];
-                const poAuditEntries = auditLog.filter(e => e.ref === po.issuanceId);
-                entries.push({ date: po.dateIssued, event: 'PO Created', debit: 'Purchase Commitment (Memo)', credit: 'Accounts Payable (Memo)', amount: fmtAmt, txHash: po.txHash || '', isMemo: true });
-                const acceptEntry = poAuditEntries.find(e => e.action === 'ACCEPT_PO');
-                if (acceptEntry || po.status === 'accepted' || po.status === 'funded' || po.status === 'claimed') {
-                  entries.push({ date: acceptEntry?.date || po.dateIssued, event: 'PO Accepted by Vendor', debit: 'Accounts Payable Confirmed (Memo)', credit: 'Purchase Obligation (Memo)', amount: fmtAmt, txHash: acceptEntry?.txHash || '', isMemo: true });
-                }
-                if (po.status === 'superseded') {
-                  const updateEntry = auditLog.find(e => e.action === 'UPDATE_PO' && e.payload?.oldRef === po.issuanceId);
-                  entries.push({ date: updateEntry?.date || po.dateIssued, event: 'PO Superseded — Version Voided', debit: 'Purchase Commitment Reversal (Memo)', credit: 'Accounts Payable Reversal (Memo)', amount: fmtAmt, txHash: updateEntry?.txHash || '', isMemo: true });
-                }
-                const fundEntry = poAuditEntries.find(e => e.action === 'FUND_ESCROW');
-                if (fundEntry || po.status === 'funded' || po.status === 'claimed') {
-                  entries.push({ date: fundEntry?.date || po.dateIssued, event: 'Escrow Funded', debit: mode === 'customer' ? 'Escrow Asset' : 'Accounts Receivable', credit: mode === 'customer' ? `Cash / ${cur}` : 'Deferred Revenue', amount: fmtAmt, txHash: fundEntry?.txHash || '', isMemo: false });
-                }
-                const claimEntry = poAuditEntries.find(e => e.action === 'CLAIM_PO');
-                if (claimEntry || po.status === 'claimed') {
-                  entries.push({ date: claimEntry?.date || po.dateIssued, event: 'Escrow Claimed — Payment Settled', debit: mode === 'customer' ? 'Accounts Payable' : `Cash / ${cur}`, credit: mode === 'customer' ? 'Escrow Asset' : 'Accounts Receivable', amount: fmtAmt, txHash: claimEntry?.txHash || '', isMemo: false });
-                }
-                const recallEntry = poAuditEntries.find(e => e.action === 'RECALL_PO');
-                if (recallEntry || po.status === 'recalled') {
-                  entries.push({ date: recallEntry?.date || po.dateIssued, event: 'PO Recalled — Commitment Reversed', debit: 'Accounts Payable', credit: 'Purchase Commitment Reversal', amount: fmtAmt, txHash: recallEntry?.txHash || '', isMemo: false });
-                }
-
-                // ── Phase 6B: Financing entries (vendor mode only) ─────────────
-                // If this PO had active financing, add liability and repayment entries.
-                if (mode === 'vendor') {
-                  const financing = financingStatusMap[po.issuanceId];
-                  if (financing && financing.approvedAmount) {
-                    const advAmt = parseFloat(financing.approvedAmount);
-                    const fmtAdv = `$${advAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} RLUSD`;
-
-                    // Entry 1: Advance received — creates a liability
-                    if (financing.status === 'disbursed' || financing.status === 'repaid') {
-                      entries.push({
-                        date: financing.disbursedAt
-                          ? new Date(financing.disbursedAt * 1000).toLocaleDateString()
-                          : po.dateIssued,
-                        event: 'PO Advance Received from Lender',
-                        debit: 'Cash / RLUSD',
-                        credit: 'Financing Liability (Short-Term)',
-                        amount: fmtAdv,
-                        txHash: financing.disbursementTxHash || '',
-                        isMemo: false,
-                      });
+                {/* Sub-tab body — placeholders, filled in subsequent phases */}
+                {acctView === 'payables' && (() => {
+                  // ── Period window helper ──
+                  const getPeriodWindow = () => {
+                    const yr = currentYear, mo = currentMonth, qtr = currentQuarter;
+                    if (taxPeriod === 'month')   return { start: new Date(yr, mo, 1).getTime(), end: new Date(yr, mo + 1, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(), end: new Date(yr, qtr * 3 + 3, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'year')    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) {
+                      return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() + 86_399_000 };
                     }
+                    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                  };
+                  const { start: pStart, end: pEnd } = getPeriodWindow();
+                  const inPeriod = (dateStr: string) => {
+                    const t = new Date(dateStr).getTime();
+                    return t >= pStart && t <= pEnd;
+                  };
 
-                    // Entry 2: Repayment at claim — settles the liability
-                    if (financing.status === 'repaid' && po.status === 'claimed' && financing.approvedAPR !== undefined && financing.disbursedAt) {
-                      const split = computeRepaymentSplit(
-                        po.total,
-                        financing.approvedAmount,
-                        financing.approvedAPR,
-                        financing.disbursedAt
-                      );
-                      const repayAmt = parseFloat(split.lenderRepayment);
-                      const interestAmt = parseFloat(split.interestAccrued);
-                      const fmtRepay = `$${repayAmt.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} RLUSD`;
-                      const fmtInterest = `$${interestAmt.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 })} RLUSD`;
-
-                      // Repay principal
-                      entries.push({
-                        date: po.dateIssued,
-                        event: 'Financing Repaid to Lender (Principal)',
-                        debit: 'Financing Liability (Short-Term)',
-                        credit: 'Cash / RLUSD',
-                        amount: fmtRepay,
-                        txHash: financing.repaidTxHash || '',
-                        isMemo: false,
-                      });
-
-                      // Interest expense
-                      if (interestAmt > 0) {
-                        entries.push({
-                          date: po.dateIssued,
-                          event: 'Financing Interest Expense',
-                          debit: 'Interest Expense',
-                          credit: 'Cash / RLUSD',
-                          amount: fmtInterest,
-                          txHash: financing.repaidTxHash || '',
-                          isMemo: false,
-                        });
-                      }
-
-                      // SC.PO platform fee
-                      const scpoFeeAmt = parseFloat(split.scpoFee);
-                      if (scpoFeeAmt > 0) {
-                        const fmtFee = `$${scpoFeeAmt.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 })} RLUSD`;
-                        entries.push({
-                        date: po.dateIssued,
-                        event: 'SC.PO Financing Platform Fee',
-                        debit: 'Financing Fee Expense',
-                        credit: 'Cash / RLUSD',
-                        amount: fmtFee,
-                        txHash: financing.repaidTxHash || '',
-                        isMemo: true,
-                      });
-                      }
+                  // ── Counterparty resolver — perspective-driven ──
+                  const counterpartyName = (po: SavedPO): string => {
+                    const perspective = effectivePerspective(po);
+                    if (perspective === 'self') return 'Internal Transfer';
+                    if (perspective === 'buyer-side') {
+                      const v = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+                      return v?.company || v?.name || (po.vendorAddress ? po.vendorAddress.slice(0, 8) + '…' : 'Vendor');
                     }
-                  }
-                }
+                    const c = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+                    return c?.company || c?.name || (po.buyerAddress ? po.buyerAddress.slice(0, 8) + '…' : 'Buyer');
+                  };
 
-                // ── Phase 6A: Yield income entry (customer mode only) ──────────
-                // If this PO had an active yield position that was withdrawn,
-                // add a yield income journal entry showing net yield received.
-                if (mode === 'customer' && po.status === 'claimed') {
-                  const yieldPosition = yieldPositions.find(
-                    p => p.poIssuanceId === po.issuanceId && p.status === 'withdrawn'
+                  // ── Aging calculator ──
+                  // Bucket: 'current' (not yet due) | '30' (1-30d past) | '60' (31-60d past) | '90+' (61+d past)
+                  type AgingBucket = 'current' | '30' | '60' | '90+';
+                  const ageOf = (po: SavedPO): { dueDate: Date; daysPastDue: number; bucket: AgingBucket } => {
+                    const issued = new Date(po.dateIssued);
+                    const days = parseInt((po.paymentTerms || '0').split(' ')[0], 10) || 0;
+                    const dueDate = new Date(issued.getTime() + days * 86_400_000);
+                    const daysPastDue = Math.floor((Date.now() - dueDate.getTime()) / 86_400_000);
+                    let bucket: AgingBucket = 'current';
+                    if (daysPastDue > 60)      bucket = '90+';
+                    else if (daysPastDue > 30) bucket = '60';
+                    else if (daysPastDue > 0)  bucket = '30';
+                    return { dueDate, daysPastDue, bucket };
+                  };
+
+                  // ── Lens-aware visibility (Model J3) ──
+                  const lensVisible = (po: SavedPO): boolean => {
+                    const role = userRoleOnPO(po);
+                    if (role === 'none')   return false;
+                    if (role === 'buyer')  return acctApar === 'payable';
+                    if (role === 'vendor') return acctApar === 'receivable';
+                    return true; // 'both' and 'internal' visible in both lenses
+                  };
+
+                  // ── Filter to in-period, accounting-relevant POs ──
+                  // Exclude: superseded, updated, recalled (never closed; lives in PO history)
+                  // Include by default: open, accepted, funded
+                  // Include 'claimed' only when statusFilter === 'All'
+                  const accountingRelevant = (s: SavedPO['status']) =>
+                    s === 'open' || s === 'accepted' || s === 'funded' || s === 'claimed';
+                  const allInPeriod = savedPOs.filter(po =>
+                    accountingRelevant(po.status) && inPeriod(po.dateIssued) && lensVisible(po)
                   );
-                  if (yieldPosition && parseFloat(yieldPosition.netYieldToBuyer || '0') > 0) {
-                    const netYield = parseFloat(yieldPosition.netYieldToBuyer || '0');
-                    const fmtYield = `$${netYield.toLocaleString('en-US', { minimumFractionDigits: 6, maximumFractionDigits: 6 })} RLUSD`;
-                    entries.push({
-                      date: yieldPosition.withdrawTimestamp
-                        ? new Date(yieldPosition.withdrawTimestamp * 1000).toLocaleDateString()
-                        : po.dateIssued,
-                      event: 'Yield Income Received',
-                      debit: 'Cash / RLUSD',
-                      credit: 'Interest Income',
-                      amount: fmtYield,
-                      txHash: yieldPosition.withdrawTxHash || '',
-                      isMemo: false,
-                    });
+
+                  // ── Bucket counts (ALL non-claimed in-period for the tiles) ──
+                  const liveBuckets = allInPeriod.filter(po => po.status !== 'claimed');
+                  const sumTotal = (rs: SavedPO[]) => rs.reduce((s, p) => s + (parseFloat(p.total) || 0), 0);
+                  const ccyBreakdown = (rs: SavedPO[]) => {
+                    const map = new Map<string, number>();
+                    for (const p of rs) {
+                      const c = p.escrowCurrency || 'RLUSD';
+                      map.set(c, (map.get(c) || 0) + (parseFloat(p.total) || 0));
+                    }
+                    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+                  };
+                  const fmtCcy = (rs: SavedPO[]): { headline: string; sub: string | undefined } => {
+                    const breakdown = ccyBreakdown(rs);
+                    if (breakdown.length === 0) return { headline: '$0', sub: undefined };
+                    const [topC, topV] = breakdown[0];
+                    const headline = `${topC === 'XRP' ? '' : '$'}${formatNumber(topV, { decimals: 0 })}${topC === 'XRP' ? ' XRP' : ` ${topC}`}`;
+                    if (breakdown.length === 1) return { headline, sub: undefined };
+                    const rest = breakdown.slice(1).map(([c, v]) =>
+                      `${c === 'XRP' ? '' : '$'}${formatNumber(v, { decimals: 0 })}${c === 'XRP' ? ' XRP' : ` ${c}`}`
+                    ).join(' · ');
+                    return { headline, sub: `+ ${rest}` };
+                  };
+
+                  // ── Status buckets for tiles ──
+                  // 'Awaiting Funding' = accepted POs not yet funded (have escrow due)
+                  // 'Funded Awaiting Claim' = funded but not yet claimed by counterparty
+                  // 'Pending Acceptance' = open POs awaiting vendor accept (Buy/Payable only)
+                  const awaitingFunding = liveBuckets.filter(p => p.status === 'accepted');
+                  const fundedAwaiting  = liveBuckets.filter(p => p.status === 'funded');
+                  const pendingAccept   = liveBuckets.filter(p => p.status === 'open');
+                  const tileFunding   = fmtCcy(awaitingFunding);
+                  const tileFunded    = fmtCcy(fundedAwaiting);
+                  const tilePending   = fmtCcy(pendingAccept);
+                  const tileTotal     = fmtCcy(liveBuckets);
+
+                  // ── DSO computation (Sell/Receivable mode only) ──
+                  // Average days from ACCEPT_PO → FUND_ESCROW across claimed POs in the period.
+                  // Measures real buyer-payment delay; skips POs missing either event.
+                  const claimedInPeriod = allInPeriod.filter(p => p.status === 'claimed');
+                  const dsoDeltas: number[] = [];
+                  for (const po of claimedInPeriod) {
+                    const accept = auditLog.find(e => e.ref === po.issuanceId && e.action === 'ACCEPT_PO');
+                    const fund   = auditLog.find(e => e.ref === po.issuanceId && e.action === 'FUND_ESCROW');
+                    if (!accept || !fund) continue;
+                    const deltaMs = (fund.timestamp - accept.timestamp) * 1000;
+                    if (deltaMs <= 0) continue;
+                    dsoDeltas.push(deltaMs / 86_400_000);
                   }
-                }
+                  const avgDSO = dsoDeltas.length > 0
+                    ? dsoDeltas.reduce((s, d) => s + d, 0) / dsoDeltas.length
+                    : null;
 
-                return entries;
-              };
+                  // ── Aging tiles (only over unfunded-accepted, the AR/AP "real" aging set) ──
+                  const aging = awaitingFunding.map(po => ({ po, ...ageOf(po) }));
+                  const agingByBucket: Record<AgingBucket, typeof aging> = {
+                    'current': aging.filter(a => a.bucket === 'current'),
+                    '30':      aging.filter(a => a.bucket === '30'),
+                    '60':      aging.filter(a => a.bucket === '60'),
+                    '90+':     aging.filter(a => a.bucket === '90+'),
+                  };
+                  const bucketColor: Record<AgingBucket, string> = {
+                    'current': 'oklch(0.55 0.14 140)',  // green
+                    '30':      'oklch(0.65 0.16 78)',   // amber
+                    '60':      'oklch(0.60 0.17 50)',   // orange
+                    '90+':     'oklch(0.55 0.18 28)',   // red
+                  };
+                  const bucketLabel: Record<AgingBucket, string> = {
+                    'current': 'Current',
+                    '30':      '1–30 d past',
+                    '60':      '31–60 d past',
+                    '90+':     '61+ d past',
+                  };
+                  const bucketTone: Record<AgingBucket, React.ComponentProps<typeof Chip>['tone']> = {
+                    'current': 'green', '30': 'gold', '60': 'gold', '90+': 'red',
+                  };
 
-              const currentYear = new Date().getFullYear();
-              const currentMonth = new Date().getMonth();
-              const currentQuarter = Math.floor(currentMonth / 3);
-              const getTaxWindowJ = (): { start: Date; end: Date } => {
-                if (taxPeriod === 'month') return { start: new Date(currentYear, currentMonth, 1), end: new Date(currentYear, currentMonth + 1, 0) };
-                if (taxPeriod === 'quarter') return { start: new Date(currentYear, currentQuarter * 3, 1), end: new Date(currentYear, currentQuarter * 3 + 3, 0) };
-                if (taxPeriod === 'year') return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart), end: new Date(taxCustomEnd) };
-                return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-              };
-              const { start: jStart, end: jEnd } = getTaxWindowJ();
-              const journalPOs = savedPOs
-                .filter(po => po.status !== 'superseded' || showSuperseded)
-                .filter(po => po.status !== 'updated')
-                .filter(po => { const d = new Date(po.dateIssued); return d >= jStart && d <= jEnd; })
-                .sort((a, b) => new Date(b.dateIssued).getTime() - new Date(a.dateIssued).getTime());
-              const supersededCount = savedPOs.filter(po => po.status === 'superseded').length;
+                  // ── Status filter for the table (default excludes claimed) ──
+                  const STATUS_OPTIONS = ['All', 'Awaiting Funding', 'Funded', 'Pending Accept', 'Settled'] as const;
+                  const matchesFilter = (po: SavedPO): boolean => {
+                    if (acctPayablesFilter === 'All') return true;
+                    if (acctPayablesFilter === 'Awaiting Funding') return po.status === 'accepted';
+                    if (acctPayablesFilter === 'Funded')           return po.status === 'funded';
+                    if (acctPayablesFilter === 'Pending Accept')   return po.status === 'open';
+                    if (acctPayablesFilter === 'Settled')          return po.status === 'claimed';
+                    return true;
+                  };
+                  const q = acctPayablesQuery.trim().toLowerCase();
+                  const visibleRows = allInPeriod
+                    .filter(po => acctPayablesFilter === 'All' || acctPayablesFilter === 'Settled' || po.status !== 'claimed')
+                    .filter(matchesFilter)
+                    .filter(po => !q ||
+                      po.poName.toLowerCase().includes(q) ||
+                      counterpartyName(po).toLowerCase().includes(q) ||
+                      po.issuanceId.toLowerCase().includes(q)
+                    )
+                    .sort((a, b) => new Date(b.dateIssued).getTime() - new Date(a.dateIssued).getTime());
 
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
-                    <h3 style={{ color: '#D88F2E', margin: 0 }}>📒 Journal Entries</h3>
-                    {supersededCount > 0 && (
-                      <button onClick={() => setShowSuperseded(!showSuperseded)} style={{ padding: '6px 14px', borderRadius: '20px', border: '1.5px solid #D88F2E', background: showSuperseded ? '#FFF3E0' : 'white', color: '#D88F2E', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}>
-                        {showSuperseded ? '🔽 Hide' : '🔼 Show'} Superseded ({supersededCount})
-                      </button>
-                    )}
-                  </div>
-                  <p style={{ fontSize: '12px', color: '#999', margin: '0 0 16px' }}>
-                    GAAP double-entry journal entries derived from on-chain events. <span style={{ background: '#f0f0f0', padding: '1px 6px', borderRadius: '4px' }}>Memo</span> entries record commitments with no cash movement. Hard entries record actual transfers.
-                  </p>
-                  {journalPOs.length === 0
-                    ? <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>No POs found.</p>
-                    : <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                        <thead>
-                          <tr style={{ background: '#FFF3E0' }}>
-                            <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>PO Name</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold', whiteSpace: 'nowrap' }}>Date</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'right', color: '#D88F2E', fontWeight: 'bold', whiteSpace: 'nowrap' }}>Amount</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'center', color: '#D88F2E', fontWeight: 'bold' }}>Status</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'center', color: '#D88F2E', fontWeight: 'bold' }}></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {journalPOs.map(po => {
-                            const isExpanded = expandedJournal === po.issuanceId;
-                            const entries = isExpanded ? buildJournalEntries(po) : [];
-                            const isSuperseded = po.status === 'superseded';
-                            const hasHistory = getPOHistory(po).length > 0;
-                            return (
-                              <React.Fragment key={po.issuanceId}>
-                                <tr style={{ borderBottom: '1px solid #FFE0B2', background: isSuperseded ? '#fff8f0' : 'white' }}>
-                                  <td style={{ padding: '10px 12px', fontWeight: 'bold', color: isSuperseded ? '#999' : '#333', textDecoration: isSuperseded ? 'line-through' : 'none' }}>
-                                    {po.poName}
-                                    {isSuperseded && <span style={{ marginLeft: '6px', fontSize: '10px', background: '#ff9800', color: 'white', borderRadius: '4px', padding: '1px 5px', textDecoration: 'none', display: 'inline-block' }}>SUPERSEDED</span>}
-                                  </td>
-                                  <td style={{ padding: '10px 12px', color: '#666', whiteSpace: 'nowrap' }}>{po.dateIssued}</td>
-                                  <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 'bold', color: '#333', whiteSpace: 'nowrap' }}>${parseFloat(po.total || '0').toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                                  <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                                    <span style={{ background: '#FFF3E0', color: '#D88F2E', borderRadius: '999px', padding: '2px 8px', fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase' }}>{po.status}</span>
-                                  </td>
-                                  <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                                      {hasHistory && (
-                                        <button onClick={() => openHistoryModal(po, null)} style={{ padding: '4px 10px', borderRadius: '12px', border: '1.5px solid #F2B04A', background: 'white', color: '#F2B04A', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}>
-                                          History
-                                        </button>
-                                      )}
-                                      <button onClick={() => setExpandedJournal(isExpanded ? null : po.issuanceId)} style={{ padding: '4px 10px', borderRadius: '12px', border: '1.5px solid #D88F2E', background: isExpanded ? '#FFF3E0' : 'white', color: '#D88F2E', fontSize: '11px', cursor: 'pointer', fontWeight: 'bold' }}>
-                                        {isExpanded ? 'Hide ▲' : 'Entries ▼'}
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                                {isExpanded && (
-                                  <tr>
-                                    <td colSpan={5} style={{ padding: 0, borderBottom: '1px solid #FFE0B2' }}>
-                                      <div style={{ background: '#FFFDF8', padding: '12px' }}>
-                                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                                          <thead>
-                                            <tr style={{ background: '#FFF3E0' }}>
-                                              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#D88F2E' }}>Date</th>
-                                              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#D88F2E' }}>Event</th>
-                                              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#D88F2E' }}>Debit</th>
-                                              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#D88F2E' }}>Credit</th>
-                                              <th style={{ padding: '6px 10px', textAlign: 'right', color: '#D88F2E' }}>Amount</th>
-                                              <th style={{ padding: '6px 10px', textAlign: 'left', color: '#D88F2E' }}>Tx Hash</th>
-                                            </tr>
-                                          </thead>
-                                          <tbody>
-                                            {entries.map((entry, idx) => (
-                                              <tr key={idx} style={{ borderBottom: '1px solid #FFE0B2', background: entry.isMemo ? '#fafafa' : 'white', opacity: entry.isMemo ? 0.8 : 1 }}>
-                                                <td style={{ padding: '6px 10px', color: '#666', whiteSpace: 'nowrap' }}>{entry.date}</td>
-                                                <td style={{ padding: '6px 10px', color: '#333', fontWeight: entry.isMemo ? 'normal' : 'bold' }}>
-                                                  {entry.isMemo && <span style={{ background: '#f0f0f0', color: '#999', fontSize: '10px', borderRadius: '3px', padding: '1px 4px', marginRight: '4px' }}>memo</span>}
-                                                  {entry.event}
-                                                </td>
-                                                <td style={{ padding: '6px 10px', color: '#2563eb', whiteSpace: 'nowrap' }}>{entry.debit}</td>
-                                                <td style={{ padding: '6px 10px', color: '#059669', whiteSpace: 'nowrap' }}>{entry.credit}</td>
-                                                <td style={{ padding: '6px 10px', textAlign: 'right', color: '#333', fontWeight: 'bold', whiteSpace: 'nowrap' }}>{entry.amount}</td>
-                                                <td style={{ padding: '6px 10px', whiteSpace: 'nowrap' }}>
-                                                  {entry.txHash
-                                                    ? <span style={{ color: '#999', fontFamily: 'monospace', fontSize: '10px', cursor: 'pointer' }} onClick={() => copyToClipboard(entry.txHash, 'Tx Hash')}>{entry.txHash.slice(0, 8)}...{entry.txHash.slice(-6)} 📋</span>
-                                                    : <span style={{ color: '#ccc' }}>—</span>
-                                                  }
-                                                </td>
-                                              </tr>
-                                            ))}
-                                          </tbody>
-                                        </table>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                )}
-                              </React.Fragment>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                  }
-                </div>
-              );
-            })()}
+                  const statusChipTone: Record<SavedPO['status'], React.ComponentProps<typeof Chip>['tone']> = {
+                    'open':       'gold',
+                    'accepted':   'blue',
+                    'funded':     'green',
+                    'claimed':    'neutral',
+                    'updated':    'neutral',
+                    'recalled':   'red',
+                    'superseded': 'neutral',
+                  };
+                  const statusChipLabel: Record<SavedPO['status'], string> = {
+                    'open':       'Pending Accept',
+                    'accepted':   'Awaiting Funding',
+                    'funded':     'Funded',
+                    'claimed':    'Settled',
+                    'updated':    'Updated',
+                    'recalled':   'Recalled',
+                    'superseded': 'Superseded',
+                  };
 
-            {/* 5.8 — Escrow Reconciliation */}
-            {(() => {
-              const now = new Date();
-              const currentYear = now.getFullYear();
-              const currentMonth = now.getMonth();
-              const currentQuarter = Math.floor(currentMonth / 3);
-              const getTaxWindowRecon = (): { start: Date; end: Date } => {
-                if (taxPeriod === 'month') return { start: new Date(currentYear, currentMonth, 1), end: new Date(currentYear, currentMonth + 1, 0) };
-                if (taxPeriod === 'quarter') return { start: new Date(currentYear, currentQuarter * 3, 1), end: new Date(currentYear, currentQuarter * 3 + 3, 0) };
-                if (taxPeriod === 'year') return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart), end: new Date(taxCustomEnd) };
-                return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-              };
-              const { start: reconStart, end: reconEnd } = getTaxWindowRecon();
-              const inPeriod = (dateStr: string) => { const d = new Date(dateStr); return d >= reconStart && d <= reconEnd; };
-
-              // Build reconciliation rows from all non-open, non-superseded, non-updated POs in period
-              const reconPOs = savedPOs.filter(po =>
-                !['open', 'superseded', 'updated', 'recalled'].includes(po.status) && inPeriod(po.dateIssued)
-              );
-
-              type ReconStatus = 'matched' | 'funded_unclaimed' | 'claimed_no_audit' | 'accepted_unfunded';
-              interface ReconRow {
-                po: SavedPO;
-                fundTx: string;
-                claimTx: string;
-                status: ReconStatus;
-                flag: string;
-              }
-
-              const rows: ReconRow[] = reconPOs.map(po => {
-                const poAudit = auditLog.filter(e => e.ref === po.issuanceId);
-                const fundEntry = poAudit.find(e => e.action === 'FUND_ESCROW');
-                const claimEntry = poAudit.find(e => e.action === 'CLAIM_PO');
-                const fundTx = fundEntry?.txHash || '';
-                const claimTx = claimEntry?.txHash || '';
-
-                let status: ReconStatus;
-                let flag: string;
-
-                if (po.status === 'claimed') {
-                  if (fundEntry && claimEntry) {
-                    status = 'matched'; flag = '✅ Fully reconciled';
-                  } else {
-                    status = 'claimed_no_audit'; flag = '⚠️ Claimed — audit trail incomplete';
-                  }
-                } else if (po.status === 'funded') {
-                  status = 'funded_unclaimed'; flag = '🕐 Funded — awaiting claim';
-                } else if (po.status === 'accepted') {
-                  status = 'accepted_unfunded'; flag = '📋 Accepted — escrow not funded';
-                } else {
-                  status = 'matched'; flag = '—';
-                }
-
-                return { po, fundTx, claimTx, status, flag };
-              });
-
-              const matched = rows.filter(r => r.status === 'matched');
-              const fundedUnclaimed = rows.filter(r => r.status === 'funded_unclaimed');
-              const claimedNoAudit = rows.filter(r => r.status === 'claimed_no_audit');
-              const acceptedUnfunded = rows.filter(r => r.status === 'accepted_unfunded');
-
-              const totalFunded = rows
-                .filter(r => r.status === 'funded_unclaimed' || r.status === 'matched')
-                .reduce((s, r) => s + parseFloat(r.po.total || '0'), 0);
-              const totalClaimed = matched.reduce((s, r) => s + parseFloat(r.po.total || '0'), 0);
-              const totalPending = fundedUnclaimed.reduce((s, r) => s + parseFloat(r.po.total || '0'), 0);
-
-              const flagColor = (s: ReconStatus) => {
-                if (s === 'matched') return '#27ae60';
-                if (s === 'funded_unclaimed') return '#f39c12';
-                if (s === 'claimed_no_audit') return '#e74c3c';
-                return '#999';
-              };
-
-              const renderReconTable = (rows: ReconRow[]) => (
-                <div style={{ overflowX: 'auto', marginTop: '8px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                    <thead>
-                      <tr style={{ background: '#FFF3E0', borderBottom: '2px solid #FFE0B2' }}>
-                        <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>PO Name</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'right', color: '#D88F2E', fontWeight: 'bold' }}>Amount</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Fund Tx</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Claim Tx</th>
-                        <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map((r, idx) => (
-                        <tr key={r.po.issuanceId} style={{ borderBottom: '1px solid #FFE0B2', background: idx % 2 === 0 ? 'white' : '#FFFDF8' }}>
-                          <td style={{ padding: '8px 12px', fontWeight: 'bold', color: '#333' }}>{r.po.poName}</td>
-                          <td style={{ padding: '8px 12px', textAlign: 'right', color: '#333', fontWeight: 'bold' }}>
-                            ${parseFloat(r.po.total || '0').toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: '11px', color: r.fundTx ? '#666' : '#ccc' }}>
-                            {r.fundTx
-                              ? <span style={{ cursor: 'pointer' }} onClick={() => copyToClipboard(r.fundTx, 'Fund Tx')}>{r.fundTx.slice(0, 8)}...{r.fundTx.slice(-6)} 📋</span>
-                              : '—'}
-                          </td>
-                          <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: '11px', color: r.claimTx ? '#666' : '#ccc' }}>
-                            {r.claimTx
-                              ? <span style={{ cursor: 'pointer' }} onClick={() => copyToClipboard(r.claimTx, 'Claim Tx')}>{r.claimTx.slice(0, 8)}...{r.claimTx.slice(-6)} 📋</span>
-                              : '—'}
-                          </td>
-                          <td style={{ padding: '8px 12px' }}>
-                            <span style={{ color: flagColor(r.status), fontSize: '12px', fontWeight: 'bold' }}>{r.flag}</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              );
-
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                  <h3 style={{ color: '#D88F2E', margin: '0 0 16px' }}>🔍 Escrow Reconciliation</h3>
-
-                  {/* Summary cards */}
-                  <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
-                    <div style={{ flex: 1, minWidth: '120px', background: 'white', border: '2px solid #27ae60', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#27ae60', marginBottom: '4px', textTransform: 'uppercase' }}>Fully Reconciled</div>
-                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#333' }}>{matched.length}</div>
-                      <div style={{ fontSize: '11px', color: '#999' }}>${totalClaimed.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                    </div>
-                    <div style={{ flex: 1, minWidth: '120px', background: 'white', border: '2px solid #f39c12', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#f39c12', marginBottom: '4px', textTransform: 'uppercase' }}>Funded — Pending Claim</div>
-                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#333' }}>{fundedUnclaimed.length}</div>
-                      <div style={{ fontSize: '11px', color: '#999' }}>${totalPending.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                    </div>
-                    <div style={{ flex: 1, minWidth: '120px', background: 'white', border: '2px solid #e74c3c', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#e74c3c', marginBottom: '4px', textTransform: 'uppercase' }}>Audit Gap</div>
-                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#333' }}>{claimedNoAudit.length}</div>
-                      <div style={{ fontSize: '11px', color: '#999' }}>Claimed, trail missing</div>
-                    </div>
-                    <div style={{ flex: 1, minWidth: '120px', background: 'white', border: '2px solid #999', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#999', marginBottom: '4px', textTransform: 'uppercase' }}>Accepted Unfunded</div>
-                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#333' }}>{acceptedUnfunded.length}</div>
-                      <div style={{ fontSize: '11px', color: '#999' }}>Escrow not yet created</div>
-                    </div>
-                  </div>
-
-                  {rows.length === 0 ? (
-                    <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>No POs to reconcile in this period.</p>
-                  ) : (
+                  return (
                     <>
-                      {claimedNoAudit.length > 0 && (
-                        <div style={{ marginBottom: '20px' }}>
-                          <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#e74c3c', marginBottom: '6px' }}>⚠️ Discrepancies — Claimed With Incomplete Audit Trail</div>
-                          {renderReconTable(claimedNoAudit)}
-                        </div>
-                      )}
-                      {fundedUnclaimed.length > 0 && (
-                        <div style={{ marginBottom: '20px' }}>
-                          <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#f39c12', marginBottom: '6px' }}>🕐 Funded — Awaiting Claim</div>
-                          {renderReconTable(fundedUnclaimed)}
-                        </div>
-                      )}
-                      {acceptedUnfunded.length > 0 && (
-                        <div style={{ marginBottom: '20px' }}>
-                          <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#999', marginBottom: '6px' }}>📋 Accepted — Escrow Not Funded</div>
-                          {renderReconTable(acceptedUnfunded)}
-                        </div>
-                      )}
-                      {matched.length > 0 && (
-                        <div>
-                          <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#27ae60', marginBottom: '6px' }}>✅ Fully Reconciled</div>
-                          {renderReconTable(matched)}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })()}
+                      <SummaryTiles tiles={[
+                        { label: acctApar === 'payable' ? 'Awaiting Funding' : 'Awaiting Funding by Buyer',
+                          value: tileFunding.headline,
+                          sub:   tileFunding.sub || `${awaitingFunding.length} PO${awaitingFunding.length === 1 ? '' : 's'}`,
+                          chip: 'Accepted', chipTone: 'blue' },
+                        { label: 'Funded Awaiting Claim',
+                          value: tileFunded.headline,
+                          sub:   tileFunded.sub || `${fundedAwaiting.length} PO${fundedAwaiting.length === 1 ? '' : 's'}`,
+                          chip: 'Funded', chipTone: 'green' },
+                        acctApar === 'payable'
+                          ? { label: 'Pending Vendor Accept',
+                              value: tilePending.headline,
+                              sub:   tilePending.sub || `${pendingAccept.length} PO${pendingAccept.length === 1 ? '' : 's'}`,
+                              chip: 'Open', chipTone: 'gold' as const }
+                          : { label: 'Avg DSO',
+                              value: avgDSO === null ? '—' : `${avgDSO.toFixed(1)}d`,
+                              sub:   avgDSO === null
+                                       ? 'No settled POs in period'
+                                       : `Avg over ${dsoDeltas.length} settled PO${dsoDeltas.length === 1 ? '' : 's'} · accept → fund`,
+                              chip:  avgDSO === null
+                                       ? 'No data'
+                                       : avgDSO <= 30 ? 'Healthy' : avgDSO <= 60 ? 'Watch' : 'Slow',
+                              chipTone: (avgDSO === null
+                                       ? 'neutral'
+                                       : avgDSO <= 30 ? 'green' : avgDSO <= 60 ? 'gold' : 'red') as React.ComponentProps<typeof Chip>['tone'] },
+                        { label: 'Total Outstanding',
+                          value: tileTotal.headline,
+                          sub:   tileTotal.sub || `${liveBuckets.length} PO${liveBuckets.length === 1 ? '' : 's'} live`,
+                          chip: periodLabel, chipTone: 'neutral' },
+                      ]}/>
 
-            {/* 5.9 — Fee Deduction Tracking */}
-            {(() => {
-              const now = new Date();
-              const currentYear = now.getFullYear();
-              const currentMonth = now.getMonth();
-              const currentQuarter = Math.floor(currentMonth / 3);
-
-              // Reuse tax period window
-              const getTaxWindowFee = (): { start: Date; end: Date } => {
-                if (taxPeriod === 'month') return { start: new Date(currentYear, currentMonth, 1), end: new Date(currentYear, currentMonth + 1, 0) };
-                if (taxPeriod === 'quarter') return { start: new Date(currentYear, currentQuarter * 3, 1), end: new Date(currentYear, currentQuarter * 3 + 3, 0) };
-                if (taxPeriod === 'year') return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart), end: new Date(taxCustomEnd) };
-                return { start: new Date(currentYear, 0, 1), end: new Date(currentYear, 11, 31) };
-              };
-              const { start: feeStart, end: feeEnd } = getTaxWindowFee();
-
-              // Parse numeric USD value from amount strings like "$0.01 RLUSD" or "$0.01 USD (0.003 XRP)"
-              const parseFeeUSD = (amount: string): number =>
-                parseFloat((amount || '').split(' ')[0].replace('$', '') || '0');
-
-              // Filter fee entries to tax period
-              const periodFees = feeEntries.filter(fee => {
-                const d = new Date(fee.date);
-                return d >= feeStart && d <= feeEnd;
-              }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-              const totalFeesUSD = periodFees.reduce((s, f) => s + parseFeeUSD(f.amount), 0);
-              const rlusdFees = periodFees.filter(f => f.amount.includes('RLUSD'));
-              const xrpFees = periodFees.filter(f => !f.amount.includes('RLUSD'));
-              const totalRLUSD = rlusdFees.reduce((s, f) => s + parseFeeUSD(f.amount), 0);
-              const totalXRP = xrpFees.reduce((s, f) => s + parseFeeUSD(f.amount), 0);
-
-              const exportFeeCSV = () => {
-                if (periodFees.length === 0) return;
-                const headers = ['date', 'po_name', 'amount', 'currency', 'tx_hash'];
-                const rows = periodFees.map(f => {
-                  const currency = f.amount.includes('RLUSD') ? 'RLUSD' : 'XRP';
-                  return [
-                    `"${f.date}"`,
-                    `"${f.poName}"`,
-                    `"${parseFeeUSD(f.amount).toFixed(4)}"`,
-                    `"${currency}"`,
-                    `"${f.txHash}"`,
-                  ].join(',');
-                });
-                const csv = [headers.join(','), ...rows].join('\n');
-                const blob = new Blob([csv], { type: 'text/csv' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                const walletAddr = (mode === 'customer' ? customerProfile.classicAddress : vendorProfile.classicAddress) || 'wallet';
-                a.download = `scpo-fees-${walletAddr.slice(0, 8)}-${currentYear}.csv`;
-                a.click();
-                URL.revokeObjectURL(url);
-              };
-
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
-                    <h3 style={{ color: '#D88F2E', margin: 0 }}>🧾 Fee Deduction Tracking</h3>
-                    {periodFees.length > 0 && (
-                      <button
-                        onClick={exportFeeCSV}
-                        style={{ padding: '6px 16px', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
-                      >
-                        ⬇️ Export CSV
-                      </button>
-                    )}
-                  </div>
-
-                  <p style={{ fontSize: '12px', color: '#999', margin: '0 0 16px' }}>
-                    Platform fees paid to SC.PO per PO creation, with transaction hashes for expense reporting and tax deduction documentation.
-                  </p>
-
-                  {/* Summary cards */}
-                  <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', flexWrap: 'wrap' }}>
-                    <div style={{ flex: 1, minWidth: '130px', background: 'white', border: '2px solid #D88F2E', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#D88F2E', marginBottom: '4px', textTransform: 'uppercase' }}>Total Fees Paid</div>
-                      <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#333' }}>${totalFeesUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</div>
-                      <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{periodFees.length} transaction{periodFees.length !== 1 ? 's' : ''}</div>
-                    </div>
-                    {totalRLUSD > 0 && (
-                      <div style={{ flex: 1, minWidth: '120px', background: 'white', border: '2px solid #2e86de', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#2e86de', marginBottom: '4px', textTransform: 'uppercase' }}>Paid in RLUSD</div>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#333' }}>${totalRLUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</div>
-                        <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{rlusdFees.length} tx</div>
-                      </div>
-                    )}
-                    {totalXRP > 0 && (
-                      <div style={{ flex: 1, minWidth: '120px', background: 'white', border: '2px solid #27ae60', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                        <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#27ae60', marginBottom: '4px', textTransform: 'uppercase' }}>Paid in XRP</div>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#333' }}>${totalXRP.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</div>
-                        <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>{xrpFees.length} tx</div>
-                      </div>
-                    )}
-                    <div style={{ flex: 1, minWidth: '130px', background: 'white', border: '2px solid #999', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                      <div style={{ fontSize: '10px', fontWeight: 'bold', color: '#999', marginBottom: '4px', textTransform: 'uppercase' }}>Avg Fee / PO</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#333' }}>
-                        ${periodFees.length > 0 ? (totalFeesUSD / periodFees.length).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 }) : '0.00'}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>per PO created</div>
-                    </div>
-                  </div>
-
-                  {periodFees.length === 0 ? (
-                    <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>No fees paid in this period.</p>
-                  ) : (
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                        <thead>
-                          <tr style={{ background: '#FFF3E0', borderBottom: '2px solid #FFE0B2' }}>
-                            <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Date</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>PO Name</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'right', color: '#D88F2E', fontWeight: 'bold' }}>Fee Paid</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Currency</th>
-                            <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Tx Hash</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {periodFees.map((fee, idx) => {
-                            const currency = fee.amount.includes('RLUSD') ? 'RLUSD' : 'XRP';
-                            const usdVal = parseFeeUSD(fee.amount);
-                            return (
-                              <tr key={fee.txHash || idx} style={{ borderBottom: '1px solid #FFE0B2', background: idx % 2 === 0 ? 'white' : '#FFFDF8' }}>
-                                <td style={{ padding: '8px 12px', color: '#666', whiteSpace: 'nowrap' }}>{fee.date}</td>
-                                <td style={{ padding: '8px 12px', fontWeight: 'bold', color: '#333' }}>{fee.poName}</td>
-                                <td style={{ padding: '8px 12px', textAlign: 'right', color: '#e74c3c', fontWeight: 'bold' }}>
-                                  -${usdVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
-                                </td>
-                                <td style={{ padding: '8px 12px' }}>
-                                  <span style={{ background: currency === 'RLUSD' ? '#e8f0fe' : '#e8f8f0', color: currency === 'RLUSD' ? '#2e86de' : '#27ae60', borderRadius: '999px', padding: '2px 8px', fontSize: '11px', fontWeight: 'bold' }}>
-                                    {currency}
-                                  </span>
-                                </td>
-                                <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontSize: '11px', color: fee.txHash ? '#666' : '#ccc' }}>
-                                  {fee.txHash
-                                    ? <span style={{ cursor: 'pointer' }} onClick={() => copyToClipboard(fee.txHash, 'Tx Hash')}>{fee.txHash.slice(0, 8)}...{fee.txHash.slice(-6)} 📋</span>
-                                    : '—'}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                      <div style={{ textAlign: 'right', fontSize: '13px', fontWeight: 'bold', color: '#D88F2E', marginTop: '12px', borderTop: '1px solid #FFE0B2', paddingTop: '10px' }}>
-                        Total Deductible: -${totalFeesUSD.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}
-                        <span style={{ fontSize: '11px', color: '#999', fontWeight: 'normal', marginLeft: '8px' }}>Consult a tax professional for deductibility.</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* 5.7 — 1099 Data Export (Vendor only) */}
-            {mode === 'vendor' && (() => {
-              const taxYear = new Date().getFullYear();
-
-              // Get all claimed POs for this vendor in the current tax year
-              const claimedPOs = savedPOs.filter(po => {
-                if (po.status !== 'claimed') return false;
-                const d = new Date(po.dateIssued);
-                return d.getFullYear() === taxYear;
-              });
-
-              // Group by buyer wallet address
-              const byBuyer: Record<string, { total: number; pos: SavedPO[]; profile: PublicProfile | null }> = {};
-              for (const po of claimedPOs) {
-                const addr = po.buyerAddress;
-                if (!byBuyer[addr]) {
-                  const profile = [...customerLinkedVendorUUIDs, ...vendorLinkedCustomerUUIDs]
-                    .map(uuid => publicProfiles[uuid])
-                    .find(p => p?.classicAddress === addr) || null;
-                  byBuyer[addr] = { total: 0, pos: [], profile };
-                }
-                byBuyer[addr].total += parseFloat(po.total || '0');
-                byBuyer[addr].pos.push(po);
-              }
-
-              const rows: NinetyNineRow[] = Object.entries(byBuyer).map(([addr, data]) => ({
-                tax_year: taxYear,
-                buyer_company: data.profile?.company || 'Unknown',
-                buyer_wallet: addr,
-                buyer_name: data.profile?.name || 'Unknown',
-                buyer_email: data.profile?.email || '',
-                buyer_address: data.profile ? `${data.profile.address}, ${data.profile.city}, ${data.profile.state} ${data.profile.zip}` : '',
-                total_payments_usd: data.total.toFixed(2),
-                po_count: data.pos.length,
-                po_issuance_ids: data.pos.map(p => p.issuanceId).join(' | '),
-              }));
-
-              const grandTotal = rows.reduce((s, r) => s + parseFloat(r.total_payments_usd), 0);
-              const threshold = 600; // IRS 1099-NEC threshold
-
-              const vendorWallet = vendorProfile.classicAddress;
-
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
-                    <h3 style={{ color: '#D88F2E', margin: 0 }}>🇺🇸 1099 Data Export</h3>
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                      <span style={{ fontSize: '12px', color: '#999' }}>Tax Year: <strong style={{ color: '#D88F2E' }}>{taxYear}</strong></span>
-                      {rows.length > 0 && (
-                        <button
-                          onClick={() => export1099CSV(rows, taxYear, vendorWallet)}
-                          style={{ padding: '6px 16px', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
-                        >
-                          ⬇️ Export CSV
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <p style={{ fontSize: '12px', color: '#999', margin: '0 0 16px' }}>
-                    Total payments received per buyer for tax year {taxYear}. Buyers exceeding the ${threshold} IRS threshold are flagged. Export as CSV for your tax preparer.
-                  </p>
-
-                  {rows.length === 0 ? (
-                    <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>No claimed POs found for {taxYear}.</p>
-                  ) : (
-                    <>
-                      <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-                          <thead>
-                            <tr style={{ background: '#FFF3E0' }}>
-                              <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Buyer</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'left', color: '#D88F2E', fontWeight: 'bold' }}>Wallet</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'center', color: '#D88F2E', fontWeight: 'bold' }}>POs</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'right', color: '#D88F2E', fontWeight: 'bold' }}>Total Received</th>
-                              <th style={{ padding: '8px 12px', textAlign: 'center', color: '#D88F2E', fontWeight: 'bold' }}>1099 Required</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {rows.sort((a, b) => parseFloat(b.total_payments_usd) - parseFloat(a.total_payments_usd)).map((row, idx) => {
-                              const needsForm = parseFloat(row.total_payments_usd) >= threshold;
+                      {/* Aging sub-tiles — only when there's meaningful aging data */}
+                      {awaitingFunding.length > 0 && (
+                        <div style={{ marginBottom: 20 }}>
+                          <div className="mono" style={{
+                            fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
+                            color: 'var(--ink-3)', marginBottom: 10,
+                          }}>
+                            Aging · {acctApar === 'payable' ? 'Accepted, awaiting your escrow funding' : 'Accepted by you, awaiting buyer escrow funding'}
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 10 }}>
+                            {(['current', '30', '60', '90+'] as AgingBucket[]).map(b => {
+                              const items = agingByBucket[b];
+                              const total = sumTotal(items.map(a => a.po));
                               return (
-                                <tr key={row.buyer_wallet} style={{ borderBottom: '1px solid #FFE0B2', background: idx % 2 === 0 ? 'white' : '#FFFDF8' }}>
-                                  <td style={{ padding: '10px 12px' }}>
-                                    <div style={{ fontWeight: 'bold', color: '#333' }}>{row.buyer_company}</div>
-                                    {row.buyer_name !== 'Unknown' && <div style={{ fontSize: '11px', color: '#999' }}>{row.buyer_name}</div>}
-                                    {row.buyer_email && <div style={{ fontSize: '11px', color: '#999' }}>{row.buyer_email}</div>}
-                                  </td>
-                                  <td style={{ padding: '10px 12px' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                      <span style={{ color: '#666', fontFamily: 'monospace', fontSize: '11px' }}>{row.buyer_wallet.slice(0, 8)}...{row.buyer_wallet.slice(-4)}</span>
-                                      <span style={{ cursor: 'pointer', fontSize: '11px' }} onClick={() => copyToClipboard(row.buyer_wallet, 'Wallet address')}>📋</span>
+                                <div key={b} className="etched" style={{
+                                  padding: 12, borderRadius: 10,
+                                  borderLeft: `3px solid ${bucketColor[b]}`,
+                                }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                                    <div className="mono" style={{
+                                      fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase',
+                                      color: bucketColor[b], fontWeight: 600,
+                                    }}>
+                                      {bucketLabel[b]}
                                     </div>
-                                  </td>
-                                  <td style={{ padding: '10px 12px', textAlign: 'center', color: '#666' }}>{row.po_count}</td>
-                                  <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 'bold', color: needsForm ? '#e74c3c' : '#27ae60' }}>
-                                    ${parseFloat(row.total_payments_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                  </td>
-                                  <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                                    {needsForm
-                                      ? <span style={{ background: '#fde8e8', color: '#e74c3c', borderRadius: '999px', padding: '2px 10px', fontSize: '11px', fontWeight: 'bold' }}>⚠️ Yes</span>
-                                      : <span style={{ background: '#e8f8f0', color: '#27ae60', borderRadius: '999px', padding: '2px 10px', fontSize: '11px', fontWeight: 'bold' }}>No</span>
-                                    }
-                                  </td>
-                                </tr>
+                                    <Chip tone={bucketTone[b]}>{items.length}</Chip>
+                                  </div>
+                                  <div className="mono" style={{ fontSize: 18, fontWeight: 500, letterSpacing: '-0.02em', color: 'var(--ink)' }}>
+                                    ${formatNumber(total, { decimals: 0 })}
+                                  </div>
+                                </div>
                               );
                             })}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div style={{ textAlign: 'right', fontSize: '13px', fontWeight: 'bold', color: '#D88F2E', marginTop: '12px', borderTop: '1px solid #FFE0B2', paddingTop: '10px' }}>
-                        Total Received {taxYear}: ${grandTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </div>
-                      <p style={{ fontSize: '11px', color: '#bbb', margin: '8px 0 0', textAlign: 'center' }}>
-                        SC.PO provides payment data only. Consult a tax professional for filing requirements.
-                      </p>
-                    </>
-                  )}
-                </div>
-              );
-            })()}
+                          </div>
+                        </div>
+                      )}
 
-            {/* Phase 6A — Yield Dashboard (customer mode only) */}
-            {mode === 'customer' && (
-              <div style={{ background: '#FFFDF8', border: '1.5px solid #68D391', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                  <h3 style={{ color: '#276749', margin: 0 }}>🌱 Escrow Yield</h3>
-                  <span style={{ fontSize: '12px', color: '#48BB78', background: '#F0FFF4', padding: '4px 10px', borderRadius: '999px', border: '1px solid #C6F6D5' }}>Verified+ feature</span>
-                </div>
-                <YieldDashboard
-                  positions={yieldPositions}
-                  summary={yieldSummary}
-                  loading={yieldLoading}
-                  partnerRegistry={yieldPartnerRegistry}
-                  onRefresh={async () => {
-                    if (!customerProfile.classicAddress) return;
-                    setYieldLoading(true);
-                    const positions = await scanYieldPositions(customerProfile.classicAddress);
-                    setYieldPositions(positions);
-                    setYieldSummary(computeYieldSummary(positions, yieldPartnerRegistry));
-                    setYieldLoading(false);
-                  }}
-                />
-              </div>
-            )}
+                      <FilterBar
+                        query={acctPayablesQuery}
+                        setQuery={setAcctPayablesQuery}
+                        filter={acctPayablesFilter}
+                        setFilter={setAcctPayablesFilter}
+                        filters={[...STATUS_OPTIONS]}
+                        placeholder="Search PO name, counterparty, or ID…"/>
 
-            {/* 5.10 — Currency Gain/Loss (XRP Escrows) */}
-            {(() => {
-              const xrpPOs = savedPOs.filter(po =>
-                (po.escrowCurrency === 'XRP' || (!po.escrowCurrency && po.status !== 'open')) &&
-                (po.status === 'funded' || po.status === 'claimed')
-              );
-
-              // Tax period filter
-              const now2 = new Date();
-              const cy = now2.getFullYear(); const cm = now2.getMonth(); const cq = Math.floor(cm / 3);
-              const getTaxWindowGL = (): { start: Date; end: Date } => {
-                if (taxPeriod === 'month') return { start: new Date(cy, cm, 1), end: new Date(cy, cm + 1, 0) };
-                if (taxPeriod === 'quarter') return { start: new Date(cy, cq * 3, 1), end: new Date(cy, cq * 3 + 3, 0) };
-                if (taxPeriod === 'year') return { start: new Date(cy, 0, 1), end: new Date(cy, 11, 31) };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart), end: new Date(taxCustomEnd) };
-                return { start: new Date(cy, 0, 1), end: new Date(cy, 11, 31) };
-              };
-              const { start: glStart, end: glEnd } = getTaxWindowGL();
-              const periodXrpPOs = xrpPOs.filter(po => { const d = new Date(po.dateIssued); return d >= glStart && d <= glEnd; });
-
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                  <h3 style={{ color: '#D88F2E', margin: '0 0 8px' }}>📈 Currency Gain / Loss</h3>
-                  <p style={{ fontSize: '12px', color: '#999', margin: '0 0 16px' }}>
-                    XRP-denominated escrows only. Shows original USD value vs. current USD value based on live XRP price.
-                    For funded escrows the XRP quantity is fetched live from the ledger. For claimed escrows the XRP quantity is back-calculated from the original PO total.
-                  </p>
-
-                  {periodXrpPOs.length === 0 ? (
-                    <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>
-                      No XRP-denominated escrows in this period. All your escrows use RLUSD — no currency risk to report.
-                    </p>
-                  ) : (
-                    <XRPGainLossTable
-                      pos={periodXrpPOs}
-                      copyToClipboard={copyToClipboard}
-                      getXRPLClient={getXRPLClient}
-                    />
-                  )}
-                </div>
-              );
-            })()}
-
-            {/* 5.11 — Export Reports */}
-            {(() => {
-              // ── Shared helpers ──
-              const dlCSV = (rows: Record<string, any>[], filename: string) => {
-                if (rows.length === 0) return alert('No data to export for this report in the selected period.');
-                const headers = Object.keys(rows[0]).join(',');
-                const body = rows.map(r =>
-                  Object.values(r).map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')
-                ).join('\n');
-                const blob = new Blob([headers + '\n' + body], { type: 'text/csv' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = filename; a.click();
-                URL.revokeObjectURL(url);
-              };
-
-              const walletShort = (mode === 'customer'
-                ? customerProfile.classicAddress
-                : vendorProfile.classicAddress
-              )?.slice(0, 8) || 'wallet';
-
-              const periodTag = taxPeriod === 'custom'
-                ? `${taxCustomStart}_${taxCustomEnd}`
-                : taxPeriod;
-
-              // ── Tax period window ──
-              const n = new Date(); const yr = n.getFullYear(); const mo = n.getMonth(); const qtr = Math.floor(mo / 3);
-              const getPeriodBounds = () => {
-                if (taxPeriod === 'month') return { start: new Date(yr, mo, 1), end: new Date(yr, mo + 1, 0) };
-                if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1), end: new Date(yr, qtr * 3 + 3, 0) };
-                if (taxPeriod === 'year') return { start: new Date(yr, 0, 1), end: new Date(yr, 11, 31) };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart), end: new Date(taxCustomEnd) };
-                return { start: new Date(yr, 0, 1), end: new Date(yr, 11, 31) };
-              };
-              const { start: pStart, end: pEnd } = getPeriodBounds();
-              const inPeriod = (dateStr: string) => { const d = new Date(dateStr); return d >= pStart && d <= pEnd; };
-
-              // ── Counterparty name resolver — uses vendorUUID directly (same pattern as rest of app) ──
-              const resolveCounterparty = (po: SavedPO): string => {
-                // For customer mode: vendor is stored in po.vendorUUID → publicProfiles
-                // For vendor mode: buyer wallet → scan linked customers
-                if (mode === 'customer' && po.vendorUUID) {
-                  return publicProfiles[po.vendorUUID]?.company || po.vendorAddress;
-                }
-                // Vendor mode: scan linked customers by wallet address
-                const buyerProfile = vendorLinkedCustomerUUIDs
-                  .map(uuid => publicProfiles[uuid])
-                  .find(p => p?.classicAddress === po.buyerAddress);
-                return buyerProfile?.company || po.buyerAddress;
-              };
-
-              // ── Export: AP / AR ──
-              const exportAPAR = () => {
-                const pos = savedPOs.filter(po =>
-                  !['superseded', 'updated'].includes(po.status) && inPeriod(po.dateIssued)
-                );
-                if (pos.length === 0) return alert('No POs found in the selected period.');
-                const rows = pos.map(po => {
-                  const issueDate = new Date(po.dateIssued);
-                  const days = parseInt((po.paymentTerms || '0').split(' ')[0]) || 0;
-                  const dueDate = new Date(issueDate.getTime() + days * 86400000);
-                  return {
-                    po_name: po.poName,
-                    status: po.status,
-                    date_issued: po.dateIssued,
-                    due_date: dueDate.toLocaleDateString(),
-                    payment_terms: po.paymentTerms || '',
-                    amount_usd: parseFloat(po.total || '0').toFixed(2),
-                    currency: po.escrowCurrency || 'XRP',
-                    counterparty_company: resolveCounterparty(po),
-                    counterparty_wallet: mode === 'customer' ? po.vendorAddress : po.buyerAddress,
-                    escrow_sequence: po.escrowSequence || '',
-                    issuance_id: po.issuanceId,
-                    tx_hash: po.txHash || '',
-                  };
-                });
-                dlCSV(rows, `scpo-${mode === 'customer' ? 'ap' : 'ar'}-${walletShort}-${periodTag}.csv`);
-              };
-
-              // ── Export: Cash Flow ──
-              const exportCashFlow = () => {
-                const cf = auditLog.filter(e =>
-                  (e.action === 'FUND_ESCROW' || e.action === 'CLAIM_PO') &&
-                  e.timestamp >= pStart.getTime() && e.timestamp <= pEnd.getTime()
-                );
-                const rows = cf.map(e => {
-                  const matchedPO = savedPOs.find(p => p.issuanceId === e.ref);
-                  const amount = e.action === 'FUND_ESCROW'
-                    ? parseFloat(e.payload?.amount || '0')
-                    : parseFloat(matchedPO?.total || '0');
-                  return {
-                    date: e.date,
-                    type: e.action === 'FUND_ESCROW' ? 'Outflow' : 'Inflow',
-                    po_name: matchedPO?.poName || e.ref.slice(0, 12),
-                    amount_usd: amount.toFixed(2),
-                    currency: e.payload?.currency || matchedPO?.escrowCurrency || 'RLUSD',
-                    counterparty_company: matchedPO ? resolveCounterparty(matchedPO) : '',
-                    tx_hash: e.txHash || '',
-                    issuance_id: e.ref,
-                  };
-                });
-
-                // ── Phase 6A: Add yield inflows to cash flow export ───────────
-                if (mode === 'customer') {
-                  yieldPositions
-                    .filter(p =>
-                      p.status === 'withdrawn' &&
-                      parseFloat(p.netYieldToBuyer || '0') > 0 &&
-                      p.withdrawTimestamp &&
-                      p.withdrawTimestamp * 1000 >= pStart.getTime() &&
-                      p.withdrawTimestamp * 1000 <= pEnd.getTime()
-                    )
-                    .forEach(p => {
-                      const matchedPO = savedPOs.find(po => po.issuanceId === p.poIssuanceId);
-                      rows.push({
-                        date: new Date(p.withdrawTimestamp! * 1000).toLocaleDateString(),
-                        type: 'Yield Inflow',
-                        po_name: `${matchedPO?.poName || p.poIssuanceId.slice(0, 12)} (Yield Income)`,
-                        amount_usd: parseFloat(p.netYieldToBuyer || '0').toFixed(6),
-                        currency: 'RLUSD',
-                        counterparty_company: 'SC.PO Yield Partner',
-                        tx_hash: p.withdrawTxHash || '',
-                        issuance_id: p.poIssuanceId,
-                      });
-                    });
-                }
-
-                if (rows.length === 0) return alert('No cash flow entries found in the selected period.');
-                rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-                dlCSV(rows, `scpo-cashflow-${walletShort}-${periodTag}.csv`);
-              };
-
-              // ── Export: Journal Entries ──
-              const exportJournalEntries = () => {
-                const journalPOs = savedPOs.filter(po =>
-                  !['superseded', 'updated'].includes(po.status) && inPeriod(po.dateIssued)
-                );
-                if (journalPOs.length === 0) return alert('No journal entries found in the selected period.');
-                const rows: Record<string, any>[] = [];
-                for (const po of journalPOs) {
-                  const amt = parseFloat(po.total || '0').toFixed(2);
-                  const cur = po.escrowCurrency || 'RLUSD';
-                  const poAudit = auditLog.filter(e => e.ref === po.issuanceId);
-                  const counterparty = resolveCounterparty(po);
-                  const push = (event: string, debit: string, credit: string, txHash: string, entryType: string) =>
-                    rows.push({ po_name: po.poName, date: po.dateIssued, counterparty_company: counterparty, event, debit, credit, amount_usd: amt, currency: cur, entry_type: entryType, tx_hash: txHash });
-                  push('PO Created', 'Purchase Commitment (Memo)', 'Accounts Payable (Memo)', po.txHash || '', 'memo');
-                  const accept = poAudit.find(e => e.action === 'ACCEPT_PO');
-                  if (accept || ['accepted','funded','claimed'].includes(po.status))
-                    push('PO Accepted', 'AP Confirmed (Memo)', 'Purchase Obligation (Memo)', accept?.txHash || '', 'memo');
-                  const fund = poAudit.find(e => e.action === 'FUND_ESCROW');
-                  if (fund || ['funded','claimed'].includes(po.status))
-                    push('Escrow Funded', mode === 'customer' ? 'Escrow Asset' : 'Accounts Receivable', mode === 'customer' ? `Cash / ${cur}` : 'Deferred Revenue', fund?.txHash || '', 'hard');
-                  const claim = poAudit.find(e => e.action === 'CLAIM_PO');
-                  if (claim || po.status === 'claimed')
-                    push('Escrow Claimed', mode === 'customer' ? 'Accounts Payable' : `Cash / ${cur}`, mode === 'customer' ? 'Escrow Asset' : 'Accounts Receivable', claim?.txHash || '', 'hard');
-
-                  // ── Phase 6A: Yield income export (customer mode only) ────────
-                  if (mode === 'customer' && po.status === 'claimed') {
-                    const yieldPos = yieldPositions.find(
-                      p => p.poIssuanceId === po.issuanceId && p.status === 'withdrawn'
-                    );
-                    if (yieldPos && parseFloat(yieldPos.netYieldToBuyer || '0') > 0) {
-                      rows.push({
-                        po_name:            po.poName,
-                        date:               yieldPos.withdrawTimestamp
-                                              ? new Date(yieldPos.withdrawTimestamp * 1000).toLocaleDateString()
-                                              : po.dateIssued,
-                        counterparty_company: 'SC.PO Yield Partner',
-                        event:              'Yield Income Received',
-                        debit:              'Cash / RLUSD',
-                        credit:             'Interest Income',
-                        amount_usd:         parseFloat(yieldPos.netYieldToBuyer || '0').toFixed(6),
-                        currency:           'RLUSD',
-                        entry_type:         'hard',
-                        tx_hash:            yieldPos.withdrawTxHash || '',
-                      });
-                    }
-                  }
-                }
-                dlCSV(rows, `scpo-journal-${walletShort}-${periodTag}.csv`);
-              };
-
-              // ── Export: Fees ──
-              const exportFees = () => {
-                const fees = feeEntries.filter(f => { const d = new Date(f.date); return d >= pStart && d <= pEnd; });
-                if (fees.length === 0) return alert('No fees found in the selected period.');
-                const rows = fees.map(f => ({
-                  date: f.date,
-                  po_name: f.poName,
-                  amount_usd: parseFloat((f.amount || '').split(' ')[0].replace('$', '') || '0').toFixed(4),
-                  currency: f.amount.includes('RLUSD') ? 'RLUSD' : 'XRP',
-                  fee_type: 'PO_CREATION',
-                  tx_hash: f.txHash || '',
-                }));
-                dlCSV(rows, `scpo-fees-${walletShort}-${periodTag}.csv`);
-              };
-
-              const exportAll = () => {
-                exportAPAR();
-                setTimeout(exportCashFlow, 400);
-                setTimeout(exportJournalEntries, 800);
-                setTimeout(exportFees, 1200);
-              };
-
-              return (
-                <>
-            
-                  <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px', marginBottom: '16px' }}>
-                    <h3 style={{ color: '#D88F2E', margin: '0 0 8px' }}>⬇️ Export Reports</h3>
-                    <p style={{ fontSize: '12px', color: '#999', margin: '0 0 20px' }}>
-                      Export any report as CSV for QuickBooks / Xero import, or print all reports to PDF via your browser.
-                      All exports reflect the currently selected tax period above.
-                    </p>
-
-                    {/* Individual CSV buttons */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', marginBottom: '16px' }}>
-                      {([
-                        { label: mode === 'customer' ? '📋 Accounts Payable' : '📋 Accounts Receivable', sub: 'POs with aging & counterparty', fn: exportAPAR },
-                        { label: '💵 Cash Flow', sub: 'Escrow inflows & outflows', fn: exportCashFlow },
-                        { label: '📒 Journal Entries', sub: 'GAAP double-entry per PO', fn: exportJournalEntries },
-                        { label: '🧾 Platform Fees', sub: 'Deductible PO creation fees', fn: exportFees },
-                      ] as { label: string; sub: string; fn: () => void }[]).map(({ label, sub, fn }) => (
-                        <button
-                          key={label}
-                          onClick={fn}
-                          style={{ background: 'white', border: '1.5px solid #D88F2E', borderRadius: '12px', padding: '14px 16px', cursor: 'pointer', textAlign: 'left' }}
-                          onMouseEnter={e => (e.currentTarget.style.background = '#FFF3E0')}
-                          onMouseLeave={e => (e.currentTarget.style.background = 'white')}
-                        >
-                          <div style={{ fontWeight: 'bold', color: '#D88F2E', fontSize: '13px', marginBottom: '3px' }}>{label}</div>
-                          <div style={{ fontSize: '11px', color: '#999' }}>{sub}</div>
-                          <div style={{ fontSize: '11px', color: '#2e86de', marginTop: '6px', fontWeight: 'bold' }}>⬇️ Download CSV</div>
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Export All + Print */}
-                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                      <button
-                        onClick={exportAll}
-                        style={{ flex: 1, minWidth: '160px', padding: '12px 20px', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer' }}
-                        onMouseEnter={e => (e.currentTarget.style.opacity = '0.85')}
-                        onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
-                      >
-                        ⬇️ Export All Reports (4 CSV files)
-                      </button>
-                      <button
-                        onClick={() => {
-                          const el = document.getElementById('scpo-accounting-print');
-                          if (!el) return alert('Could not find accounting content to print.');
-                          const printWindow = window.open('', '_blank', 'width=1100,height=800');
-                          if (!printWindow) return alert('Pop-up blocked. Please allow pop-ups for this site and try again.');
-                          printWindow.document.write(`
-                            <!DOCTYPE html>
-                            <html>
-                              <head>
-                                <title>SC.PO Accounting Report</title>
-                                <style>
-                                  body { font-family: Helvetica, Arial, sans-serif; background: white; margin: 0; padding: 20px; font-size: 11px; color: #333; }
-                                  h2 { color: #D88F2E; text-align: center; margin-bottom: 6px; }
-                                  h3 { color: #D88F2E; margin: 0 0 12px; }
-                                  p { color: #666; font-size: 11px; }
-                                  table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 8px; }
-                                  thead tr { background: #FFF3E0; }
-                                  th { padding: 6px 8px; text-align: left; color: #D88F2E; font-weight: bold; border-bottom: 2px solid #FFE0B2; }
-                                  td { padding: 6px 8px; border-bottom: 1px solid #FFE0B2; }
-                                  tr:nth-child(even) td { background: #FFFDF8; }
-                                  .card-row { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-                                  .card { border: 2px solid #FFE0B2; border-radius: 8px; padding: 10px; text-align: center; min-width: 100px; flex: 1; }
-                                  .section { border: 1.5px solid #FFE0B2; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; background: #FFFDF8; page-break-inside: avoid; }
-                                  button, select, input, .no-print { display: none !important; }
-                                  span[style*="cursor: pointer"] { cursor: default; }
-                                  @page { margin: 15mm; size: landscape; }
-                                </style>
-                              </head>
-                              <body>
-                                ${el.innerHTML}
-                              </body>
-                            </html>
-                          `);
-                          printWindow.document.close();
-                          printWindow.focus();
-                          setTimeout(() => {
-                            printWindow.print();
-                            printWindow.close();
-                          }, 500);
-                        }}
-                        style={{ flex: 1, minWidth: '160px', padding: '12px 20px', borderRadius: '20px', border: '1.5px solid #D88F2E', background: 'white', color: '#D88F2E', fontWeight: 'bold', fontSize: '13px', cursor: 'pointer' }}
-                        onMouseEnter={e => (e.currentTarget.style.background = '#FFF3E0')}
-                        onMouseLeave={e => (e.currentTarget.style.background = 'white')}
-                      >
-                        🖨️ Print / Save as PDF
-                      </button>
-                    </div>
-
-                    <p style={{ fontSize: '11px', color: '#bbb', margin: '12px 0 0', textAlign: 'center' }}>
-                      CSV files include counterparty names and are formatted for QuickBooks / Xero import. PDF: click Print → "Save as PDF" in your browser's print dialog. Prints landscape for best table formatting.
-                    </p>
-                  </div>
-                </>
-              );
-            })()}
-
-            {/* 5.12 — On-Chain Proof of Payment */}
-            {(() => {
-              // Tax period window
-              const n = new Date(); const yr = n.getFullYear(); const mo = n.getMonth(); const qtr = Math.floor(mo / 3);
-              const getPeriodBounds512 = () => {
-                if (taxPeriod === 'month') return { start: new Date(yr, mo, 1), end: new Date(yr, mo + 1, 0) };
-                if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1), end: new Date(yr, qtr * 3 + 3, 0) };
-                if (taxPeriod === 'year') return { start: new Date(yr, 0, 1), end: new Date(yr, 11, 31) };
-                if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) return { start: new Date(taxCustomStart), end: new Date(taxCustomEnd) };
-                return { start: new Date(yr, 0, 1), end: new Date(yr, 11, 31) };
-              };
-              const { start: p512Start, end: p512End } = getPeriodBounds512();
-
-              const claimedPOs = savedPOs.filter(po =>
-                po.status === 'claimed' &&
-                (() => { const d = new Date(po.dateIssued); return d >= p512Start && d <= p512End; })()
-              );
-
-              const explorerUrl = (txHash: string) => `https://devnet.xrpl.org/transactions/${txHash}`;
-
-              const buildReceipt = (po: SavedPO) => {
-                const poAudit = auditLog.filter(e => e.ref === po.issuanceId);
-                const acceptEntry  = poAudit.find(e => e.action === 'ACCEPT_PO');
-                const fundEntry    = poAudit.find(e => e.action === 'FUND_ESCROW');
-                const claimEntry   = poAudit.find(e => e.action === 'CLAIM_PO');
-                return {
-                  po_name:          po.poName,
-                  issuance_id:      po.issuanceId,
-                  amount_usd:       parseFloat(po.total || '0').toFixed(2),
-                  currency:         po.escrowCurrency || 'XRP',
-                  payment_terms:    po.paymentTerms || '',
-                  date_issued:      po.dateIssued,
-                  date_accepted:    acceptEntry?.date  || '',
-                  date_funded:      fundEntry?.date    || '',
-                  date_claimed:     claimEntry?.date   || '',
-                  buyer_wallet:     po.buyerAddress,
-                  vendor_wallet:    po.vendorAddress,
-                  escrow_sequence:  po.escrowSequence  || '',
-                  ipfs_document:    po.ipfsUri         || '',
-                  tx_create:        po.txHash          || '',
-                  tx_accept:        acceptEntry?.txHash  || '',
-                  tx_fund:          fundEntry?.txHash    || '',
-                  tx_claim:         claimEntry?.txHash   || '',
-                  generated_at:     new Date().toISOString(),
-                  network:          'XRPL Devnet',
-                };
-              };
-
-              const renderTxLink = (hash: string) =>
-                hash
-                  ? <a href={explorerUrl(hash)} target="_blank" rel="noopener noreferrer"
-                      style={{ color: '#2e86de', fontFamily: 'monospace', fontSize: '11px', wordBreak: 'break-all' }}>
-                      {hash.slice(0, 10)}...{hash.slice(-8)} ↗
-                    </a>
-                  : <span style={{ color: '#ccc', fontSize: '11px' }}>Not recorded</span>;
-
-              return (
-                <div style={{ background: '#FFFDF8', border: '1.5px solid #FFE0B2', borderRadius: '14px', padding: '20px 24px' }}>
-                  <h3 style={{ color: '#D88F2E', margin: '0 0 8px' }}>✅ On-Chain Proof of Payment</h3>
-                  <p style={{ fontSize: '12px', color: '#999', margin: '0 0 16px' }}>
-                    Verifiable receipt for each settled PO — links the MPT issuance, escrow sequence, and all transaction hashes in one document.
-                    Share with auditors, lenders, or counterparties as proof of completed payment.
-                  </p>
-
-                  {claimedPOs.length === 0 ? (
-                    <p style={{ textAlign: 'center', color: '#999', fontSize: '13px' }}>No claimed POs in this period.</p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                      {claimedPOs
-                        .sort((a, b) => new Date(b.dateIssued).getTime() - new Date(a.dateIssued).getTime())
-                        .map(po => {
-                          const receipt = buildReceipt(po);
-                          const isExpanded = expandedJournal === `proof_${po.issuanceId}`;
-                          const completeness = [receipt.tx_create, receipt.tx_accept, receipt.tx_fund, receipt.tx_claim].filter(Boolean).length;
-
-                          return (
-                            <div key={po.issuanceId} style={{ border: '1.5px solid #FFE0B2', borderRadius: '12px', overflow: 'hidden' }}>
-
-                              {/* Receipt header row */}
-                              <div
-                                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 16px', background: 'white', cursor: 'pointer', flexWrap: 'wrap', gap: '8px' }}
-                                onClick={() => setExpandedJournal(isExpanded ? null : `proof_${po.issuanceId}`)}
-                              >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                                  <span style={{ fontSize: '16px' }}>🧾</span>
-                                  <div>
-                                    <div style={{ fontWeight: 'bold', color: '#333', fontSize: '14px' }}>{po.poName}</div>
-                                    <div style={{ fontSize: '11px', color: '#999', marginTop: '2px' }}>Issued {po.dateIssued} · {receipt.issuance_id.slice(0, 12)}...</div>
-                                  </div>
+                      {visibleRows.length === 0 ? (
+                        <Empty msg={
+                          allInPeriod.length === 0
+                            ? `No ${acctApar === 'payable' ? 'payables' : 'receivables'} in ${periodLabel}.`
+                            : 'No POs match these filters.'
+                        }/>
+                      ) : (
+                        <Table cols={[
+                          { k: 'po', label: 'PO', w: 'minmax(180px, 1.5fr)',
+                            render: r => (
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {r.poName}
                                 </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                                  <span style={{ fontSize: '15px', fontWeight: 'bold', color: '#27ae60' }}>
-                                    ${parseFloat(po.total || '0').toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {receipt.currency}
-                                  </span>
-                                  {/* Completeness indicator */}
-                                  <div style={{ display: 'flex', gap: '4px' }}>
-                                    {(['Create', 'Accept', 'Fund', 'Claim'] as const).map((step, i) => {
-                                      const hashes = [receipt.tx_create, receipt.tx_accept, receipt.tx_fund, receipt.tx_claim];
-                                      return (
-                                        <div key={step} title={`${step} tx: ${hashes[i] ? 'recorded' : 'missing'}`}
-                                          style={{ width: '10px', height: '10px', borderRadius: '50%', background: hashes[i] ? '#27ae60' : '#ddd' }} />
-                                      );
-                                    })}
-                                  </div>
-                                  <span style={{ fontSize: '12px', color: '#999' }}>{completeness}/4 txs</span>
-                                  <span style={{ fontSize: '12px', color: '#D88F2E', fontWeight: 'bold' }}>{isExpanded ? '▲' : '▼'}</span>
+                                <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {r.issuanceId.slice(0, 14)}…
                                 </div>
                               </div>
+                            ) },
+                          { k: 'counterparty', label: acctApar === 'payable' ? 'Vendor' : 'Buyer', w: 'minmax(140px, 1.2fr)',
+                            render: r => (
+                              <div style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {counterpartyName(r)}
+                              </div>
+                            ) },
+                          { k: 'issued', label: 'Issued', w: '90px',
+                            render: r => <span className="mono" style={{ fontSize: 12 }}>
+                              {new Date(r.dateIssued).toLocaleDateString(undefined, { month: 'short', day: '2-digit' })}
+                            </span> },
+                          { k: 'due', label: 'Due', w: '90px',
+                            render: r => {
+                              const { dueDate } = ageOf(r);
+                              return <span className="mono" style={{ fontSize: 12 }}>
+                                {dueDate.toLocaleDateString(undefined, { month: 'short', day: '2-digit' })}
+                              </span>;
+                            } },
+                          { k: 'terms', label: 'Terms', w: '90px',
+                            render: r => <span className="mono" style={{ fontSize: 11, color: 'var(--ink-2)' }}>
+                              {r.paymentTerms || '—'}
+                            </span> },
+                          { k: 'amount', label: 'Amount', w: '120px', align: 'right',
+                            render: r => (
+                              <div style={{ textAlign: 'right' }}>
+                                <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>
+                                  {(r.escrowCurrency || 'RLUSD') === 'XRP' ? '' : '$'}{formatNumber(parseFloat(r.total) || 0, { decimals: 0 })}
+                                </div>
+                                <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 2 }}>
+                                  {r.escrowCurrency || 'RLUSD'}
+                                </div>
+                              </div>
+                            ) },
+                          { k: 'status', label: 'Status', w: '130px',
+                            render: r => <Chip tone={statusChipTone[r.status]}>{statusChipLabel[r.status]}</Chip> },
+                          { k: 'aging', label: 'Aging', w: '110px',
+                            render: r => {
+                              if (r.status === 'claimed') return <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>;
+                              if (r.status === 'open')    return <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>;
+                              if (r.status === 'funded')  return <Chip tone="green">In escrow</Chip>;
+                              const { daysPastDue, bucket } = ageOf(r);
+                              return (
+                                <span className="mono" style={{ fontSize: 11.5, fontWeight: 600, color: bucketColor[bucket] }}>
+                                  {daysPastDue <= 0 ? `${Math.abs(daysPastDue)}d to due` : `${daysPastDue}d past due`}
+                                </span>
+                              );
+                            } },
+                        ]} rows={visibleRows}/>
+                      )}
+                    </>
+                  );
+                })()}
+                {acctView === 'cashflow' && (() => {
+                  // ── Period window helper (mirrors Phase 1.3 Journal) ──
+                  const getPeriodWindow = () => {
+                    const yr = currentYear, mo = currentMonth, qtr = currentQuarter;
+                    if (taxPeriod === 'month')   return { start: new Date(yr, mo, 1).getTime(), end: new Date(yr, mo + 1, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(), end: new Date(yr, qtr * 3 + 3, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'year')    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) {
+                      return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() + 86_399_000 };
+                    }
+                    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                  };
+                  const { start: pStart, end: pEnd } = getPeriodWindow();
+                  const inPeriod = (msTimestamp: number) => msTimestamp >= pStart && msTimestamp <= pEnd;
 
-                              {/* Expanded receipt body */}
-                              {isExpanded && (
-                                <div style={{ background: '#FFFDF8', padding: '16px 18px', borderTop: '1px solid #FFE0B2' }}>
+                  // ── Sanity-clamp garbage timestamps ──
+                  const MIN_VALID_MS = new Date('2020-01-01').getTime();
+                  const MAX_VALID_MS = new Date('9999-12-31').getTime();
+                  const sanitizeTs = (ms: number, fallbackMs: number): number => {
+                    return (ms < MIN_VALID_MS || ms > MAX_VALID_MS) ? fallbackMs : ms;
+                  };
 
-                                  {/* Chain of custody timeline */}
-                                  <div style={{ marginBottom: '16px' }}>
-                                    <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#555', marginBottom: '10px' }}>Chain of Custody</div>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                      {[
-                                        { step: '1', event: 'PO Created', date: receipt.date_issued,  txHash: receipt.tx_create, color: '#2e86de' },
-                                        { step: '2', event: 'Accepted by Vendor', date: receipt.date_accepted, txHash: receipt.tx_accept, color: '#8e44ad' },
-                                        { step: '3', event: 'Escrow Funded', date: receipt.date_funded,  txHash: receipt.tx_fund,   color: '#e67e22' },
-                                        { step: '4', event: 'Payment Claimed', date: receipt.date_claimed, txHash: receipt.tx_claim,  color: '#27ae60' },
-                                      ].map(({ step, event, date, txHash, color }) => (
-                                        <div key={step} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-                                          <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: txHash ? color : '#ddd', color: 'white', fontSize: '11px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '1px' }}>
-                                            {txHash ? step : '—'}
-                                          </div>
-                                          <div style={{ flex: 1 }}>
-                                            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                                              <span style={{ fontSize: '12px', fontWeight: 'bold', color: txHash ? '#333' : '#bbb' }}>{event}</span>
-                                              {date && <span style={{ fontSize: '11px', color: '#999' }}>{date}</span>}
-                                            </div>
-                                            {renderTxLink(txHash)}
-                                          </div>
-                                        </div>
-                                      ))}
+                  // ── User identity guard (userAddrs lifted to component-body memo) ──
+                  if (userAddrs.size === 0) {
+                    return <Empty msg="Connect a wallet to view cash flow." />;
+                  }
+
+                  // ── Counterparty name resolver — looks up the OTHER side per perspective ──
+                  // For 'both' POs, the perspective is encoded in the event's direction:
+                  //   buyer-perspective event (outflow/yield) → counterparty is the vendor address
+                  //   vendor-perspective event (inflow)       → counterparty is the buyer address
+                  // (UserRole, Perspective types + userRoleOnPO helper now live at component body — Bug #4)
+                  const counterpartyName = (po: SavedPO, perspective: Perspective): string => {
+                    if (perspective === 'self') return 'Internal Transfer';
+                    if (perspective === 'buyer-side') {
+                      const v = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+                      return v?.company || v?.name || (po.vendorAddress ? po.vendorAddress.slice(0, 8) + '…' : 'Vendor');
+                    }
+                    const c = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+                    return c?.company || c?.name || (po.buyerAddress ? po.buyerAddress.slice(0, 8) + '…' : 'Buyer');
+                  };
+
+                  // ── Cash flow event record ──
+                  type CashFlowEvent = {
+                    date: string;
+                    timestamp: number;          // ms
+                    po: SavedPO;
+                    role: UserRole;             // user's role on the PO (whole-PO classification)
+                    perspective: Perspective;   // which side this event is reported from (drives counterparty + chip color)
+                    direction: 'inflow' | 'outflow' | 'yield' | 'internal';
+                    amountUsd: number;          // unsigned magnitude; direction provides sign
+                    currency: string;
+                    txHash: string;
+                  };
+
+                  // ── Build cash flow events across all of user's POs ──
+                  const buildEvents = (): CashFlowEvent[] => {
+                    const out: CashFlowEvent[] = [];
+                    for (const po of savedPOs) {
+                      // Skip non-cash-bearing PO statuses
+                      // - recalled: never funded (recall valid only for open/accepted POs); no money moved
+                      // - superseded/updated: intermediate states; cash events live on the child PO
+                      if (['recalled', 'superseded', 'updated'].includes(po.status)) continue;
+
+                      const role = userRoleOnPO(po);
+                      if (role === 'none') continue;  // not the user's PO
+
+                      const amountUsd = parseFloat(po.total) || 0;
+                      const currency = po.escrowCurrency || 'RLUSD';
+                      const poAudit = auditLog.filter(e => e.ref === po.issuanceId);
+                      const emitBuyerSide  = role === 'buyer'  || role === 'both';
+                      const emitVendorSide = role === 'vendor' || role === 'both';
+
+                      // ── FUND_ESCROW event ──
+                      const fundEntry = poAudit.find(e => e.action === 'FUND_ESCROW');
+                      if (fundEntry) {
+                        const fundTs = sanitizeTs(fundEntry.timestamp, Date.now());
+                        if (role === 'internal') {
+                          // Literal self-PO: cash washes out. Emit once with neutral chip; counted in both lenses.
+                          out.push({
+                            date: fundEntry.date, timestamp: fundTs, po, role, perspective: 'self',
+                            direction: 'internal',
+                            amountUsd, currency, txHash: fundEntry.txHash || '',
+                          });
+                        } else if (emitBuyerSide) {
+                          // Buyer-side outflow (real cash leaving buyer wallet)
+                          out.push({
+                            date: fundEntry.date, timestamp: fundTs, po, role, perspective: 'buyer-side',
+                            direction: 'outflow',
+                            amountUsd, currency, txHash: fundEntry.txHash || '',
+                          });
+                        }
+                      }
+
+                      // ── CLAIM_PO event ──
+                      const claimEntry = poAudit.find(e => e.action === 'CLAIM_PO');
+                      if (claimEntry) {
+                        const claimTs = sanitizeTs(claimEntry.timestamp, Date.now());
+                        if (role === 'internal') {
+                          // Already represented by the 'internal' fund-side event above; one event per round-trip.
+                        } else if (emitVendorSide) {
+                          // Vendor-side inflow (real cash arriving at vendor wallet)
+                          out.push({
+                            date: claimEntry.date, timestamp: claimTs, po, role, perspective: 'vendor-side',
+                            direction: 'inflow',
+                            amountUsd, currency, txHash: claimEntry.txHash || '',
+                          });
+                        }
+                      }
+
+                      // ── Yield withdrawal event (buyer-side only) ──
+                      // Yield always accrues to the buyer. For 'both' POs the buyer side is the user, so still emit.
+                      // For 'internal' POs (literal self-PO) the cash washed but yield could still be real if opted in.
+                      if (emitBuyerSide || role === 'internal') {
+                        const yPos = yieldPositions.find(y => y.poIssuanceId === po.issuanceId && y.status === 'withdrawn');
+                        if (yPos && yPos.withdrawTimestamp) {
+                          const netYield = parseFloat(yPos.netYieldToBuyer || '0');
+                          if (netYield > 0) {
+                            const yTs = sanitizeTs(yPos.withdrawTimestamp, Date.now());
+                            out.push({
+                              date: new Date(yTs).toLocaleDateString(), timestamp: yTs, po, role,
+                              perspective: role === 'internal' ? 'self' : 'buyer-side',
+                              direction: 'yield',
+                              amountUsd: netYield, currency: 'RLUSD', txHash: yPos.withdrawTxHash || '',
+                            });
+                          }
+                        }
+                      }
+                    }
+                    return out;
+                  };
+
+                  const allEvents = buildEvents();
+                  const periodEvents = allEvents.filter(e => inPeriod(e.timestamp));
+
+                  // ── Apar lens filter: which events apply to this lens? ──
+                  // Payable lens (buyer's books): outflows + yield + internal
+                  // Receivable lens (vendor's books): inflows + internal
+                  const lensEvents = periodEvents.filter(e => {
+                    if (e.direction === 'internal') return true;  // internal counts in both lenses
+                    if (acctApar === 'payable')    return e.direction === 'outflow' || e.direction === 'yield';
+                    /* receivable */                return e.direction === 'inflow';
+                  });
+
+                  // ── Auto-fallback filter chip if invalid for current apar ──
+                  const validFiltersForApar: Array<typeof acctCashflowFilter> = acctApar === 'payable'
+                    ? ['all', 'outflows', 'yield']
+                    : ['all', 'inflows'];
+                  const effectiveFilter: typeof acctCashflowFilter = validFiltersForApar.includes(acctCashflowFilter)
+                    ? acctCashflowFilter
+                    : 'all';
+
+                  // ── Apply filter chip ──
+                  const filterChipEvents = lensEvents.filter(e => {
+                    if (effectiveFilter === 'all')      return true;
+                    if (effectiveFilter === 'outflows') return e.direction === 'outflow' || (e.direction === 'internal' && acctApar === 'payable');
+                    if (effectiveFilter === 'inflows')  return e.direction === 'inflow'  || (e.direction === 'internal' && acctApar === 'receivable');
+                    if (effectiveFilter === 'yield')    return e.direction === 'yield';
+                    return true;
+                  });
+
+                  // ── Apply search query ──
+                  const q = acctCashflowQuery.trim().toLowerCase();
+                  const finalEvents = q === '' ? filterChipEvents : filterChipEvents.filter(e => {
+                    const cp = counterpartyName(e.po, e.perspective).toLowerCase();
+                    return e.po.poName.toLowerCase().includes(q)
+                        || cp.includes(q)
+                        || (e.txHash || '').toLowerCase().includes(q);
+                  });
+
+                  // ── Sort by timestamp desc (most recent first) ──
+                  finalEvents.sort((a, b) => b.timestamp - a.timestamp);
+
+                  // ── Tile aggregations (always 4, symmetric per Q3) ──
+                  // Tiles use `lensEvents` (apar-applied, period-applied) — NOT filter-chip-applied.
+                  // Reason: tiles are summaries of the lens, not summaries of "what's currently filtered to view."
+                  const sumByDirection = (dir: CashFlowEvent['direction']) =>
+                    lensEvents.filter(e => e.direction === dir).reduce((s, e) => s + e.amountUsd, 0);
+                  const internalSum = sumByDirection('internal');
+                  const outflowsSum = (acctApar === 'payable')    ? sumByDirection('outflow') + internalSum : 0;
+                  const inflowsSum  = (acctApar === 'receivable') ? sumByDirection('inflow')  + internalSum : 0;
+                  const yieldSum    = (acctApar === 'payable')    ? sumByDirection('yield') : 0;
+                  const netFlow     = inflowsSum + yieldSum - outflowsSum;
+
+                  const countByDirection = (dir: CashFlowEvent['direction']) =>
+                    lensEvents.filter(e => e.direction === dir).length;
+                  const internalCount = countByDirection('internal');
+                  const outflowsCount = (acctApar === 'payable')    ? countByDirection('outflow') + internalCount : 0;
+                  const inflowsCount  = (acctApar === 'receivable') ? countByDirection('inflow')  + internalCount : 0;
+                  const yieldCount    = (acctApar === 'payable')    ? countByDirection('yield') : 0;
+
+                  // ── Chart series — external events only (internal transfers excluded per Q-internal) ──
+                  // Group by YYYY-MM. Trailing 12 months from period end.
+                  const externalForChart = lensEvents.filter(e => e.direction !== 'internal');
+                  const chartEnd = new Date(pEnd);
+                  const chartMonths: Array<{ key: string; label: string }> = [];
+                  for (let i = 11; i >= 0; i--) {
+                    const d = new Date(chartEnd.getFullYear(), chartEnd.getMonth() - i, 1);
+                    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                    const label = d.toLocaleString('default', { month: 'short' });
+                    chartMonths.push({ key, label });
+                  }
+                  const monthSum = (dir: CashFlowEvent['direction']) =>
+                    chartMonths.map(month => {
+                      const v = externalForChart
+                        .filter(e => e.direction === dir)
+                        .filter(e => {
+                          const d = new Date(e.timestamp);
+                          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` === month.key;
+                        })
+                        .reduce((s, e) => s + e.amountUsd, 0);
+                      return { m: month.label, v };
+                    });
+
+                  // For Payable lens: bottom = outflows, top = yield
+                  // For Receivable lens: bottom = inflows, top = []
+                  const chartBottom = acctApar === 'payable' ? monthSum('outflow') : monthSum('inflow');
+                  const chartTop    = acctApar === 'payable' ? monthSum('yield')   : [];
+                  const chartHasData = externalForChart.length > 0;
+
+                  // ── Filter pill set (apar-aware) ──
+                  type ChipKey = typeof acctCashflowFilter;
+                  const chips: Array<{ k: ChipKey; l: string; count: number }> = acctApar === 'payable'
+                    ? [
+                        { k: 'all',      l: 'All',      count: lensEvents.length },
+                        { k: 'outflows', l: 'Outflows', count: outflowsCount },
+                        { k: 'yield',    l: 'Yield',    count: yieldCount },
+                      ]
+                    : [
+                        { k: 'all',     l: 'All',     count: lensEvents.length },
+                        { k: 'inflows', l: 'Inflows', count: inflowsCount },
+                      ];
+
+                  // ── Tone helpers ──
+                  const directionChipTone = (dir: CashFlowEvent['direction']): 'green' | 'gold' | 'blue' | 'neutral' =>
+                    dir === 'inflow' ? 'green' : dir === 'outflow' ? 'gold' : dir === 'yield' ? 'blue' : 'neutral';
+                  const directionChipLabel = (dir: CashFlowEvent['direction']): string =>
+                    dir === 'inflow' ? '↑ Inflow' : dir === 'outflow' ? '↓ Outflow' : dir === 'yield' ? 'Yield' : '↔ Internal Transfer';
+                  const directionAmountColor = (dir: CashFlowEvent['direction']): string =>
+                    dir === 'inflow' || dir === 'yield' ? 'oklch(0.55 0.14 140)' : dir === 'outflow' ? 'oklch(0.55 0.18 28)' : 'var(--ink-2)';
+                  const directionAmountSign = (dir: CashFlowEvent['direction']): string =>
+                    dir === 'inflow' || dir === 'yield' ? '+' : dir === 'outflow' ? '−' : '';
+
+                  return (
+                    <>
+                      {/* ── 4 SummaryTiles (always symmetric per Q3) ── */}
+                      <SummaryTiles tiles={[
+                        {
+                          label: 'Inflows',
+                          value: `${inflowsSum > 0 ? '+' : ''}$${formatNumber(inflowsSum, { decimals: 2 })}`,
+                          sub: acctApar === 'receivable' ? `${inflowsCount} ${inflowsCount === 1 ? 'claim' : 'claims'} this period` : 'Receivable lens only',
+                          chip: 'in', chipTone: 'green',
+                          valueColor: inflowsSum > 0 ? 'oklch(0.55 0.14 140)' : 'var(--ink-3)',
+                        },
+                        {
+                          label: 'Outflows',
+                          value: `${outflowsSum > 0 ? '−' : ''}$${formatNumber(outflowsSum, { decimals: 2 })}`,
+                          sub: acctApar === 'payable' ? `${outflowsCount} ${outflowsCount === 1 ? 'fund' : 'funds'} this period` : 'Payable lens only',
+                          chip: 'out', chipTone: 'gold',
+                          valueColor: outflowsSum > 0 ? 'oklch(0.55 0.18 28)' : 'var(--ink-3)',
+                        },
+                        {
+                          label: 'Yield Inflows',
+                          value: `${yieldSum > 0 ? '+' : ''}$${formatNumber(yieldSum, { decimals: 2 })}`,
+                          sub: acctApar === 'payable' ? `${yieldCount} ${yieldCount === 1 ? 'realization' : 'realizations'}` : 'Payable lens only',
+                          chip: 'yield', chipTone: 'blue',
+                          valueColor: yieldSum > 0 ? 'oklch(0.55 0.14 140)' : 'var(--ink-3)',
+                        },
+                        {
+                          label: 'Net Flow',
+                          value: `${netFlow >= 0 ? '+' : '−'}$${formatNumber(Math.abs(netFlow), { decimals: 2 })}`,
+                          sub: acctApar === 'payable' ? 'Yield − Outflows' : 'Inflows + Internal',
+                          chip: 'net', chipTone: netFlow >= 0 ? 'green' : 'gold',
+                          valueColor: netFlow >= 0 ? 'oklch(0.55 0.14 140)' : 'oklch(0.55 0.18 28)',
+                        },
+                      ]} />
+
+                      {/* ── Chart ── */}
+                      <Card layered
+                        label={<>
+                          <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Trailing 12 months</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>{acctApar === 'payable' ? 'Outflows + yield by month' : 'Inflows by month'}</div>
+                        </>}
+                        actions={acctApar === 'payable' ? (
+                          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                            <LegendSwatch color="oklch(0.7 0.16 78)" label="Outflows" />
+                            <LegendSwatch color="oklch(0.5 0.14 240)" label="Yield" />
+                          </div>
+                        ) : (
+                          <LegendSwatch color="oklch(0.68 0.16 148)" label="Inflows" />
+                        )}>
+                        {chartHasData ? (
+                          <StackedAreaChart
+                            bottomSeries={chartBottom}
+                            topSeries={chartTop}
+                            bottomAccent={acctApar === 'payable' ? 'oklch(0.7 0.16 78)' : 'oklch(0.68 0.16 148)'}
+                            topAccent={acctApar === 'payable' ? 'oklch(0.5 0.14 240)' : undefined}
+                          />
+                        ) : (
+                          <div style={{
+                            height: 180,
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                            color: 'var(--ink-3)', fontSize: 12, lineHeight: 1.6, textAlign: 'center', padding: 18,
+                          }}>
+                            <div style={{ fontSize: 22, marginBottom: 8, opacity: 0.5 }}>📊</div>
+                            <div style={{ color: 'var(--ink-2)', fontWeight: 500, marginBottom: 4 }}>No external cash flow yet</div>
+                            <div>Internal transfers between your own profiles aren't charted — see the ledger below.</div>
+                          </div>
+                        )}
+                      </Card>
+
+                      {/* ── Filter bar (standard <FilterBar> primitive — Patch 2.6.6-B) ── */}
+                      {/* Map between state keys ('all'/'outflows'/etc) and display labels ('All'/'Outflows'/etc) */}
+                      {/* marginTop wrapper compensates for <Card> not having marginBottom baked in (2.6.6-B2) */}
+                      <div style={{ marginTop: 16 }}>
+                        {(() => {
+                          const labelByKey: Record<typeof acctCashflowFilter, string> = {
+                            all: 'All', outflows: 'Outflows', inflows: 'Inflows', yield: 'Yield',
+                          };
+                          const keyByLabel: Record<string, typeof acctCashflowFilter> = {
+                            'All': 'all', 'Outflows': 'outflows', 'Inflows': 'inflows', 'Yield': 'yield',
+                          };
+                          const filterLabels = chips.map(c => labelByKey[c.k]);
+                          return (
+                            <FilterBar
+                              query={acctCashflowQuery}
+                              setQuery={setAcctCashflowQuery}
+                              placeholder="Search PO, counterparty, or tx hash…"
+                              filter={labelByKey[effectiveFilter]}
+                              setFilter={(label) => setAcctCashflowFilter(keyByLabel[label] || 'all')}
+                              filters={filterLabels}
+                            />
+                          );
+                        })()}
+                      </div>
+
+                      {/* ── Ledger table ── */}
+                      {finalEvents.length === 0 ? (
+                        <Empty msg={
+                          allEvents.length === 0
+                            ? 'No cash flow activity yet.'
+                            : effectiveFilter !== 'all'
+                              ? `No ${effectiveFilter} in this period.`
+                              : 'No activity in this period.'
+                        } />
+                      ) : (
+                        <Table cols={[
+                          { k: 'date',  label: 'Date',         w: '100px',
+                            render: (e: CashFlowEvent) => <span className="mono" style={{ fontSize: 12 }}>{new Date(e.timestamp).toLocaleDateString()}</span> },
+                          { k: 'po',    label: 'PO',           w: '1.2fr',
+                            render: (e: CashFlowEvent) => <span style={{ fontSize: 13 }}>{e.po.poName}</span> },
+                          { k: 'cp',    label: 'Counterparty', w: '1.2fr',
+                            render: (e: CashFlowEvent) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{counterpartyName(e.po, e.perspective)}</span> },
+                          { k: 'type',  label: 'Type',         w: '160px',
+                            render: (e: CashFlowEvent) => <Chip tone={directionChipTone(e.direction)}>{directionChipLabel(e.direction)}</Chip> },
+                          { k: 'tx',    label: 'Tx Hash',      w: '140px',
+                            render: (e: CashFlowEvent) => e.txHash ? (
+                              <span
+                                onClick={() => {
+                                  navigator.clipboard.writeText(e.txHash);
+                                  setAcctCopiedHash(e.txHash);
+                                  setTimeout(() => setAcctCopiedHash(prev => prev === e.txHash ? null : prev), 1500);
+                                }}
+                                className="mono"
+                                style={{
+                                  fontSize: 11, color: acctCopiedHash === e.txHash ? 'oklch(0.55 0.14 140)' : 'oklch(0.5 0.14 68)',
+                                  cursor: 'pointer', userSelect: 'none',
+                                }}
+                                title="Click to copy"
+                              >
+                                {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…${e.txHash.slice(-6)}`}
+                              </span>
+                            ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
+                          { k: 'amt',   label: 'Amount',       w: '130px', align: 'right',
+                            render: (e: CashFlowEvent) => (
+                              <span className="mono" style={{
+                                fontSize: 13, fontWeight: 600,
+                                color: directionAmountColor(e.direction),
+                              }}>
+                                {directionAmountSign(e.direction)}${formatNumber(e.amountUsd, { decimals: 2 })} <span style={{ fontWeight: 400, color: 'var(--ink-3)', marginLeft: 4 }}>{e.currency}</span>
+                              </span>
+                            ) },
+                        ]} rows={finalEvents} />
+                      )}
+                    </>
+                  );
+                })()}
+                {acctView === 'journal'  && (() => {
+                  // ── Period window helper (same shape as Payables) ──
+                  const getPeriodWindow = () => {
+                    const yr = currentYear, mo = currentMonth, qtr = currentQuarter;
+                    if (taxPeriod === 'month')   return { start: new Date(yr, mo, 1).getTime(), end: new Date(yr, mo + 1, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(), end: new Date(yr, qtr * 3 + 3, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'year')    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) {
+                      return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() + 86_399_000 };
+                    }
+                    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                  };
+                  const { start: pStart, end: pEnd } = getPeriodWindow();
+                  const inPeriod = (msTimestamp: number) => msTimestamp >= pStart && msTimestamp <= pEnd;
+
+                  // ── Sanity-clamp garbage timestamps ──
+                  const MIN_VALID_MS = new Date('2020-01-01').getTime();
+                  const MAX_VALID_MS = new Date('9999-12-31').getTime();
+                  const sanitizeTs = (ms: number, fallbackMs: number): number => {
+                    return (ms < MIN_VALID_MS || ms > MAX_VALID_MS) ? fallbackMs : ms;
+                  };
+
+                  // ── Counterparty resolver — perspective-driven ──
+                  // Looks up the OTHER side of the PO from the active perspective.
+                  // (UserRole, Perspective types + role/perspective helpers now live at component body — Bug #4)
+                  const counterpartyName = (po: SavedPO): string => {
+                    const perspective = effectivePerspective(po);
+                    if (perspective === 'self') return 'Internal Transfer';
+                    if (perspective === 'buyer-side') {
+                      const v = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+                      return v?.company || v?.name || (po.vendorAddress ? po.vendorAddress.slice(0, 8) + '…' : 'Vendor');
+                    }
+                    const c = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+                    return c?.company || c?.name || (po.buyerAddress ? po.buyerAddress.slice(0, 8) + '…' : 'Buyer');
+                  };
+
+                  // ── Entry record shape ──
+                  type JournalEntry = {
+                    date: string;
+                    timestamp: number;          // ms
+                    po: SavedPO;
+                    event: string;
+                    debit: string;
+                    credit: string;
+                    amountUsd: number;          // for tile sums + table render
+                    currency: string;           // 'RLUSD' | 'XRP' | etc
+                    txHash: string;
+                    isMemo: boolean;
+                    isYield: boolean;
+                  };
+
+                  // ── Build entries for one PO ──
+                  // Perspective is fixed per buildEntries() call (locked to active apar lens for 'both' POs).
+                  const buildEntries = (po: SavedPO): JournalEntry[] => {
+                    const out: JournalEntry[] = [];
+                    const amountUsd = parseFloat(po.total) || 0;
+                    const currency = po.escrowCurrency || 'RLUSD';
+                    const poAudit = auditLog.filter(e => e.ref === po.issuanceId);
+                    const perspective = effectivePerspective(po);
+                    const isBuyerSide = perspective === 'buyer-side' || perspective === 'self';
+                    // 'self' (literal self-PO) renders with buyer-side accounts + neutral chip.
+                    // Future polish: swap account labels to "Intercompany" prefix for self-POs.
+
+                    const issuedTs = sanitizeTs(new Date(po.dateIssued).getTime(), Date.now());
+
+                    // Event 1 — PO Created (always, unless superseded/updated)
+                    out.push({
+                      date: po.dateIssued, timestamp: issuedTs, po,
+                      event: 'PO Created',
+                      debit:  isBuyerSide ? 'Purchase Commitment' : 'Sales Commitment',
+                      credit: isBuyerSide ? 'Accounts Payable'    : 'Deferred Revenue',
+                      amountUsd, currency, txHash: po.txHash || '',
+                      isMemo: true, isYield: false,
+                    });
+
+                    // Event 2 — PO Accepted
+                    const acceptEntry = poAudit.find(e => e.action === 'ACCEPT_PO');
+                    if (acceptEntry || ['accepted', 'funded', 'claimed'].includes(po.status)) {
+                      out.push({
+                        date: acceptEntry?.date || po.dateIssued,
+                        timestamp: sanitizeTs((acceptEntry?.timestamp ? acceptEntry.timestamp : issuedTs), issuedTs),
+                        po, event: 'PO Accepted',
+                        debit:  isBuyerSide ? 'AP Confirmed'        : 'AR Confirmed',
+                        credit: isBuyerSide ? 'Purchase Obligation' : 'Sales Obligation',
+                        amountUsd, currency, txHash: acceptEntry?.txHash || '',
+                        isMemo: true, isYield: false,
+                      });
+                    }
+
+                    // Event 3 — PO Superseded (if applicable)
+                    if (po.status === 'superseded') {
+                      const supersedeEntry = auditLog.find(e => e.action === 'UPDATE_PO' && e.payload?.oldRef === po.issuanceId);
+                      out.push({
+                        date: supersedeEntry?.date || po.dateIssued,
+                        timestamp: sanitizeTs((supersedeEntry?.timestamp ? supersedeEntry.timestamp : issuedTs), issuedTs),
+                        po, event: 'PO Superseded',
+                        debit:  isBuyerSide ? 'Purchase Commitment Reversal' : 'Sales Commitment Reversal',
+                        credit: isBuyerSide ? 'Accounts Payable Reversal'    : 'Deferred Revenue Reversal',
+                        amountUsd, currency, txHash: supersedeEntry?.txHash || '',
+                        isMemo: true, isYield: false,
+                      });
+                    }
+
+                    // Event 4 — Escrow Funded (HARD)
+                    const fundEntry = poAudit.find(e => e.action === 'FUND_ESCROW');
+                    if (fundEntry || ['funded', 'claimed'].includes(po.status)) {
+                      out.push({
+                        date: fundEntry?.date || po.dateIssued,
+                        timestamp: sanitizeTs((fundEntry?.timestamp ? fundEntry.timestamp : issuedTs), issuedTs),
+                        po, event: 'Escrow Funded',
+                        debit:  isBuyerSide ? 'Escrow Asset' : 'Accounts Receivable',
+                        credit: isBuyerSide ? `Cash · ${currency}` : 'Deferred Revenue',
+                        amountUsd, currency, txHash: fundEntry?.txHash || '',
+                        isMemo: false, isYield: false,
+                      });
+                    }
+
+                    // Event 5 — Escrow Claimed (HARD)
+                    const claimEntry = poAudit.find(e => e.action === 'CLAIM_PO');
+                    if (claimEntry || po.status === 'claimed') {
+                      out.push({
+                        date: claimEntry?.date || po.dateIssued,
+                        timestamp: sanitizeTs((claimEntry?.timestamp ? claimEntry.timestamp : issuedTs), issuedTs),
+                        po, event: 'Escrow Claimed',
+                        debit:  isBuyerSide ? 'Accounts Payable' : `Cash · ${currency}`,
+                        credit: isBuyerSide ? 'Escrow Asset'     : 'Accounts Receivable',
+                        amountUsd, currency, txHash: claimEntry?.txHash || '',
+                        isMemo: false, isYield: false,
+                      });
+                    }
+
+                    // Event 6 — PO Recalled
+                    const recallEntry = poAudit.find(e => e.action === 'RECALL_PO');
+                    if (recallEntry || po.status === 'recalled') {
+                      out.push({
+                        date: recallEntry?.date || po.dateIssued,
+                        timestamp: sanitizeTs((recallEntry?.timestamp ? recallEntry.timestamp : issuedTs), issuedTs),
+                        po, event: 'PO Recalled',
+                        debit:  isBuyerSide ? 'Accounts Payable' : 'Deferred Revenue Reversal',
+                        credit: isBuyerSide ? 'Purchase Commitment Reversal' : 'Sales Commitment',
+                        amountUsd, currency, txHash: recallEntry?.txHash || '',
+                        isMemo: true, isYield: false,
+                      });
+                    }
+
+                    // Event 7 — Yield Income (buyer-side perspective only, claimed POs with withdrawn position)
+                    // Yield always accrues to the buyer. Vendors don't see this entry.
+                    if (isBuyerSide && po.status === 'claimed') {
+                      const yp = yieldPositions.find(p => p.poIssuanceId === po.issuanceId && p.status === 'withdrawn');
+                      const netYield = parseFloat(yp?.netYieldToBuyer || '0');
+                      if (yp && netYield > 0) {
+                        const rawTs = yp.withdrawTimestamp ? yp.withdrawTimestamp : issuedTs;
+                        const ts = sanitizeTs(rawTs, issuedTs);
+                        out.push({
+                          date: yp.withdrawTimestamp ? new Date(ts).toLocaleDateString() : po.dateIssued,
+                          timestamp: ts, po,
+                          event: 'Yield Income',
+                          debit:  'Cash · RLUSD',
+                          credit: 'Yield Income',
+                          amountUsd: netYield, currency: 'RLUSD',
+                          txHash: yp.withdrawTxHash || '',
+                          isMemo: false, isYield: true,
+                        });
+                      }
+                    }
+                    return out;
+                  };
+
+                  // ── Build all entries for in-period, accounting-relevant POs (apar lens applied) ──
+                  // J3 lens filter: 'buyer'/'vendor' POs visible only in matching lens; 'both'/'internal' visible in both.
+                  // 'none' POs (defensive) are skipped entirely.
+                  const lensVisible = (po: SavedPO): boolean => {
+                    const role = userRoleOnPO(po);
+                    if (role === 'none')                                    return false;
+                    if (role === 'buyer'  && acctApar === 'receivable')     return false;
+                    if (role === 'vendor' && acctApar === 'payable')        return false;
+                    return true;
+                  };
+                  const journalEligible = savedPOs
+                    .filter(po => !['superseded', 'updated'].includes(po.status))
+                    .filter(lensVisible);
+                  const allEntries: JournalEntry[] = journalEligible
+                    .flatMap(buildEntries)
+                    .filter(e => inPeriod(e.timestamp));
+
+                  // ── Tile sums ──
+                  const totalDebits  = allEntries.reduce((s, e) => s + e.amountUsd, 0);
+                  const totalCredits = totalDebits; // mirrored entries — always balanced by construction
+                  const yieldEntries = allEntries.filter(e => e.isYield);
+                  const yieldIncomeTotal = yieldEntries.reduce((s, e) => s + e.amountUsd, 0);
+
+                  // ── Filter chips + search ──
+                  const FILTERS = ['All', 'Settled', 'Committed', 'Yield'] as const;
+                  const matchesFilter = (e: JournalEntry): boolean => {
+                    if (acctJournalFilter === 'All')       return true;
+                    if (acctJournalFilter === 'Settled')   return !e.isMemo;
+                    if (acctJournalFilter === 'Committed') return e.isMemo;
+                    if (acctJournalFilter === 'Yield')     return e.isYield;
+                    return true;
+                  };
+                  const q = acctJournalQuery.trim().toLowerCase();
+                  const visibleEntries = allEntries
+                    .filter(matchesFilter)
+                    .filter(e => !q ||
+                      e.po.poName.toLowerCase().includes(q) ||
+                      counterpartyName(e.po).toLowerCase().includes(q) ||
+                      e.event.toLowerCase().includes(q) ||
+                      e.debit.toLowerCase().includes(q) ||
+                      e.credit.toLowerCase().includes(q)
+                    )
+                    .sort((a, b) => b.timestamp - a.timestamp);
+
+                  // ── Tx hash copy handler ──
+                  const copyHash = (hash: string) => {
+                    if (!hash) return;
+                    navigator.clipboard?.writeText(hash).then(() => {
+                      setAcctCopiedHash(hash);
+                      setTimeout(() => setAcctCopiedHash(prev => prev === hash ? null : prev), 1500);
+                    }).catch(() => {});
+                  };
+                  const truncHash = (h: string) => h ? `${h.slice(0, 6)}…${h.slice(-4)}` : '—';
+
+                  return (
+                    <>
+                      <SummaryTiles tiles={[
+                        { label: 'Total Entries',
+                          value: formatNumber(allEntries.length, { decimals: 0 }),
+                          sub: `${journalEligible.length} POs in books`,
+                          chip: periodLabel, chipTone: 'neutral' },
+                        { label: 'Total Debits',
+                          value: `$${formatNumber(totalDebits, { decimals: 0 })}`,
+                          sub: `${allEntries.filter(e => !e.isMemo).length} settled · ${allEntries.filter(e => e.isMemo).length} committed`,
+                          chip: 'GAAP', chipTone: 'blue' },
+                        { label: 'Total Credits',
+                          value: `$${formatNumber(totalCredits, { decimals: 0 })}`,
+                          sub: 'Mirrored to debits',
+                          chip: 'GAAP', chipTone: 'blue' },
+                        { label: 'Yield Income',
+                          value: yieldIncomeTotal > 0
+                            ? `$${formatNumber(yieldIncomeTotal, { decimals: 2 })}`
+                            : '—',
+                          sub: yieldIncomeTotal > 0
+                            ? `${yieldEntries.length} position${yieldEntries.length === 1 ? '' : 's'} · realized`
+                            : 'No yield realized in period',
+                          chip: yieldIncomeTotal > 0 ? 'Realized' : 'No data',
+                          chipTone: yieldIncomeTotal > 0 ? 'green' : 'neutral',
+                          valueColor: yieldIncomeTotal > 0 ? 'oklch(0.55 0.14 140)' : undefined },
+                      ]}/>
+
+                      <FilterBar
+                        query={acctJournalQuery}
+                        setQuery={setAcctJournalQuery}
+                        filter={acctJournalFilter}
+                        setFilter={setAcctJournalFilter}
+                        filters={[...FILTERS]}
+                        placeholder="Search PO, counterparty, event, or account…"/>
+
+                      {visibleEntries.length === 0 ? (
+                        <Empty msg={
+                          allEntries.length === 0
+                            ? `No journal entries in ${periodLabel}.`
+                            : 'No entries match these filters.'
+                        }/>
+                      ) : (
+                        <Table cols={[
+                          { k: 'date', label: 'Date', w: '90px',
+                            render: r => (
+                              <span className="mono" style={{ fontSize: 12 }}>
+                                {new Date(r.timestamp).toLocaleDateString(undefined, { month: 'short', day: '2-digit' })}
+                              </span>
+                            ) },
+                          { k: 'po', label: 'PO', w: 'minmax(150px, 1.3fr)',
+                            render: r => (
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {r.po.poName}
+                                </div>
+                                <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {counterpartyName(r.po)}
+                                </div>
+                              </div>
+                            ) },
+                          { k: 'event', label: 'Event', w: 'minmax(140px, 1fr)',
+                            render: r => (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                                <span style={{ fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {r.event}
+                                </span>
+                                {r.isYield && <Chip tone="green">Yield</Chip>}
+                              </div>
+                            ) },
+                          { k: 'debit', label: 'Debit', w: 'minmax(130px, 1.1fr)',
+                            render: r => (
+                              <span style={{ fontSize: 12, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
+                                {r.debit}
+                              </span>
+                            ) },
+                          { k: 'credit', label: 'Credit', w: 'minmax(130px, 1.1fr)',
+                            render: r => (
+                              <span style={{ fontSize: 12, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
+                                {r.credit}
+                              </span>
+                            ) },
+                          { k: 'amount', label: 'Amount', w: '120px', align: 'right',
+                            render: r => (
+                              <div style={{ textAlign: 'right' }}>
+                                <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>
+                                  {r.currency === 'XRP' ? '' : '$'}{formatNumber(r.amountUsd, { decimals: r.isYield ? 2 : 0 })}
+                                </div>
+                                <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 2 }}>
+                                  {r.currency}
+                                </div>
+                              </div>
+                            ) },
+                          { k: 'type', label: 'Type', w: '95px',
+                            render: r => (
+                              <Chip tone={r.isMemo ? 'neutral' : (r.isYield ? 'green' : 'blue')}>
+                                {r.isMemo ? 'Committed' : 'Settled'}
+                              </Chip>
+                            ) },
+                          { k: 'tx', label: 'Tx', w: '120px',
+                            render: r => r.txHash ? (
+                              <button
+                                type="button"
+                                onClick={() => copyHash(r.txHash)}
+                                title="Click to copy full hash"
+                                style={{
+                                  fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
+                                  borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                  background: acctCopiedHash === r.txHash
+                                    ? 'oklch(0.92 0.1 140)'
+                                    : 'rgba(255, 248, 222, 0.5)',
+                                  color: acctCopiedHash === r.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
+                                  cursor: 'pointer', transition: 'all 0.15s ease',
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}>
+                                {acctCopiedHash === r.txHash ? '✓ Copied' : truncHash(r.txHash)}
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>
+                            ) },
+                        ]} rows={visibleEntries}/>
+                      )}
+                    </>
+                  );
+                })()}
+                {acctView === 'onchain'  && (() => {
+                  // ── Period window helper ──
+                  const getPeriodWindow = () => {
+                    const yr = currentYear, mo = currentMonth, qtr = currentQuarter;
+                    if (taxPeriod === 'month')   return { start: new Date(yr, mo, 1).getTime(), end: new Date(yr, mo + 1, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(), end: new Date(yr, qtr * 3 + 3, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'year')    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) {
+                      return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() + 86_399_000 };
+                    }
+                    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                  };
+                  const { start: pStart, end: pEnd } = getPeriodWindow();
+                  const inPeriodMs = (ms: number) => ms >= pStart && ms <= pEnd;
+
+                  // ── Sanity-clamp garbage timestamps ──
+                  // Devnet seed scripts occasionally produce timestamps far outside reasonable range
+                  // (year < 2020 or year > 9999). Fall back to the PO's issued date when garbage detected.
+                  const MIN_VALID_MS = new Date('2020-01-01').getTime();
+                  const MAX_VALID_MS = new Date('9999-12-31').getTime();
+                  const sanitizeTs = (ms: number, fallbackMs: number): number => {
+                    return (ms < MIN_VALID_MS || ms > MAX_VALID_MS) ? fallbackMs : ms;
+                  };
+                
+                  // ── Counterparty resolver — perspective-driven ──
+                  const counterpartyName = (po: SavedPO): string => {
+                    const perspective = effectivePerspective(po);
+                    if (perspective === 'self') return 'Internal Transfer';
+                    if (perspective === 'buyer-side') {
+                      const v = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+                      return v?.company || v?.name || (po.vendorAddress ? po.vendorAddress.slice(0, 8) + '…' : 'Vendor');
+                    }
+                    const c = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+                    return c?.company || c?.name || (po.buyerAddress ? po.buyerAddress.slice(0, 8) + '…' : 'Buyer');
+                  };
+                  const walletDisplay = (addr: string): string => {
+                    const v = linkedVendors.find(v => v.classicAddress === addr);
+                    if (v) return v.company || v.name || `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+                    const c = linkedCustomers.find(c => c.classicAddress === addr);
+                    if (c) return c.company || c.name || `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+                    return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+                  };
+
+                  // ── Timeline event shape ──
+                  type TimelineEvent = {
+                    timestamp: number;          // ms
+                    label: string;              // Display name: "Escrow Funded"
+                    mnemonic: string;           // Action mnemonic: "FUND_ESCROW"
+                    walletAddr: string;         // who initiated
+                    txHash: string;
+                    isSettled: boolean;         // 'Settled' (cash moved) vs 'Committed' (memo)
+                    isYield?: boolean;
+                    amountUsd?: number;
+                    currency?: string;
+                    tone: 'gold' | 'blue' | 'green' | 'neutral' | 'red';
+                  };
+
+                  // ── Build timeline for one PO ──
+                  const buildTimeline = (po: SavedPO): TimelineEvent[] => {
+                    const out: TimelineEvent[] = [];
+                    const poAudit = auditLog.filter(e => e.ref === po.issuanceId);
+                    const issuedTs = sanitizeTs(new Date(po.dateIssued).getTime(), Date.now());
+                    const amountUsd = parseFloat(po.total) || 0;
+                    const currency = po.escrowCurrency || 'RLUSD';
+
+                    // CREATE — by buyer (issuer of PO)
+                    out.push({
+                      timestamp: issuedTs,
+                      label: 'PO Created', mnemonic: 'CREATE_PO',
+                      walletAddr: po.buyerAddress, txHash: po.txHash || '',
+                      isSettled: false, tone: 'gold',
+                    });
+                    // ACCEPT — by vendor
+                    const accept = poAudit.find(e => e.action === 'ACCEPT_PO');
+                    if (accept || ['accepted', 'funded', 'claimed'].includes(po.status)) {
+                      out.push({
+                        timestamp: sanitizeTs(accept?.timestamp ? accept.timestamp : issuedTs, issuedTs),
+                        label: 'PO Accepted', mnemonic: 'ACCEPT_PO',
+                        walletAddr: po.vendorAddress, txHash: accept?.txHash || '',
+                        isSettled: false, tone: 'blue',
+                      });
+                    }
+                    // SUPERSEDE — UPDATE_PO from buyer wallet, mentions oldRef
+                    if (po.status === 'superseded') {
+                      const supersede = auditLog.find(e => e.action === 'UPDATE_PO' && e.payload?.oldRef === po.issuanceId);
+                      out.push({
+                        timestamp: sanitizeTs(supersede?.timestamp ? supersede.timestamp : issuedTs, issuedTs),
+                        label: 'PO Superseded', mnemonic: 'UPDATE_PO',
+                        walletAddr: po.buyerAddress, txHash: supersede?.txHash || '',
+                        isSettled: false, tone: 'neutral',
+                      });
+                    }
+                    // FUND_ESCROW — by buyer
+                    const fund = poAudit.find(e => e.action === 'FUND_ESCROW');
+                    if (fund || ['funded', 'claimed'].includes(po.status)) {
+                      out.push({
+                        timestamp: sanitizeTs(fund?.timestamp ? fund.timestamp : issuedTs, issuedTs),
+                        label: 'Escrow Funded', mnemonic: 'FUND_ESCROW',
+                        walletAddr: po.buyerAddress, txHash: fund?.txHash || '',
+                        isSettled: true, amountUsd, currency, tone: 'green',
+                      });
+                    }
+                    // CLAIM_PO — by vendor
+                    const claim = poAudit.find(e => e.action === 'CLAIM_PO');
+                    if (claim || po.status === 'claimed') {
+                      out.push({
+                        timestamp: sanitizeTs(claim?.timestamp ? claim.timestamp : issuedTs, issuedTs),
+                        label: 'Escrow Claimed', mnemonic: 'CLAIM_PO',
+                        walletAddr: po.vendorAddress, txHash: claim?.txHash || '',
+                        isSettled: true, amountUsd, currency, tone: 'green',
+                      });
+                    }
+                    // RECALL_PO — by buyer
+                    const recall = poAudit.find(e => e.action === 'RECALL_PO');
+                    if (recall || po.status === 'recalled') {
+                      out.push({
+                        timestamp: sanitizeTs(recall?.timestamp ? recall.timestamp : issuedTs, issuedTs),
+                        label: 'PO Recalled', mnemonic: 'RECALL_PO',
+                        walletAddr: po.buyerAddress, txHash: recall?.txHash || '',
+                        isSettled: false, tone: 'red',
+                      });
+                    }
+                    // YIELD_RETURN — synthesized from withdrawn yieldPosition (buyer-side only)
+                    const yieldPersp = effectivePerspective(po);
+                    if ((yieldPersp === 'buyer-side' || yieldPersp === 'self') && po.status === 'claimed') {
+                      const yp = yieldPositions.find(p => p.poIssuanceId === po.issuanceId && p.status === 'withdrawn');
+                      const netYield = parseFloat(yp?.netYieldToBuyer || '0');
+                      if (yp && netYield > 0) {
+                        out.push({
+                          timestamp: sanitizeTs(yp.withdrawTimestamp ? yp.withdrawTimestamp : issuedTs, issuedTs),
+                          label: 'Yield Returned', mnemonic: 'YIELD_RETURN',
+                          walletAddr: po.vendorAddress, txHash: yp.withdrawTxHash || '',
+                          isSettled: true, isYield: true,
+                          amountUsd: netYield, currency: 'RLUSD', tone: 'green',
+                        });
+                      }
+                    }
+                    return out.sort((a, b) => a.timestamp - b.timestamp);
+                  };
+
+                  // ── Lens-aware visibility (Model J3) ──
+                  const lensVisible = (po: SavedPO): boolean => {
+                    const role = userRoleOnPO(po);
+                    if (role === 'none')   return false;
+                    if (role === 'buyer')  return acctApar === 'payable';
+                    if (role === 'vendor') return acctApar === 'receivable';
+                    return true; // 'both' and 'internal' visible in both lenses
+                  };
+
+                  // ── Filter POs to the period (any event in window OR PO issued in window) ──
+                  const onchainEligible = savedPOs.filter(po =>
+                    !['superseded', 'updated'].includes(po.status) && lensVisible(po)
+                  );
+                  const allTimelinesByPO = new Map<string, TimelineEvent[]>();
+                  for (const po of onchainEligible) {
+                    const tl = buildTimeline(po);
+                    if (tl.some(e => inPeriodMs(e.timestamp))) {
+                      allTimelinesByPO.set(po.issuanceId, tl);
+                    }
+                  }
+
+                  // ── Tile metrics ──
+                  const allEventsInPeriod = Array.from(allTimelinesByPO.values())
+                    .flat()
+                    .filter(e => inPeriodMs(e.timestamp));
+                  const settledOnchain = allEventsInPeriod.filter(e => e.isSettled);
+                  const verifiedValueByCcy = new Map<string, number>();
+                  for (const e of settledOnchain) {
+                    if (e.amountUsd && e.currency) {
+                      verifiedValueByCcy.set(e.currency, (verifiedValueByCcy.get(e.currency) || 0) + e.amountUsd);
+                    }
+                  }
+                  const verifiedValueSorted = Array.from(verifiedValueByCcy.entries()).sort((a, b) => b[1] - a[1]);
+                  const verifiedHeadline = verifiedValueSorted.length === 0
+                    ? '$0'
+                    : `${verifiedValueSorted[0][0] === 'XRP' ? '' : '$'}${formatNumber(verifiedValueSorted[0][1], { decimals: 0 })}${verifiedValueSorted[0][0] === 'XRP' ? ' XRP' : ` ${verifiedValueSorted[0][0]}`}`;
+                  const verifiedSub = verifiedValueSorted.length > 1
+                    ? `+ ${verifiedValueSorted.slice(1).map(([c, v]) => `${c === 'XRP' ? '' : '$'}${formatNumber(v, { decimals: 0 })}${c === 'XRP' ? ' XRP' : ` ${c}`}`).join(' · ')}`
+                    : `${settledOnchain.length} settled event${settledOnchain.length === 1 ? '' : 's'}`;
+
+                  // Avg settlement time = avg days between FUND_ESCROW and CLAIM_PO for claimed POs.
+                  // Source: auditLog directly (bypass timeline clamp). Period filter on CLAIM event only.
+                  // Allow same-day settles (>= 0). Fall back to po.dateIssued only if a side is fully missing.
+                  const settlementDeltas: number[] = [];
+                  const claimedPOs = onchainEligible.filter(p => p.status === 'claimed');
+                  for (const po of claimedPOs) {
+                    const fundEntry  = auditLog.find(e => e.ref === po.issuanceId && e.action === 'FUND_ESCROW');
+                    const claimEntry = auditLog.find(e => e.ref === po.issuanceId && e.action === 'CLAIM_PO');
+                    if (!claimEntry) continue;  // can't compute without a claim timestamp
+                    const issuedMs   = sanitizeTs(new Date(po.dateIssued).getTime(), Date.now());
+                    const fundMs     = fundEntry  ? sanitizeTs(fundEntry.timestamp, issuedMs) : issuedMs;
+                    const claimMs    = sanitizeTs(claimEntry.timestamp, issuedMs);
+                    if (!inPeriodMs(claimMs)) continue;
+                    const deltaDays = (claimMs - fundMs) / 86_400_000;
+                    if (deltaDays < 0) continue;  // sanity guard against clock skew
+                    settlementDeltas.push(deltaDays);
+                  }
+                  const avgSettlement = settlementDeltas.length > 0
+                    ? settlementDeltas.reduce((s, d) => s + d, 0) / settlementDeltas.length
+                    : null;
+
+                  // Active escrows = POs currently in 'funded' status
+                  const activeEscrows = savedPOs.filter(p => p.status === 'funded');
+                  const activeEscrowValue = activeEscrows.reduce((s, p) => s + (parseFloat(p.total) || 0), 0);
+
+                  // ── Left rail: status-filter + search + sort ──
+                  const q = acctOnchainQuery.trim().toLowerCase();
+                  const matchesStatus = (po: SavedPO): boolean => {
+                    if (acctOnchainFilter === 'All') return true;
+                    if (acctOnchainFilter === 'Open')     return po.status === 'open';
+                    if (acctOnchainFilter === 'Accepted') return po.status === 'accepted';
+                    if (acctOnchainFilter === 'Funded')   return po.status === 'funded';
+                    if (acctOnchainFilter === 'Claimed')  return po.status === 'claimed';
+                    return true;
+                  };
+                  const railPOs = Array.from(allTimelinesByPO.entries())
+                    .map(([issuanceId, tl]) => {
+                      const po = onchainEligible.find(p => p.issuanceId === issuanceId)!;
+                      const lastTs = tl.reduce((m, e) => Math.max(m, e.timestamp), 0);
+                      return { po, tl, lastTs };
+                    })
+                    .filter(({ po }) => matchesStatus(po))
+                    .filter(({ po, tl }) => !q ||
+                      po.poName.toLowerCase().includes(q) ||
+                      counterpartyName(po).toLowerCase().includes(q) ||
+                      po.issuanceId.toLowerCase().includes(q) ||
+                      tl.some(e => e.txHash.toLowerCase().includes(q))
+                    )
+                    .sort((a, b) => b.lastTs - a.lastTs);
+
+                  // Auto-select first PO on entry (or when current selection drops out of railPOs)
+                  const selectedExists = acctOnchainSelectedPO &&
+                    railPOs.some(r => r.po.issuanceId === acctOnchainSelectedPO);
+                  const effectiveSelectedId = selectedExists
+                    ? acctOnchainSelectedPO!
+                    : (railPOs[0]?.po.issuanceId || null);
+                  if (effectiveSelectedId && effectiveSelectedId !== acctOnchainSelectedPO) {
+                    // Defer state update to next tick to avoid in-render warning
+                    setTimeout(() => setAcctOnchainSelectedPO(effectiveSelectedId), 0);
+                  }
+                  const selectedRail = railPOs.find(r => r.po.issuanceId === effectiveSelectedId) || null;
+
+                  // ── Tx hash copy handler ──
+                  const copyHash = (hash: string) => {
+                    if (!hash) return;
+                    navigator.clipboard?.writeText(hash).then(() => {
+                      setAcctCopiedHash(hash);
+                      setTimeout(() => setAcctCopiedHash(prev => prev === hash ? null : prev), 1500);
+                    }).catch(() => {});
+                  };
+                  const truncHash = (h: string) => h ? `${h.slice(0, 6)}…${h.slice(-4)}` : '—';
+                  const relativeTime = (ms: number): string => {
+                    const diff = Date.now() - ms;
+                    if (diff < 0) return 'just now';
+                    const d = Math.floor(diff / 86_400_000);
+                    if (d > 30) return `${Math.floor(d / 30)}mo ago`;
+                    if (d >= 1) return `${d}d ago`;
+                    const h = Math.floor(diff / 3_600_000);
+                    if (h >= 1) return `${h}h ago`;
+                    const m = Math.floor(diff / 60_000);
+                    if (m >= 1) return `${m}m ago`;
+                    return 'just now';
+                  };
+                  const toneColor: Record<TimelineEvent['tone'], string> = {
+                    'gold':    'oklch(0.72 0.15 78)',
+                    'blue':    'oklch(0.55 0.14 240)',
+                    'green':   'oklch(0.55 0.14 140)',
+                    'neutral': 'var(--ink-3)',
+                    'red':     'oklch(0.55 0.18 28)',
+                  };
+                  const statusChipTone: Record<SavedPO['status'], React.ComponentProps<typeof Chip>['tone']> = {
+                    'open': 'gold', 'accepted': 'blue', 'funded': 'green', 'claimed': 'green',
+                    'updated': 'neutral', 'recalled': 'red', 'superseded': 'neutral',
+                  };
+                  const statusChipLabel: Record<SavedPO['status'], string> = {
+                    'open': 'Open', 'accepted': 'Accepted', 'funded': 'Funded', 'claimed': '✓ Complete',
+                    'updated': 'Updated', 'recalled': 'Recalled', 'superseded': 'Superseded',
+                  };
+
+                  // ── Dynamic 6-dot tracker ──
+                  // Always 6 dots: CREATE / ACCEPT / UPDATE / FUND / CLAIM / RECALL
+                  // - 'filled':   event happened
+                  // - 'pending':  event hasn't happened but is still possible from current state
+                  // - 'na':       event is mutually exclusive with current state (greyed out smaller)
+                  // Rules:
+                  //  · UPDATE only possible if status === 'open' or 'accepted'
+                  //  · RECALL only possible if status !== 'claimed' and !== 'superseded'
+                  //  · Once funded, UPDATE is no longer possible (locked-in commitment)
+                  //  · Once claimed, RECALL is no longer possible (settlement is terminal)
+                  type DotKind = 'CREATE' | 'ACCEPT' | 'UPDATE' | 'FUND' | 'CLAIM' | 'RECALL';
+                  type DotState = 'filled' | 'pending' | 'na';
+                  const dotOrder: DotKind[] = ['CREATE', 'ACCEPT', 'UPDATE', 'FUND', 'CLAIM', 'RECALL'];
+                  const mnemonicToDot: Record<string, DotKind> = {
+                    'CREATE_PO': 'CREATE', 'ACCEPT_PO': 'ACCEPT', 'UPDATE_PO': 'UPDATE',
+                    'FUND_ESCROW': 'FUND', 'CLAIM_PO': 'CLAIM', 'RECALL_PO': 'RECALL',
+                  };
+                  const dotStates = (po: SavedPO, tl: TimelineEvent[]): { kind: DotKind; state: DotState }[] => {
+                    const filledKinds = new Set<DotKind>();
+                    for (const e of tl) {
+                      const k = mnemonicToDot[e.mnemonic];
+                      if (k) filledKinds.add(k);
+                    }
+                    const isUpdatePossible = po.status === 'open' || po.status === 'accepted';
+                    const isRecallPossible = po.status === 'open' || po.status === 'accepted';
+                    return dotOrder.map(kind => {
+                      if (filledKinds.has(kind)) return { kind, state: 'filled' };
+                      if (kind === 'UPDATE' && !isUpdatePossible) return { kind, state: 'na' };
+                      if (kind === 'RECALL' && !isRecallPossible) return { kind, state: 'na' };
+                      return { kind, state: 'pending' };
+                    });
+                  };
+                  const dotKindLabel: Record<DotKind, string> = {
+                    'CREATE': 'Created', 'ACCEPT': 'Accepted', 'UPDATE': 'Updated',
+                    'FUND': 'Funded', 'CLAIM': 'Claimed', 'RECALL': 'Recalled',
+                  };
+                  const filledCount = (po: SavedPO, tl: TimelineEvent[]) =>
+                    dotStates(po, tl).filter(d => d.state === 'filled').length;
+                  const possibleCount = (po: SavedPO, tl: TimelineEvent[]) =>
+                    dotStates(po, tl).filter(d => d.state !== 'na').length;
+
+                  return (
+                    <>
+                      <SummaryTiles tiles={[
+                        { label: 'Settled On-Chain',
+                          value: formatNumber(settledOnchain.length, { decimals: 0 }),
+                          sub: `${allEventsInPeriod.length} total event${allEventsInPeriod.length === 1 ? '' : 's'} (incl. committed)`,
+                          chip: periodLabel, chipTone: 'neutral' },
+                        { label: 'Total Verified Value',
+                          value: verifiedHeadline,
+                          sub: verifiedSub,
+                          chip: 'On-chain', chipTone: 'green' },
+                        { label: 'Avg Settlement Time',
+                          value: avgSettlement === null ? '—' : `${avgSettlement.toFixed(1)}d`,
+                          sub: avgSettlement === null
+                            ? 'No claims settled in period'
+                            : `Fund → Claim, ${settlementDeltas.length} sample${settlementDeltas.length === 1 ? '' : 's'}`,
+                          chip: avgSettlement === null
+                            ? 'No data'
+                            : avgSettlement <= 7 ? 'Fast' : avgSettlement <= 21 ? 'Normal' : 'Slow',
+                          chipTone: avgSettlement === null
+                            ? 'neutral'
+                            : avgSettlement <= 7 ? 'green' : avgSettlement <= 21 ? 'blue' : 'gold' },
+                        { label: 'Active Escrows',
+                          value: formatNumber(activeEscrows.length, { decimals: 0 }),
+                          sub: activeEscrows.length === 0
+                            ? 'No live escrows'
+                            : `$${formatNumber(activeEscrowValue, { decimals: 0 })} live across ${activeEscrows.length} PO${activeEscrows.length === 1 ? '' : 's'}`,
+                          chip: 'Live', chipTone: activeEscrows.length > 0 ? 'green' : 'neutral' },
+                      ]}/>
+
+                      {railPOs.length === 0 ? (
+                        <Empty msg={
+                          allTimelinesByPO.size === 0
+                            ? `No on-chain activity in ${periodLabel}.`
+                            : 'No POs match this search.'
+                        }/>
+                      ) : (
+                        <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, alignItems: 'start' }}>
+
+                          {/* ── LEFT RAIL — PO list ── */}
+                          <div className="etched" style={{
+                            borderRadius: 12, padding: 12, maxHeight: '64vh',
+                            display: 'flex', flexDirection: 'column', minWidth: 0, boxSizing: 'border-box',
+                          }}>
+                            <input
+                              value={acctOnchainQuery}
+                              onChange={e => setAcctOnchainQuery(e.target.value)}
+                              placeholder="Search PO, counterparty, or hash…"
+                              style={{
+                                width: '100%', padding: '8px 12px', fontSize: 12.5,
+                                borderRadius: 8, border: '1px solid rgba(180, 140, 60, 0.2)',
+                                background: 'rgba(255, 248, 222, 0.5)', color: 'var(--ink)',
+                                outline: 'none', fontFamily: 'inherit', marginBottom: 8,
+                                boxSizing: 'border-box', flexShrink: 0,
+                              }}
+                            />
+                            {/* Status filter pills — matches Overview tab pattern */}
+                            <div style={{
+                              display: 'flex', gap: 3, padding: 3, borderRadius: 9,
+                              background: 'rgba(180,140,60,0.08)', marginBottom: 10, flexShrink: 0,
+                            }}>
+                              {['All', 'Open', 'Accepted', 'Funded', 'Claimed'].map(f => (
+                                <button key={f} type="button" onClick={() => setAcctOnchainFilter(f)}
+                                  style={{
+                                    flex: 1, padding: '4px 6px', borderRadius: 6,
+                                    fontSize: 10.5, fontWeight: 600, border: 0, cursor: 'pointer',
+                                    fontFamily: 'inherit', whiteSpace: 'nowrap',
+                                    background: acctOnchainFilter === f ? '#2a1f08' : 'transparent',
+                                    color: acctOnchainFilter === f ? '#f9efd2' : 'var(--ink-2)',
+                                    transition: 'all 0.15s ease',
+                                  }}>
+                                  {f}
+                                </button>
+                              ))}
+                            </div>
+                            <div style={{ overflowY: 'auto', flex: 1, paddingRight: 4, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                              {railPOs.map(({ po, tl }) => {
+                                const isActive = po.issuanceId === effectiveSelectedId;
+                                const dots = dotStates(po, tl);
+                                const filled = filledCount(po, tl);
+                                const possible = possibleCount(po, tl);
+                                return (
+                                  <button key={po.issuanceId}
+                                    onClick={() => setAcctOnchainSelectedPO(po.issuanceId)}
+                                    style={{
+                                      textAlign: 'left', padding: '10px 12px', borderRadius: 10,
+                                      cursor: 'pointer',
+                                      background: isActive
+                                        ? 'rgba(255, 248, 220, 0.85)'
+                                        : 'rgba(255, 248, 222, 0.4)',
+                                      border: isActive
+                                        ? '1px solid rgba(180, 140, 60, 0.35)'
+                                        : '1px solid rgba(180, 140, 60, 0.12)',
+                                      borderLeft: isActive
+                                        ? '3px solid oklch(0.72 0.15 62)'
+                                        : '3px solid transparent',
+                                      paddingLeft: isActive ? 11 : 12,
+                                      transition: 'all 0.15s ease',
+                                      minWidth: 0, boxSizing: 'border-box',
+                                    }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+                                      <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+                                        {po.poName}
+                                      </div>
+                                      <Chip tone={statusChipTone[po.status]}>{statusChipLabel[po.status]}</Chip>
+                                    </div>
+                                    <div style={{ fontSize: 11, color: 'var(--ink-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 6 }}>
+                                      {counterpartyName(po)}
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 600 }}>
+                                        {(po.escrowCurrency || 'RLUSD') === 'XRP' ? '' : '$'}{formatNumber(parseFloat(po.total) || 0, { decimals: 0 })} <span style={{ color: 'var(--ink-3)', fontSize: 10 }}>{po.escrowCurrency || 'RLUSD'}</span>
+                                      </div>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                                        {dots.map((d, i) => (
+                                          <span key={i}
+                                            title={`${dotKindLabel[d.kind]}: ${d.state === 'filled' ? 'done' : d.state === 'na' ? 'n/a' : 'pending'}`}
+                                            style={{
+                                              width: d.state === 'na' ? 4 : 5,
+                                              height: d.state === 'na' ? 4 : 5,
+                                              borderRadius: '50%',
+                                              background:
+                                                d.state === 'filled' ? 'oklch(0.55 0.14 140)'
+                                                : d.state === 'na'  ? 'rgba(180,140,60,0.10)'
+                                                : 'rgba(180,140,60,0.28)',
+                                              opacity: d.state === 'na' ? 0.5 : 1,
+                                            }}/>
+                                        ))}
+                                        <span style={{ fontSize: 9.5, color: 'var(--ink-3)', marginLeft: 4 }}>
+                                          {filled}/{possible}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* ── RIGHT PANE — timeline ── */}
+                          <div className="etched" style={{ borderRadius: 12, padding: 20, minHeight: 400 }}>
+                            {!selectedRail ? (
+                              <div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>
+                                Select a PO from the left to see its on-chain chain of custody.
+                              </div>
+                            ) : (() => {
+                              const { po, tl } = selectedRail;
+                              return (
+                                <>
+                                  {/* PO header */}
+                                  <div style={{ marginBottom: 24, paddingBottom: 16, borderBottom: '1px solid rgba(180,140,60,0.12)' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
+                                      <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: '-0.02em', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {po.poName}
+                                      </div>
+                                      <Chip tone={statusChipTone[po.status]}>{statusChipLabel[po.status]}</Chip>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--ink-2)', flexWrap: 'wrap' }}>
+                                      <span>{counterpartyName(po)}</span>
+                                      <span style={{ color: 'var(--ink-3)' }}>·</span>
+                                      <span className="mono" style={{ fontWeight: 600 }}>
+                                        {(po.escrowCurrency || 'RLUSD') === 'XRP' ? '' : '$'}{formatNumber(parseFloat(po.total) || 0, { decimals: 0 })} {po.escrowCurrency || 'RLUSD'}
+                                      </span>
+                                      <span style={{ color: 'var(--ink-3)' }}>·</span>
+                                      <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                        {po.issuanceId.slice(0, 14)}…
+                                      </span>
                                     </div>
                                   </div>
 
-                                  {/* Details grid */}
-                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 20px', fontSize: '12px', marginBottom: '16px' }}>
-                                    {[
-                                      { label: 'Amount', value: `$${receipt.amount_usd} ${receipt.currency}` },
-                                      { label: 'Payment Terms', value: receipt.payment_terms || '—' },
-                                      { label: 'Escrow Sequence', value: receipt.escrow_sequence ? String(receipt.escrow_sequence) : '—' },
-                                      { label: 'Network', value: receipt.network },
-                                      { label: 'Buyer Wallet', value: receipt.buyer_wallet },
-                                      { label: 'Vendor Wallet', value: receipt.vendor_wallet },
-                                      { label: 'MPT Issuance ID', value: receipt.issuance_id },
-                                      { label: 'IPFS Document', value: receipt.ipfs_document ? receipt.ipfs_document.replace('ipfs://', '') : '—' },
-                                    ].map(({ label, value }) => (
-                                      <div key={label}>
-                                        <div style={{ color: '#999', fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold', marginBottom: '2px' }}>{label}</div>
-                                        <div style={{ color: '#333', fontFamily: ['Buyer Wallet','Vendor Wallet','MPT Issuance ID','IPFS Document'].includes(label) ? 'monospace' : 'inherit', fontSize: ['Buyer Wallet','Vendor Wallet','MPT Issuance ID','IPFS Document'].includes(label) ? '10px' : '12px', wordBreak: 'break-all' }}>
-                                          {value.length > 50 ? (
-                                            <span style={{ cursor: 'pointer' }} onClick={() => copyToClipboard(value, label)} title="Click to copy">
-                                              {value.slice(0, 18)}...{value.slice(-10)} 📋
+                                  {/* Timeline */}
+                                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 16 }}>
+                                    Chain of custody · {tl.length} event{tl.length === 1 ? '' : 's'}
+                                  </div>
+                                  <div style={{ position: 'relative', paddingLeft: 4 }}>
+                                    {tl.map((evt, i) => (
+                                      <div key={i} style={{ display: 'grid', gridTemplateColumns: '24px 1fr', columnGap: 14, paddingBottom: i < tl.length - 1 ? 20 : 0, position: 'relative' }}>
+                                        {/* Marker + connector line */}
+                                        <div style={{ position: 'relative', display: 'flex', justifyContent: 'center', paddingTop: 4 }}>
+                                          {i < tl.length - 1 && (
+                                            <div style={{
+                                              position: 'absolute', top: 18, bottom: -20, left: '50%',
+                                              width: 1, transform: 'translateX(-50%)',
+                                              background: 'rgba(180,140,60,0.22)',
+                                            }}/>
+                                          )}
+                                          <div style={{
+                                            width: 12, height: 12, borderRadius: '50%',
+                                            background: toneColor[evt.tone],
+                                            boxShadow: '0 0 0 3px var(--cream-bg, #fff8de)',
+                                            position: 'relative', zIndex: 1,
+                                          }}/>
+                                        </div>
+                                        {/* Body */}
+                                        <div>
+                                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                              <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: '-0.01em' }}>
+                                                {evt.label}
+                                              </div>
+                                              <Chip tone={evt.isYield ? 'green' : (evt.isSettled ? 'gold' : 'neutral')}>
+                                                {evt.isSettled ? 'Settled' : 'Committed'}
+                                              </Chip>
+                                              {evt.isYield && <Chip tone="green">Yield</Chip>}
+                                            </div>
+                                            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                                              {relativeTime(evt.timestamp)}
                                             </span>
-                                          ) : value}
+                                          </div>
+                                          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginBottom: 8 }}>
+                                            {new Date(evt.timestamp).toLocaleString(undefined, { month: 'short', day: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })} · {evt.mnemonic}
+                                          </div>
+                                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--ink-2)' }}>
+                                            <span>From: <strong style={{ fontWeight: 600 }}>{walletDisplay(evt.walletAddr)}</strong></span>
+                                            {evt.amountUsd !== undefined && evt.currency && (
+                                              <>
+                                                <span style={{ color: 'var(--ink-3)' }}>·</span>
+                                                <span className="mono" style={{ fontWeight: 600, color: evt.isYield ? 'oklch(0.55 0.14 140)' : 'var(--ink)' }}>
+                                                  {evt.isYield ? '+' : ''}{evt.currency === 'XRP' ? '' : '$'}{formatNumber(evt.amountUsd, { decimals: evt.isYield ? 2 : 0 })} {evt.currency}
+                                                </span>
+                                              </>
+                                            )}
+                                            {evt.txHash && (
+                                              <>
+                                                <span style={{ color: 'var(--ink-3)' }}>·</span>
+                                                <button type="button"
+                                                  onClick={() => copyHash(evt.txHash)}
+                                                  title="Click to copy full hash"
+                                                  style={{
+                                                    fontFamily: 'inherit', fontSize: 11, padding: '3px 8px',
+                                                    borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                                    background: acctCopiedHash === evt.txHash
+                                                      ? 'oklch(0.92 0.1 140)'
+                                                      : 'rgba(255, 248, 222, 0.5)',
+                                                    color: acctCopiedHash === evt.txHash
+                                                      ? 'oklch(0.35 0.12 140)'
+                                                      : 'var(--ink-2)',
+                                                    cursor: 'pointer', transition: 'all 0.15s ease',
+                                                    fontVariantNumeric: 'tabular-nums',
+                                                  }}>
+                                                  {acctCopiedHash === evt.txHash ? '✓ Copied' : truncHash(evt.txHash)}
+                                                </button>
+                                              </>
+                                            )}
+                                            {!evt.txHash && (
+                                              <>
+                                                <span style={{ color: 'var(--ink-3)' }}>·</span>
+                                                <span style={{ fontSize: 10.5, color: 'var(--ink-3)', fontStyle: 'italic' }}>
+                                                  No tx hash recorded
+                                                </span>
+                                              </>
+                                            )}
+                                          </div>
                                         </div>
                                       </div>
                                     ))}
                                   </div>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+                {acctView === 'fees'     && (() => {
+                  // ── Period window helper ──
+                  const getPeriodWindow = () => {
+                    const yr = currentYear, mo = currentMonth, qtr = currentQuarter;
+                    if (taxPeriod === 'month')   return { start: new Date(yr, mo, 1).getTime(), end: new Date(yr, mo + 1, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(), end: new Date(yr, qtr * 3 + 3, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'year')    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) {
+                      return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() + 86_399_000 };
+                    }
+                    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                  };
+                  const { start: pStart, end: pEnd } = getPeriodWindow();
+                  const inPeriodMs = (ms: number) => ms >= pStart && ms <= pEnd;
 
-                                  {/* Action buttons */}
-                                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                                    <button
-                                      onClick={() => {
-                                        navigator.clipboard.writeText(JSON.stringify(receipt, null, 2));
-                                        alert('Receipt JSON copied to clipboard.');
-                                      }}
-                                      style={{ padding: '7px 16px', borderRadius: '20px', border: '1.5px solid #D88F2E', background: 'white', color: '#D88F2E', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
-                                    >
-                                      📋 Copy Receipt JSON
-                                    </button>
-                                    <button
-                                      onClick={() => {
-                                        const json = JSON.stringify(receipt, null, 2);
-                                        const blob = new Blob([json], { type: 'application/json' });
-                                        const url = URL.createObjectURL(blob);
-                                        const a = document.createElement('a');
-                                        a.href = url;
-                                        a.download = `scpo-proof-${po.issuanceId.slice(0, 12)}-${po.dateIssued.replace(/\//g, '-')}.json`;
-                                        a.click();
-                                        URL.revokeObjectURL(url);
-                                      }}
-                                      style={{ padding: '7px 16px', borderRadius: '20px', border: 'none', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer' }}
-                                    >
-                                      ⬇️ Download JSON
-                                    </button>
-                                    {receipt.ipfs_document && (
-                                      <a
-                                        href={`https://ipfs.io/ipfs/${receipt.ipfs_document.replace('ipfs://', '')}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        style={{ padding: '7px 16px', borderRadius: '20px', border: '1.5px solid #8e44ad', color: '#8e44ad', fontSize: '12px', fontWeight: 'bold', textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
-                                      >
-                                        📄 View PO Document ↗
-                                      </a>
-                                    )}
-                                  </div>
-                                  <div style={{ fontSize: '10px', color: '#ccc', marginTop: '12px', textAlign: 'right' }}>
-                                    Generated {receipt.generated_at}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
+                  // ── Fee row shape (unified across raw auditLog + synthesized yield fees) ──
+                  type FeeSide = 'buyer' | 'seller';
+                  type FeeCategory = 'PO Creation' | 'Escrow Lock' | 'Inventory' | 'Financing';
+                  type FeeRow = {
+                    timestamp: number;
+                    poName: string;
+                    feeType: string;
+                    category: FeeCategory;
+                    side: FeeSide;
+                    amountUsd: number;
+                    currency: string;
+                    txHash: string;
+                  };
 
-          </div>
-        )}
+                  // ── Map raw feeType → category + side ──
+                  const categorize = (feeType: string): { category: FeeCategory; side: FeeSide } => {
+                    if (feeType === 'CREATE')                              return { category: 'PO Creation', side: 'buyer'  };
+                    if (feeType === 'ESCROW_LOCK')                         return { category: 'Escrow Lock', side: 'buyer'  };
+                    if (feeType === 'NFT_MINT' || feeType === 'UNIT_MINT') return { category: 'Inventory',   side: 'seller' };
+                    return { category: 'Financing', side: 'buyer' }; // YIELD_PLATFORM and future advance fees
+                  };
+
+                  // ── Parse fee amount string ($1.00, $0.45 (0.05% of $X), 1.00 RLUSD) ──
+                  const parseFeeAmount = (raw: string): number => {
+                    if (!raw) return 0;
+                    const m = raw.match(/\$?([0-9]+(?:\.[0-9]+)?)/);
+                    return m ? parseFloat(m[1]) : 0;
+                  };
+
+                  // ── Source 1: auditLog FEE_PAYMENT entries paid by user wallets ──
+                  const rawFees: FeeRow[] = auditLog
+                    .filter(e => e.action === 'FEE_PAYMENT' && userAddrs.has(e.account))
+                    .map(e => {
+                      const feeType = e.payload?.feeType || 'UNKNOWN';
+                      const { category, side } = categorize(feeType);
+                      return {
+                        timestamp: e.timestamp,
+                        poName: e.payload?.poName || '—',
+                        feeType,
+                        category,
+                        side,
+                        amountUsd: parseFeeAmount(e.payload?.amount || '0'),
+                        currency: 'USD',
+                        txHash: e.txHash,
+                      };
+                    });
+
+                  // ── Source 2: synthesized yield platform fees from withdrawn yieldPositions (buyer side) ──
+                  const yieldFees: FeeRow[] = yieldPositions
+                    .filter(yp => yp.status === 'withdrawn')
+                    .map(yp => {
+                      const po = savedPOs.find(p => p.issuanceId === yp.poIssuanceId);
+                      if (!po) return null;
+                      if (!userAddrs.has(po.buyerAddress)) return null;
+                      const scFee = parseFloat(yp.scFeeAtClaim || '0');
+                      if (scFee <= 0) return null;
+                      return {
+                        timestamp: yp.withdrawTimestamp || 0,
+                        poName: po.poName,
+                        feeType: 'YIELD_PLATFORM',
+                        category: 'Financing' as FeeCategory,
+                        side: 'buyer' as FeeSide,
+                        amountUsd: scFee,
+                        currency: 'USD',
+                        txHash: yp.withdrawTxHash || '',
+                      };
+                    })
+                    .filter((r): r is FeeRow => r !== null);
+
+                  const allFees: FeeRow[] = [...rawFees, ...yieldFees];
+
+                  // ── Lens visibility (Model C — wallet-level fee side, not PO-level role) ──
+                  const activeSide: FeeSide = acctApar === 'payable' ? 'buyer' : 'seller';
+                  const lensFees = allFees.filter(r => r.side === activeSide);
+
+                  // ── Tile sums (lens-aware lifetime) ──
+                  const sumByCategory = (cat: FeeCategory) =>
+                    lensFees.filter(r => r.category === cat).reduce((s, r) => s + r.amountUsd, 0);
+                  const poCreationSum = sumByCategory('PO Creation');
+                  const escrowLockSum = sumByCategory('Escrow Lock');
+                  const inventorySum  = sumByCategory('Inventory');
+                  const financingSum  = sumByCategory('Financing');
+                  const totalSum      = poCreationSum + escrowLockSum + inventorySum + financingSum;
+
+                  // ── This Period sum (lens-aware + period-filtered) ──
+                  const periodSum = lensFees
+                    .filter(r => inPeriodMs(r.timestamp))
+                    .reduce((s, r) => s + r.amountUsd, 0);
+
+                  // ── Filter chips + search ──
+                  const q = acctFeesQuery.trim().toLowerCase();
+                  const filteredRows = lensFees
+                    .filter(r => acctFeesFilter === 'All' || r.category === acctFeesFilter)
+                    .filter(r => !q ||
+                      r.poName.toLowerCase().includes(q) ||
+                      r.txHash.toLowerCase().includes(q) ||
+                      r.feeType.toLowerCase().includes(q)
+                    )
+                    .sort((a, b) => b.timestamp - a.timestamp);
+
+                  // Note: dual-profile users may need to switch modes to see all fees (Bug #8).
+                  const emptyMsg = activeSide === 'buyer'
+                    ? 'No buyer-side platform fees from your active wallet in this period. Switch to Customer mode to view buyer-side fees if you operate dual profiles.'
+                    : 'No seller-side platform fees from your active wallet in this period. Switch to Vendor mode to view seller-side fees if you operate dual profiles.';
+
+                  return (
+                    <>
+                      <SummaryTiles tiles={[
+                        { label: 'PO Creation Fees',        value: `$${formatNumber(poCreationSum, { decimals: 2 })}`, sub: 'Buyer · $1 flat',                                            chip: 'Buyer',  chipTone: activeSide === 'buyer'  ? 'gold' : 'neutral' },
+                        { label: 'Escrow Lock Fees',        value: `$${formatNumber(escrowLockSum, { decimals: 2 })}`, sub: 'Buyer · 0.05% of PO',                                        chip: 'Buyer',  chipTone: activeSide === 'buyer'  ? 'gold' : 'neutral' },
+                        { label: 'Inventory Fees',          value: `$${formatNumber(inventorySum, { decimals: 2 })}`,  sub: 'Seller · $1/SKU + $0.01/unit',                               chip: 'Seller', chipTone: activeSide === 'seller' ? 'gold' : 'neutral' },
+                        { label: 'Financing Platform Fees', value: `$${formatNumber(financingSum, { decimals: 2 })}`,  sub: activeSide === 'buyer' ? 'Buyer · yield platform fee' : 'Seller · advance fees coming soon', chip: activeSide === 'buyer' ? 'Buyer' : 'Seller', chipTone: 'neutral' },
+                        { label: 'Total Platform Fees',     value: `$${formatNumber(totalSum, { decimals: 2 })}`,      sub: `${activeSide === 'buyer' ? 'Buyer' : 'Seller'} lifetime`,    chip: 'All-time', chipTone: 'blue' },
+                        { label: 'Fees This Period',        value: `$${formatNumber(periodSum, { decimals: 2 })}`,     sub: taxPeriod === 'custom' ? 'Custom range' : `Active ${taxPeriod}`, chip: 'Period',   chipTone: 'gold' },
+                      ]}/>
+
+                      <FilterBar
+                        query={acctFeesQuery} setQuery={setAcctFeesQuery}
+                        filter={acctFeesFilter} setFilter={setAcctFeesFilter}
+                        filters={['All', 'PO Creation', 'Escrow Lock', 'Inventory', 'Financing']}
+                        placeholder="Search PO, fee type, or tx hash…"
+                      />
+
+                      {filteredRows.length === 0 ? (
+                        <Empty msg={emptyMsg} />
+                      ) : (
+                        <Table cols={[
+                          { k: 'date',  label: 'Date',     w: '90px',  render: (r: FeeRow) => <span className="mono" style={{ fontSize: 12 }}>{new Date(r.timestamp).toLocaleDateString()}</span> },
+                          { k: 'po',    label: 'PO',       w: '180px', render: (r: FeeRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.poName}</span> },
+                          { k: 'cat',   label: 'Fee Type', w: '140px', render: (r: FeeRow) => <span style={{ fontSize: 13 }}>{r.feeType}</span> },
+                          { k: 'amt',   label: 'Amount',   w: '110px', render: (r: FeeRow) => <span className="mono" style={{ fontSize: 13 }}>${formatNumber(r.amountUsd, { decimals: 2 })}</span> },
+                          { k: 'ccy',   label: 'Currency', w: '70px',  render: (r: FeeRow) => <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{r.currency}</span> },
+                          { k: 'tx',    label: 'Tx Hash',  w: '120px', render: (r: FeeRow) => r.txHash ? (
+                            <button
+                              onClick={() => { navigator.clipboard.writeText(r.txHash); setAcctCopiedHash(r.txHash); setTimeout(() => setAcctCopiedHash(null), 1500); }}
+                              className="mono"
+                              style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--line)', background: acctCopiedHash === r.txHash ? 'var(--gold-soft)' : 'transparent', cursor: 'pointer' }}
+                            >
+                              {acctCopiedHash === r.txHash ? 'Copied!' : `${r.txHash.slice(0, 8)}…`}
+                            </button>
+                          ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
+                        ]} rows={filteredRows}/>
+                      )}
+                    </>
+                  );
+                })()}
+                {acctView === 'yield'    && (() => {
+                  // ── Lens guard: yield income lives in Payable lens only (Q5 — accounting consistency) ──
+                  if (acctApar === 'receivable') {
+                    return <Empty msg="Yield income only appears in Payable lens — flip APAR to view." />;
+                  }
+
+                  // ── Period window helper ──
+                  const getPeriodWindow = () => {
+                    const yr = currentYear, mo = currentMonth, qtr = currentQuarter;
+                    if (taxPeriod === 'month')   return { start: new Date(yr, mo, 1).getTime(), end: new Date(yr, mo + 1, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(), end: new Date(yr, qtr * 3 + 3, 0, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'year')    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                    if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) {
+                      return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() + 86_399_000 };
+                    }
+                    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+                  };
+                  const { start: pStart, end: pEnd } = getPeriodWindow();
+                  const inPeriodMs = (ms: number) => ms >= pStart && ms <= pEnd;
+
+                  // ── YTD window (current calendar year) ──
+                  const ytdStart = new Date(currentYear, 0, 1).getTime();
+                  const ytdEnd   = new Date(currentYear, 11, 31, 23, 59, 59).getTime();
+                  const inYtdMs  = (ms: number) => ms >= ytdStart && ms <= ytdEnd;
+
+                  // ── Realized yield row shape ──
+                  type YieldRow = {
+                    timestamp: number;
+                    po: SavedPO;
+                    poName: string;
+                    principal: number;
+                    grossYield: number;
+                    platformFee: number;
+                    partnerFee: number;
+                    netYield: number;
+                    apr: number;
+                    txHash: string;
+                  };
+
+                  // ── Build rows from withdrawn yieldPositions on user's buyer-side POs ──
+                  const allRows: YieldRow[] = yieldPositions
+                    .filter(yp => yp.status === 'withdrawn')
+                    .map(yp => {
+                      const po = savedPOs.find(p => p.issuanceId === yp.poIssuanceId);
+                      if (!po) return null;
+                      if (!userAddrs.has(po.buyerAddress)) return null;
+                      return {
+                        timestamp: yp.withdrawTimestamp || 0,
+                        po,
+                        poName: po.poName,
+                        principal:   parseFloat(yp.principalAmount     || '0'),
+                        grossYield:  parseFloat(yp.grossYieldAtClaim   || '0'),
+                        platformFee: parseFloat(yp.scFeeAtClaim        || '0'),
+                        partnerFee:  parseFloat(yp.partnerFeeAtClaim   || '0'),
+                        netYield:    parseFloat(yp.netYieldToBuyer     || '0'),
+                        apr:         yp.lockedAPR || 0,
+                        txHash:      yp.withdrawTxHash || '',
+                      };
+                    })
+                    .filter((r): r is YieldRow => r !== null);
+
+                  // ── Tile metrics ──
+                  const ytdRows    = allRows.filter(r => inYtdMs(r.timestamp));
+                  const periodRows = allRows.filter(r => inPeriodMs(r.timestamp));
+
+                  const ytdNetYield     = ytdRows.reduce((s, r) => s + r.netYield, 0);
+                  const periodNetYield  = periodRows.reduce((s, r) => s + r.netYield, 0);
+
+                  // Weighted avg APY across all closed positions (weight by principal)
+                  const totalPrincipal  = allRows.reduce((s, r) => s + r.principal, 0);
+                  const weightedAprSum  = allRows.reduce((s, r) => s + (r.apr * r.principal), 0);
+                  const avgApr          = totalPrincipal > 0 ? weightedAprSum / totalPrincipal : 0;
+
+                  const closedCount     = allRows.length;
+
+                  // ── Search filter ──
+                  const q = acctYieldQuery.trim().toLowerCase();
+                  const filteredRows = (q === '' ? allRows : allRows.filter(r =>
+                    r.poName.toLowerCase().includes(q) ||
+                    r.txHash.toLowerCase().includes(q)
+                  ))
+                  .sort((a, b) => b.timestamp - a.timestamp);
+
+                  const emptyMsg = closedCount === 0
+                    ? 'No realized yield yet — closed yield positions will appear here once escrows are claimed.'
+                    : 'No yield realized in this period.';
+
+                  return (
+                    <>
+                      <SummaryTiles tiles={[
+                        { label: 'Net YTD Realized',     value: `$${formatNumber(ytdNetYield, { decimals: 2 })}`,    sub: `${currentYear} calendar year`,                                  chip: 'YTD',    chipTone: 'green' },
+                        { label: 'This Period Realized', value: `$${formatNumber(periodNetYield, { decimals: 2 })}`, sub: taxPeriod === 'custom' ? 'Custom range' : `Active ${taxPeriod}`, chip: 'Period', chipTone: 'gold' },
+                        { label: 'Avg APY (Closed)',     value: `${(avgApr * 100).toFixed(2)}%`,                     sub: 'Principal-weighted',                                            chip: 'APY',    chipTone: 'blue' },
+                        { label: 'Closed Positions',     value: `${closedCount}`,                                    sub: closedCount === 1 ? 'realized' : 'realized total',               chip: 'Count',  chipTone: 'neutral' },
+                      ]}/>
+
+                      <FilterBar
+                        query={acctYieldQuery} setQuery={setAcctYieldQuery}
+                        placeholder="Search PO or tx hash…"
+                        hideFilters
+                      />
+
+                      {filteredRows.length === 0 ? (
+                        <Empty msg={emptyMsg} />
+                      ) : (
+                        <Table cols={[
+                          { k: 'date',      label: 'Date',         w: '85px',  render: (r: YieldRow) => <span className="mono" style={{ fontSize: 12 }}>{new Date(r.timestamp).toLocaleDateString()}</span> },
+                          { k: 'po',        label: 'PO',           w: '160px', render: (r: YieldRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.poName}</span> },
+                          { k: 'principal', label: 'Principal',    w: '100px', align: 'right', render: (r: YieldRow) => <span className="mono" style={{ fontSize: 13 }}>${formatNumber(r.principal, { decimals: 2 })}</span> },
+                          { k: 'gross',     label: 'Gross Yield',  w: '100px', align: 'right', render: (r: YieldRow) => <span className="mono" style={{ fontSize: 13, color: 'oklch(0.55 0.14 140)' }}>${formatNumber(r.grossYield, { decimals: 2 })}</span> },
+                          { k: 'plat',      label: 'Platform Fee', w: '100px', align: 'right', render: (r: YieldRow) => <span className="mono" style={{ fontSize: 12, color: 'var(--ink-3)' }}>−${formatNumber(r.platformFee, { decimals: 2 })}</span> },
+                          { k: 'partner',   label: 'Partner Fee',  w: '100px', align: 'right', render: (r: YieldRow) => <span className="mono" style={{ fontSize: 12, color: 'var(--ink-3)' }}>−${formatNumber(r.partnerFee, { decimals: 2 })}</span> },
+                          { k: 'net',       label: 'Net Yield',    w: '100px', align: 'right', render: (r: YieldRow) => <span className="mono" style={{ fontSize: 13, fontWeight: 600, color: 'oklch(0.55 0.14 140)' }}>+${formatNumber(r.netYield, { decimals: 2 })}</span> },
+                          { k: 'tx',        label: 'Tx Hash',      w: '110px', render: (r: YieldRow) => r.txHash ? (
+                            <button
+                              onClick={() => { navigator.clipboard.writeText(r.txHash); setAcctCopiedHash(r.txHash); setTimeout(() => setAcctCopiedHash(null), 1500); }}
+                              className="mono"
+                              style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--line)', background: acctCopiedHash === r.txHash ? 'var(--gold-soft)' : 'transparent', cursor: 'pointer' }}
+                            >
+                              {acctCopiedHash === r.txHash ? 'Copied!' : `${r.txHash.slice(0, 8)}…`}
+                            </button>
+                          ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
+                        ]} rows={filteredRows}/>
+                      )}
+                    </>
+                  );
+                })()}
+                {acctView === 'tax'      && <Empty msg="1099 Tax Data view — landing in Phase 2"/>}
+
+              </Card>
+            </Page>
+          );
+        })()}
         {activeTab === 'admin' && (
           <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
             <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '20px' }}>Admin</h2>

@@ -566,7 +566,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
     display: 'flex', gap: 12, alignItems: 'center',
     marginBottom: 16, flexWrap: 'wrap',
   }}>
-    <div style={{ flex: '1 1 240px', minWidth: 200 }}>
+    <div style={{ flex: '1 1 240px', minWidth: 180, maxWidth: 360 }}>
       <input
         value={query}
         onChange={e => setQuery(e.target.value)}
@@ -586,7 +586,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
       />
     </div>
     {!hideFilters && filters.length > 0 && setFilter && (
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0, marginLeft: 'auto' }}>
         {filters.map(f => (
           <button key={f} onClick={() => setFilter(f)}
             style={{
