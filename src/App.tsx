@@ -993,6 +993,20 @@ export default function App() {
   const [acctFeesQuery,  setAcctFeesQuery]  = useState<string>('');
   const [acctFeesFilter, setAcctFeesFilter] = useState<string>('All');
   const [acctYieldQuery, setAcctYieldQuery] = useState<string>('');
+  const [acctTaxQuery,   setAcctTaxQuery]   = useState<string>('');
+  const [acctTaxFilter,  setAcctTaxFilter]  = useState<string>('All');
+  const [acctExportOpen, setAcctExportOpen] = useState<boolean>(false);
+  // Click-outside handler for the Accounting export dropdown menu (Patch 2.5-E1).
+  useEffect(() => {
+    if (!acctExportOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!(e.target as Element)?.closest('[data-acct-export]')) {
+        setAcctExportOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [acctExportOpen]);
 
   // ── Inventory Financing — Counterparty selector + Configure card state ─────
   // TODO: replace LENDERS placeholder with live lender registry once partner directory ships on-chain.
@@ -1142,6 +1156,593 @@ export default function App() {
     if (role === 'vendor')   return 'vendor-side';
     if (role === 'both')     return acctApar === 'payable' ? 'buyer-side' : 'vendor-side';
     return 'buyer-side';
+  };
+
+  // ── CSV export helpers (Phase 2.5 — DownloadStrip foundation) ──
+  // Pure helpers shared by all per-view CSV builders. Mirrors existing inventory-
+  // template exporter pattern at ~L10764. Quote-wraps every cell, escapes inner
+  // double-quotes by doubling, builds blob + object URL, revokes after click.
+  const csvEscape = (v: any): string => {
+    const s = (v === null || v === undefined) ? '' : String(v);
+    return `"${s.replace(/"/g, '""')}"`;
+  };
+  const toCSV = (rows: Record<string, any>[], columns: string[]): string => {
+    const headerRow = columns.join(',');
+    const dataRows  = rows.map(r => columns.map(c => csvEscape(r[c])).join(','));
+    return [headerRow, ...dataRows].join('\n') + '\n';
+  };
+  const downloadCSV = (filename: string, csv: string): void => {
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+  };
+
+  // ── Tax-period window helper (shared across CSV builders) ──
+  const getCurrentPeriodWindow = (): { start: number; end: number } => {
+    const now = new Date();
+    const yr  = now.getFullYear();
+    const mo  = now.getMonth();
+    const qtr = Math.floor(mo / 3);
+    if (taxPeriod === 'month')   return { start: new Date(yr, mo, 1).getTime(),       end: new Date(yr, mo + 1, 0, 23, 59, 59).getTime() };
+    if (taxPeriod === 'quarter') return { start: new Date(yr, qtr * 3, 1).getTime(),  end: new Date(yr, qtr * 3 + 3, 0, 23, 59, 59).getTime() };
+    if (taxPeriod === 'year')    return { start: new Date(yr, 0, 1).getTime(),        end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+    if (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd) {
+      return { start: new Date(taxCustomStart).getTime(), end: new Date(taxCustomEnd).getTime() + 86_399_000 };
+    }
+    return { start: new Date(yr, 0, 1).getTime(), end: new Date(yr, 11, 31, 23, 59, 59).getTime() };
+  };
+
+  // ── Payables CSV builder (lens-aware, period-aware) ──
+  const buildPayablesCSV = (): string => {
+    const { start: pStart, end: pEnd } = getCurrentPeriodWindow();
+    const inPeriod = (dateStr: string) => {
+      const t = new Date(dateStr).getTime();
+      return t >= pStart && t <= pEnd;
+    };
+    const lensVisible = (po: SavedPO) => {
+      const role = userRoleOnPO(po);
+      if (role === 'none')   return false;
+      if (role === 'buyer')  return acctApar === 'payable';
+      if (role === 'vendor') return acctApar === 'receivable';
+      return true;
+    };
+    const accountingRelevant = (s: SavedPO['status']) =>
+      s === 'open' || s === 'accepted' || s === 'funded' || s === 'claimed';
+    const counterpartyOf = (po: SavedPO): string => {
+      const persp = effectivePerspective(po);
+      if (persp === 'self') return 'Internal Transfer';
+      if (persp === 'buyer-side') {
+        const v = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+        return v?.company || v?.name || po.vendorAddress;
+      }
+      const c = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+      return c?.company || c?.name || po.buyerAddress;
+    };
+
+    const rows = savedPOs
+      .filter(po => accountingRelevant(po.status) && inPeriod(po.dateIssued) && lensVisible(po))
+      .map(po => {
+        const issued = new Date(po.dateIssued);
+        const days = parseInt((po.paymentTerms || '0').split(' ')[0], 10) || 0;
+        const dueDate = new Date(issued.getTime() + days * 86_400_000);
+        const daysPastDue = Math.floor((Date.now() - dueDate.getTime()) / 86_400_000);
+        const bucket = daysPastDue > 60 ? '90+' : daysPastDue > 30 ? '60' : daysPastDue > 0 ? '30' : 'current';
+        return {
+          po_id: po.issuanceId,
+          po_name: po.poName,
+          buyer_address: po.buyerAddress,
+          vendor_address: po.vendorAddress,
+          counterparty_name: counterpartyOf(po),
+          status: po.status,
+          issued_date: issued.toISOString().slice(0, 10),
+          due_date: dueDate.toISOString().slice(0, 10),
+          payment_terms: po.paymentTerms || '',
+          amount: parseFloat(po.total) || 0,
+          currency: po.escrowCurrency || 'RLUSD',
+          days_past_due: daysPastDue,
+          aging_bucket: bucket,
+        };
+      });
+    return toCSV(rows, [
+      'po_id','po_name','buyer_address','vendor_address','counterparty_name','status',
+      'issued_date','due_date','payment_terms','amount','currency','days_past_due','aging_bucket',
+    ]);
+  };
+
+  // ── Escrow Yield CSV builder (buyer-side only, withdrawn positions) ──
+  const buildYieldCSV = (): string => {
+    const rows = yieldPositions
+      .filter(yp => yp.status === 'withdrawn')
+      .map(yp => {
+        const po = savedPOs.find(p => p.issuanceId === yp.poIssuanceId);
+        if (!po) return null;
+        if (!userAddrs.has(po.buyerAddress)) return null;
+        return {
+          date: new Date(yp.withdrawTimestamp || 0).toISOString().slice(0, 10),
+          po_id: po.issuanceId,
+          po_name: po.poName,
+          principal:    parseFloat(yp.principalAmount   || '0'),
+          gross_yield:  parseFloat(yp.grossYieldAtClaim || '0'),
+          platform_fee: parseFloat(yp.scFeeAtClaim      || '0'),
+          partner_fee:  parseFloat(yp.partnerFeeAtClaim || '0'),
+          net_yield:    parseFloat(yp.netYieldToBuyer   || '0'),
+          apr: yp.lockedAPR || 0,
+          currency: 'USD',
+          tx_hash: yp.withdrawTxHash || '',
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return toCSV(rows, [
+      'date','po_id','po_name','principal','gross_yield','platform_fee','partner_fee',
+      'net_yield','apr','currency','tx_hash',
+    ]);
+  };
+
+  // ── 1099 Data CSV builder (per-vendor rollup, $600 threshold) ──
+  const build1099CSV = (): string => {
+    const taxYearForView = (taxPeriod === 'custom' && taxCustomStart)
+      ? new Date(taxCustomStart).getFullYear()
+      : new Date().getFullYear();
+    const yearStart = new Date(taxYearForView, 0, 1).getTime();
+    const yearEnd   = new Date(taxYearForView, 11, 31, 23, 59, 59).getTime();
+    const inTaxYear = (ms: number) => ms >= yearStart && ms <= yearEnd;
+
+    const aggMap = new Map<string, { total: number; poIds: Set<string> }>();
+    for (const entry of auditLog) {
+      if (entry.action !== 'CLAIM_PO') continue;
+      if (!inTaxYear(entry.timestamp)) continue;
+      const po = savedPOs.find(p => p.issuanceId === entry.ref);
+      if (!po) continue;
+      if (!userAddrs.has(po.buyerAddress)) continue;
+      if (po.buyerAddress === po.vendorAddress) continue;
+      const amt = parseFloat(po.total) || 0;
+      if (amt <= 0) continue;
+      const cur = aggMap.get(po.vendorAddress) || { total: 0, poIds: new Set<string>() };
+      cur.total += amt;
+      cur.poIds.add(po.issuanceId);
+      aggMap.set(po.vendorAddress, cur);
+    }
+
+    const rows = Array.from(aggMap.entries())
+      .map(([addr, agg]) => {
+        const vendor = linkedVendors.find(v => v.classicAddress === addr);
+        return {
+          tax_year: taxYearForView,
+          vendor_name: vendor?.company || vendor?.name || '',
+          vendor_address: addr,
+          ytd_payments: agg.total,
+          po_count: agg.poIds.size,
+          is_reportable: agg.total >= 600 ? 'TRUE' : 'FALSE',
+        };
+      })
+      .sort((a, b) => b.ytd_payments - a.ytd_payments);
+    return toCSV(rows, [
+      'tax_year','vendor_name','vendor_address','ytd_payments','po_count','is_reportable',
+    ]);
+  };
+
+  // ── Cash Flow CSV builder (lens-aware, pure cash basis) ──
+  // Emits only events that move cash for the active perspective:
+  //   buyer-side: FUND_ESCROW (out), yield (in)
+  //   vendor-side: CLAIM_PO (in)
+  //   self (internal transfer): both directions tagged 'internal'
+  const buildCashFlowCSV = (): string => {
+    const { start: pStart, end: pEnd } = getCurrentPeriodWindow();
+    const inPeriodMs = (ms: number) => ms >= pStart && ms <= pEnd;
+
+    type CashRow = {
+      date: string;
+      po_id: string;
+      po_name: string;
+      counterparty_name: string;
+      counterparty_address: string;
+      direction: 'inflow' | 'outflow' | 'yield' | 'internal';
+      event_type: string;
+      amount_usd: number;
+      currency: string;
+      tx_hash: string;
+    };
+
+    const counterpartyOf = (po: SavedPO, perspective: Perspective): { name: string; address: string } => {
+      if (perspective === 'self') return { name: 'Internal Transfer', address: po.buyerAddress };
+      if (perspective === 'buyer-side') {
+        const v = linkedVendors.find(v => v.classicAddress === po.vendorAddress);
+        return { name: v?.company || v?.name || po.vendorAddress, address: po.vendorAddress };
+      }
+      const c = linkedCustomers.find(c => c.classicAddress === po.buyerAddress);
+      return { name: c?.company || c?.name || po.buyerAddress, address: po.buyerAddress };
+    };
+
+    const rows: CashRow[] = [];
+
+    // Source 1: FUND_ESCROW + CLAIM_PO from auditLog
+    for (const entry of auditLog) {
+      if (entry.action !== 'FUND_ESCROW' && entry.action !== 'CLAIM_PO') continue;
+      if (!inPeriodMs(entry.timestamp)) continue;
+      const po = savedPOs.find(p => p.issuanceId === entry.ref);
+      if (!po) continue;
+      if (!userAddrs.has(po.buyerAddress) && !userAddrs.has(po.vendorAddress)) continue;
+      const persp = effectivePerspective(po);
+      let direction: CashRow['direction'];
+      if (persp === 'self') {
+        direction = 'internal';
+      } else if (entry.action === 'FUND_ESCROW' && persp === 'buyer-side') {
+        direction = 'outflow';
+      } else if (entry.action === 'CLAIM_PO' && persp === 'vendor-side') {
+        direction = 'inflow';
+      } else {
+        continue;  // non-cash event for this perspective
+      }
+      const cp = counterpartyOf(po, persp);
+      rows.push({
+        date: new Date(entry.timestamp).toISOString().slice(0, 10),
+        po_id: po.issuanceId,
+        po_name: po.poName,
+        counterparty_name: cp.name,
+        counterparty_address: cp.address,
+        direction,
+        event_type: entry.action,
+        amount_usd: parseFloat(po.total) || 0,
+        currency: po.escrowCurrency || 'RLUSD',
+        tx_hash: entry.txHash,
+      });
+    }
+
+    // Source 2: yield events (buyer-side, payable lens only)
+    if (acctApar === 'payable') {
+      for (const yp of yieldPositions) {
+        if (yp.status !== 'withdrawn') continue;
+        if (!inPeriodMs(yp.withdrawTimestamp || 0)) continue;
+        const po = savedPOs.find(p => p.issuanceId === yp.poIssuanceId);
+        if (!po) continue;
+        if (!userAddrs.has(po.buyerAddress)) continue;
+        const cp = counterpartyOf(po, effectivePerspective(po));
+        rows.push({
+          date: new Date(yp.withdrawTimestamp || 0).toISOString().slice(0, 10),
+          po_id: po.issuanceId,
+          po_name: po.poName,
+          counterparty_name: cp.name,
+          counterparty_address: cp.address,
+          direction: 'yield',
+          event_type: 'YIELD_RETURN',
+          amount_usd: parseFloat(yp.netYieldToBuyer || '0'),
+          currency: 'USD',
+          tx_hash: yp.withdrawTxHash || '',
+        });
+      }
+    }
+
+    rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return toCSV(rows, [
+      'date','po_id','po_name','counterparty_name','counterparty_address',
+      'direction','event_type','amount_usd','currency','tx_hash',
+    ]);
+  };
+
+  // ── Platform Fees CSV builder (lens-aware via fee side, not PO role) ──
+  const buildPlatformFeesCSV = (): string => {
+    const categorize = (feeType: string): { category: string; side: 'buyer' | 'seller' } => {
+      if (feeType === 'CREATE')                              return { category: 'PO Creation', side: 'buyer'  };
+      if (feeType === 'ESCROW_LOCK')                         return { category: 'Escrow Lock', side: 'buyer'  };
+      if (feeType === 'NFT_MINT' || feeType === 'UNIT_MINT') return { category: 'Inventory',   side: 'seller' };
+      return { category: 'Financing', side: 'buyer' };
+    };
+    const parseFeeAmount = (raw: string): number => {
+      if (!raw) return 0;
+      const m = raw.match(/\$?([0-9]+(?:\.[0-9]+)?)/);
+      return m ? parseFloat(m[1]) : 0;
+    };
+
+    type FeeRow = {
+      date: string;
+      po_name: string;
+      fee_type: string;
+      category: string;
+      side: 'buyer' | 'seller';
+      amount_usd: number;
+      currency: string;
+      tx_hash: string;
+    };
+
+    const rawFees: FeeRow[] = auditLog
+      .filter(e => e.action === 'FEE_PAYMENT' && userAddrs.has(e.account))
+      .map(e => {
+        const feeType = e.payload?.feeType || 'UNKNOWN';
+        const { category, side } = categorize(feeType);
+        return {
+          date: new Date(e.timestamp).toISOString().slice(0, 10),
+          po_name: e.payload?.poName || '',
+          fee_type: feeType,
+          category,
+          side,
+          amount_usd: parseFeeAmount(e.payload?.amount || '0'),
+          currency: 'USD',
+          tx_hash: e.txHash,
+        };
+      });
+
+    const yieldFees: FeeRow[] = yieldPositions
+      .filter(yp => yp.status === 'withdrawn')
+      .map((yp): FeeRow | null => {
+        const po = savedPOs.find(p => p.issuanceId === yp.poIssuanceId);
+        if (!po) return null;
+        if (!userAddrs.has(po.buyerAddress)) return null;
+        const scFee = parseFloat(yp.scFeeAtClaim || '0');
+        if (scFee <= 0) return null;
+        return {
+          date: new Date(yp.withdrawTimestamp || 0).toISOString().slice(0, 10),
+          po_name: po.poName,
+          fee_type: 'YIELD_PLATFORM',
+          category: 'Financing',
+          side: 'buyer',
+          amount_usd: scFee,
+          currency: 'USD',
+          tx_hash: yp.withdrawTxHash || '',
+        };
+      })
+      .filter((r): r is FeeRow => r !== null);
+
+    const activeSide: 'buyer' | 'seller' = acctApar === 'payable' ? 'buyer' : 'seller';
+    const lensFiltered = [...rawFees, ...yieldFees]
+      .filter(r => r.side === activeSide)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return toCSV(lensFiltered, [
+      'date','po_name','fee_type','category','side','amount_usd','currency','tx_hash',
+    ]);
+  };
+
+  // ── Journal Entries CSV builder (4-column GAAP format, lens-aware via Model J3) ──
+  // One row per ledger event. Debit/credit accounts flip with perspective.
+  const buildJournalCSV = (): string => {
+    const { start: pStart, end: pEnd } = getCurrentPeriodWindow();
+    const inPeriodMs = (ms: number) => ms >= pStart && ms <= pEnd;
+
+    type JournalRow = {
+      date: string;
+      po_id: string;
+      po_name: string;
+      event: string;
+      debit_account: string;
+      debit_amount: number;
+      credit_account: string;
+      credit_amount: number;
+      currency: string;
+      is_settled: string;
+      is_yield: string;
+      tx_hash: string;
+    };
+
+    const lensVisible = (po: SavedPO) => {
+      const role = userRoleOnPO(po);
+      if (role === 'none')   return false;
+      if (role === 'buyer')  return acctApar === 'payable';
+      if (role === 'vendor') return acctApar === 'receivable';
+      return true;
+    };
+
+    const rows: JournalRow[] = [];
+
+    for (const po of savedPOs) {
+      if (!lensVisible(po)) continue;
+      if (po.status === 'superseded' || po.status === 'updated') continue;
+      const persp = effectivePerspective(po);
+      const isBuyerSide = persp === 'buyer-side' || persp === 'self';
+      const amount   = parseFloat(po.total) || 0;
+      const currency = po.escrowCurrency || 'RLUSD';
+      const poEntries = auditLog.filter(e => e.ref === po.issuanceId);
+
+      const pushRow = (params: {
+        ts: number; event: string; dr: string; cr: string;
+        amt: number; settled: boolean; yieldEvt: boolean; txHash: string;
+      }) => {
+        if (!inPeriodMs(params.ts)) return;
+        rows.push({
+          date: new Date(params.ts).toISOString().slice(0, 10),
+          po_id: po.issuanceId,
+          po_name: po.poName,
+          event: params.event,
+          debit_account:  params.dr,
+          debit_amount:   params.amt,
+          credit_account: params.cr,
+          credit_amount:  params.amt,
+          currency,
+          is_settled: params.settled ? 'TRUE' : 'FALSE',
+          is_yield:   params.yieldEvt ? 'TRUE' : 'FALSE',
+          tx_hash: params.txHash,
+        });
+      };
+
+      // CREATE_PO — committed (memo); commitment record only
+      const create = poEntries.find(e => e.action === 'CREATE_PO');
+      if (create) pushRow({
+        ts: create.timestamp, event: 'CREATE_PO',
+        dr: isBuyerSide ? 'Purchase Commitments' : 'Sales Commitments',
+        cr: isBuyerSide ? 'Open POs (memo)'     : 'Open POs (memo)',
+        amt: amount, settled: false, yieldEvt: false, txHash: create.txHash,
+      });
+
+      // ACCEPT_PO — committed
+      const accept = poEntries.find(e => e.action === 'ACCEPT_PO');
+      if (accept) pushRow({
+        ts: accept.timestamp, event: 'ACCEPT_PO',
+        dr: isBuyerSide ? 'Accepted POs (memo)' : 'Accepted POs (memo)',
+        cr: isBuyerSide ? 'Purchase Commitments': 'Sales Commitments',
+        amt: amount, settled: false, yieldEvt: false, txHash: accept.txHash,
+      });
+
+      // FUND_ESCROW — settled (cash moved)
+      const fund = poEntries.find(e => e.action === 'FUND_ESCROW');
+      if (fund) pushRow({
+        ts: fund.timestamp, event: 'FUND_ESCROW',
+        dr: isBuyerSide ? 'Escrow Receivable' : 'Escrow Payable',
+        cr: isBuyerSide ? 'Cash'              : 'Trade Receivable',
+        amt: amount, settled: true, yieldEvt: false, txHash: fund.txHash,
+      });
+
+      // CLAIM_PO — settled
+      const claim = poEntries.find(e => e.action === 'CLAIM_PO');
+      if (claim) pushRow({
+        ts: claim.timestamp, event: 'CLAIM_PO',
+        dr: isBuyerSide ? 'Accounts Payable' : 'Cash',
+        cr: isBuyerSide ? 'Escrow Receivable': 'Escrow Payable',
+        amt: amount, settled: true, yieldEvt: false, txHash: claim.txHash,
+      });
+
+      // RECALL_PO — committed
+      const recall = poEntries.find(e => e.action === 'RECALL_PO');
+      if (recall) pushRow({
+        ts: recall.timestamp, event: 'RECALL_PO',
+        dr: isBuyerSide ? 'Cash (recovered)'   : 'Trade Receivable (cancelled)',
+        cr: isBuyerSide ? 'Escrow Receivable'  : 'Escrow Payable',
+        amt: amount, settled: false, yieldEvt: false, txHash: recall.txHash,
+      });
+
+      // YIELD_RETURN — settled, buyer-side only
+      if (isBuyerSide && po.status === 'claimed') {
+        const yp = yieldPositions.find(p => p.poIssuanceId === po.issuanceId && p.status === 'withdrawn');
+        const netYield = parseFloat(yp?.netYieldToBuyer || '0');
+        if (yp && netYield > 0) {
+          pushRow({
+            ts: yp.withdrawTimestamp || 0, event: 'YIELD_RETURN',
+            dr: 'Cash', cr: 'Yield Income',
+            amt: netYield, settled: true, yieldEvt: true,
+            txHash: yp.withdrawTxHash || '',
+          });
+        }
+      }
+    }
+
+    rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return toCSV(rows, [
+      'date','po_id','po_name','event',
+      'debit_account','debit_amount','credit_account','credit_amount',
+      'currency','is_settled','is_yield','tx_hash',
+    ]);
+  };
+
+  // ── On-Chain Proof CSV builder (flat timeline events across all visible POs) ──
+  const buildOnChainCSV = (): string => {
+    const { start: pStart, end: pEnd } = getCurrentPeriodWindow();
+    const inPeriodMs = (ms: number) => ms >= pStart && ms <= pEnd;
+    const MIN_VALID_MS = new Date('2020-01-01').getTime();
+    const MAX_VALID_MS = new Date('9999-12-31').getTime();
+    const sanitizeTs = (ms: number, fallbackMs: number): number =>
+      (ms < MIN_VALID_MS || ms > MAX_VALID_MS) ? fallbackMs : ms;
+
+    type ChainRow = {
+      date: string;
+      po_id: string;
+      po_name: string;
+      event_label: string;
+      event_mnemonic: string;
+      wallet_initiator: string;
+      is_settled: string;
+      amount_usd: number;
+      currency: string;
+      tx_hash: string;
+    };
+
+    const lensVisible = (po: SavedPO) => {
+      const role = userRoleOnPO(po);
+      if (role === 'none')   return false;
+      if (role === 'buyer')  return acctApar === 'payable';
+      if (role === 'vendor') return acctApar === 'receivable';
+      return true;
+    };
+
+    const rows: ChainRow[] = [];
+
+    for (const po of savedPOs) {
+      if (!lensVisible(po)) continue;
+      if (po.status === 'superseded' || po.status === 'updated') continue;
+      const persp = effectivePerspective(po);
+      const isBuyerSide = persp === 'buyer-side' || persp === 'self';
+      const issuedTs = sanitizeTs(new Date(po.dateIssued).getTime(), Date.now());
+      const amount = parseFloat(po.total) || 0;
+      const currency = po.escrowCurrency || 'RLUSD';
+      const poEntries = auditLog.filter(e => e.ref === po.issuanceId);
+
+      const pushEvt = (params: {
+        ts: number; label: string; mnemonic: string;
+        wallet: string; settled: boolean; amt?: number; txHash: string;
+      }) => {
+        const ts = sanitizeTs(params.ts, issuedTs);
+        if (!inPeriodMs(ts)) return;
+        rows.push({
+          date: new Date(ts).toISOString().slice(0, 10),
+          po_id: po.issuanceId,
+          po_name: po.poName,
+          event_label: params.label,
+          event_mnemonic: params.mnemonic,
+          wallet_initiator: params.wallet,
+          is_settled: params.settled ? 'TRUE' : 'FALSE',
+          amount_usd: params.amt || 0,
+          currency: params.amt ? currency : '',
+          tx_hash: params.txHash,
+        });
+      };
+
+      const create = poEntries.find(e => e.action === 'CREATE_PO');
+      if (create) pushEvt({ ts: create.timestamp, label: 'PO Created',     mnemonic: 'CREATE_PO', wallet: po.buyerAddress,  settled: false, txHash: create.txHash });
+      const accept = poEntries.find(e => e.action === 'ACCEPT_PO');
+      if (accept) pushEvt({ ts: accept.timestamp, label: 'PO Accepted',    mnemonic: 'ACCEPT_PO', wallet: po.vendorAddress, settled: false, txHash: accept.txHash });
+      const update = poEntries.find(e => e.action === 'UPDATE_PO');
+      if (update) pushEvt({ ts: update.timestamp, label: 'PO Updated',     mnemonic: 'UPDATE_PO', wallet: po.buyerAddress,  settled: false, txHash: update.txHash });
+      const fund = poEntries.find(e => e.action === 'FUND_ESCROW');
+      if (fund)   pushEvt({ ts: fund.timestamp,   label: 'Escrow Funded',  mnemonic: 'FUND_ESCROW', wallet: po.buyerAddress, settled: true, amt: amount, txHash: fund.txHash });
+      const claim = poEntries.find(e => e.action === 'CLAIM_PO');
+      if (claim)  pushEvt({ ts: claim.timestamp,  label: 'PO Claimed',     mnemonic: 'CLAIM_PO', wallet: po.vendorAddress, settled: true, amt: amount, txHash: claim.txHash });
+      const recall = poEntries.find(e => e.action === 'RECALL_PO');
+      if (recall || po.status === 'recalled') pushEvt({
+        ts: recall?.timestamp || issuedTs, label: 'PO Recalled',
+        mnemonic: 'RECALL_PO', wallet: po.buyerAddress,
+        settled: false, txHash: recall?.txHash || '',
+      });
+
+      // Synthesized YIELD_RETURN (buyer-side only, claimed POs)
+      if (isBuyerSide && po.status === 'claimed') {
+        const yp = yieldPositions.find(p => p.poIssuanceId === po.issuanceId && p.status === 'withdrawn');
+        const netYield = parseFloat(yp?.netYieldToBuyer || '0');
+        if (yp && netYield > 0) {
+          pushEvt({
+            ts: yp.withdrawTimestamp || 0,
+            label: 'Yield Returned', mnemonic: 'YIELD_RETURN',
+            wallet: po.vendorAddress, settled: true,
+            amt: netYield, txHash: yp.withdrawTxHash || '',
+          });
+        }
+      }
+    }
+
+    rows.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return toCSV(rows, [
+      'date','po_id','po_name','event_label','event_mnemonic','wallet_initiator',
+      'is_settled','amount_usd','currency','tx_hash',
+    ]);
+  };
+
+  // ── All-Tables combined CSV (multi-section, importable per-section into Excel) ──
+  const buildAllTablesCSV = (): string => {
+    const sections: Array<{ name: string; csv: string }> = [
+      { name: 'PAYABLES',          csv: buildPayablesCSV()     },
+      { name: 'CASH FLOW',         csv: buildCashFlowCSV()     },
+      { name: 'JOURNAL ENTRIES',   csv: buildJournalCSV()      },
+      { name: 'ON-CHAIN PROOF',    csv: buildOnChainCSV()      },
+      { name: 'PLATFORM FEES',     csv: buildPlatformFeesCSV() },
+    ];
+    if (mode === 'customer') {
+      sections.push({ name: 'ESCROW YIELD', csv: buildYieldCSV() });
+      sections.push({ name: '1099 DATA',    csv: build1099CSV()  });
+    }
+    return sections.map(s => `=== ${s.name} ===\n${s.csv}`).join('\n');
   };
 
   const [publicProfiles, setPublicProfiles] = useState<{ [uuid: string]: PublicProfile }>({});
@@ -6373,63 +6974,52 @@ const getUpdatablePOs = () => {
 
   useEffect(() => { if (!hydrated) return; localStorage.setItem('activeTab', activeTab); }, [activeTab, hydrated]);
 
+  // ─── Yield loading effect (Phase 6A — customer-mode only, fires on Accounting OR Buy · Financing) ───
   useEffect(() => {
-    // Yield loading fires on Buy · Accounting OR Buy · Financing.
-    // Audit log loading fires only on Accounting (both modes).
     const onAccounting = activeTab === 'accounting';
     const onBuyFinancing = mode === 'customer' && activeTab === 'financing';
     if (!onAccounting && !onBuyFinancing) return;
+    if (mode !== 'customer' || !customerProfile.classicAddress) return;
 
-    // ── Phase 6A: Load yield positions for customer mode ──────────────────────
-    if (mode === 'customer' && customerProfile.classicAddress && (onAccounting || onBuyFinancing)) {
-      setYieldLoading(true);
-      scanYieldPositions(customerProfile.classicAddress).then(positions => {
-        // Filter out positions with no principal (created before amt was added to memo)
-        const validPositions = positions.filter(p => parseFloat(p.principalAmount) > 0);
-        setYieldPositions(validPositions);
-        setYieldSummary(computeYieldSummary(validPositions, yieldPartnerRegistry));
-        setYieldLoading(false);
-      }).catch((e) => { console.error('[BuyFinancing] yield scan error:', e); setYieldLoading(false); });
-    }
+    setYieldLoading(true);
+    scanYieldPositions(customerProfile.classicAddress).then(positions => {
+      // Filter out positions with no principal (created before amt was added to memo)
+      const validPositions = positions.filter(p => parseFloat(p.principalAmount) > 0);
+      setYieldPositions(validPositions);
+      setYieldSummary(computeYieldSummary(validPositions, yieldPartnerRegistry));
+      setYieldLoading(false);
+    }).catch((e) => { console.error('[BuyFinancing] yield scan error:', e); setYieldLoading(false); });
+  }, [activeTab, mode, customerProfile.classicAddress]);
 
-    // Audit log only on Accounting (existing behavior preserved).
-    if (!onAccounting) return;
-    const addr = mode === 'customer' ? customerProfile.classicAddress : vendorProfile.classicAddress;
-    if (!addr) return;
+  // ─── Audit log loading effect (Phase 2.6 Bug #8 — mode-agnostic, dual-profile aware, append-as-arrives) ───
+  useEffect(() => {
+    if (activeTab !== 'accounting') return;
+
+    // Both own wallets if both exist; defensive against 0/1/2 wallet scenarios
+    const ownWallets = [
+      customerProfile?.classicAddress,
+      vendorProfile?.classicAddress,
+    ].filter((a): a is string => Boolean(a));
+    if (ownWallets.length === 0) return;
+
+    // Counterparty wallets — combine both link sets so dual-profile users see both sides
+    const counterpartyAddrs = Array.from(new Set(
+      [...customerLinkedVendorUUIDs, ...vendorLinkedCustomerUUIDs]
+        .map(uuid => publicProfiles[uuid]?.classicAddress)
+        .filter((a): a is string => Boolean(a) && !ownWallets.includes(a))
+    ));
+
+    const ownIssuanceIds = new Set(savedPOs.map(p => p.issuanceId));
+
     setAuditLogLoading(true);
+    setAuditLog([]); // Clear before fresh scan; entries trickle in via append-as-arrives
 
-    const loadAuditLog = async () => {
-      try {
-        // Scan own wallet first
-        const ownEntries = await scanAuditLog(addr);
-
-        // In customer mode: CLAIM_PO memos live on vendor wallets (vendor sends the receipt)
-        // In vendor mode: FUND_ESCROW memos live on buyer wallets (buyer creates the escrow)
-        // Scan all linked counterparty wallets and merge their relevant entries
-        const counterpartyUUIDs = mode === 'customer'
-          ? customerLinkedVendorUUIDs
-          : vendorLinkedCustomerUUIDs;
-
-        const counterpartyEntries: AuditLogEntry[] = [];
-        for (const uuid of counterpartyUUIDs) {
-          const counterpartyAddr = publicProfiles[uuid]?.classicAddress;
-          if (!counterpartyAddr) continue;
-          try {
-            const entries = await scanAuditLog(counterpartyAddr);
-            // Only pull entries that reference POs belonging to the current user
-            const ownIssuanceIds = new Set(savedPOs.map(p => p.issuanceId));
-            const relevant = entries.filter(e =>
-              ownIssuanceIds.has(e.ref) &&
-              (e.action === 'CLAIM_PO' || e.action === 'FUND_ESCROW' || e.action === 'ACCEPT_PO')
-            );
-            counterpartyEntries.push(...relevant);
-          } catch { /* skip unreachable wallets */ }
-        }
-
-        // Merge and deduplicate by txHash
+    // Helper: merge incoming entries into state with txHash dedup
+    const mergeEntries = (incoming: AuditLogEntry[]) => {
+      setAuditLog(prev => {
         const seen = new Set<string>();
         const merged: AuditLogEntry[] = [];
-        for (const entry of [...ownEntries, ...counterpartyEntries]) {
+        for (const entry of [...prev, ...incoming]) {
           const key = entry.txHash || `${entry.action}_${entry.ref}_${entry.timestamp}`;
           if (!seen.has(key)) {
             seen.add(key);
@@ -6437,16 +7027,30 @@ const getUpdatablePOs = () => {
           }
         }
         merged.sort((a, b) => b.timestamp - a.timestamp);
-        setAuditLog(merged);
-      } catch (e) {
-        console.error('Failed to load audit log:', e);
-      } finally {
-        setAuditLogLoading(false);
-      }
+        return merged;
+      });
     };
 
-    loadAuditLog();
-  }, [activeTab, savedPOs]);
+    // Fire all scans in parallel — own wallets pull every entry, counterparty wallets filtered to relevant
+    const ownPromises = ownWallets.map(addr =>
+      scanAuditLog(addr)
+        .then(mergeEntries)
+        .catch(e => console.error(`[AuditLog] own wallet scan failed for ${addr}:`, e))
+    );
+
+    const counterpartyPromises = counterpartyAddrs.map(addr =>
+      scanAuditLog(addr).then(entries => {
+        const relevant = entries.filter(e =>
+          ownIssuanceIds.has(e.ref) &&
+          (e.action === 'CLAIM_PO' || e.action === 'FUND_ESCROW' || e.action === 'ACCEPT_PO')
+        );
+        mergeEntries(relevant);
+      }).catch(() => { /* skip unreachable counterparty wallets */ })
+    );
+
+    Promise.allSettled([...ownPromises, ...counterpartyPromises])
+      .finally(() => setAuditLogLoading(false));
+  }, [activeTab, savedPOs, customerProfile?.classicAddress, vendorProfile?.classicAddress]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('createItems', JSON.stringify(items)); }, [items, hydrated]);
 
   // ===== ECDH KEY EXCHANGE (Task 1.5) =====
@@ -15614,30 +16218,105 @@ const addLinkedVendorByDID = async () => {
               title={acctApar === 'payable' ? 'Accounts Payable' : 'Accounts Receivable'}
               subtitle="One general ledger across every financial lens — filter the view, summaries update to match."
               actions={
-                <div className="glass-strong" style={{
-                  display: 'flex', padding: 4, borderRadius: 14, position: 'relative',
-                }}>
-                  <div style={{
-                    position: 'absolute', top: 4, bottom: 4,
-                    left: acctApar === 'payable' ? 4 : 'calc(50% + 0px)',
-                    width: 'calc(50% - 4px)',
-                    background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
-                    borderRadius: 10,
-                    transition: 'left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
-                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.5)',
-                  }}/>
-                  {(['payable', 'receivable'] as const).map(k => (
-                    <button key={k} onClick={() => setAcctApar(k)}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {/* ── APAR toggle ── */}
+                  <div className="glass-strong" style={{
+                    display: 'flex', padding: 4, borderRadius: 14, position: 'relative',
+                  }}>
+                    <div style={{
+                      position: 'absolute', top: 4, bottom: 4,
+                      left: acctApar === 'payable' ? 4 : 'calc(50% + 0px)',
+                      width: 'calc(50% - 4px)',
+                      background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                      borderRadius: 10,
+                      transition: 'left 0.3s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.7), 0 2px 6px -2px rgba(200,150,50,0.5)',
+                    }}/>
+                    {(['payable', 'receivable'] as const).map(k => (
+                      <button key={k} onClick={() => setAcctApar(k)}
+                        style={{
+                          position: 'relative', zIndex: 1, padding: '8px 18px', minWidth: 120,
+                          fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
+                          color: acctApar === k ? '#1a1505' : 'var(--ink-2)',
+                          background: 'transparent', border: 'none', cursor: 'pointer',
+                          transition: 'color 0.2s ease', textTransform: 'capitalize',
+                        }}>
+                        {k}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* ── Export dropdown (Phase 2.5) ── */}
+                  <div data-acct-export style={{ position: 'relative' }}>
+                    <button
+                      onClick={() => setAcctExportOpen(o => !o)}
                       style={{
-                        position: 'relative', zIndex: 1, padding: '8px 18px', minWidth: 120,
-                        fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
-                        color: acctApar === k ? '#1a1505' : 'var(--ink-2)',
-                        background: 'transparent', border: 'none', cursor: 'pointer',
-                        transition: 'color 0.2s ease', textTransform: 'capitalize',
+                        padding: '9px 16px', borderRadius: 12, border: '1px solid rgba(180,140,60,0.2)',
+                        background: acctExportOpen ? 'rgba(255, 248, 222, 0.7)' : 'rgba(255, 248, 222, 0.4)',
+                        color: 'var(--ink)', fontSize: 12.5, fontWeight: 600, letterSpacing: '-0.01em',
+                        cursor: 'pointer', fontFamily: 'inherit',
+                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
                       }}>
-                      {k}
+                      ⤓ Export ▾
                     </button>
-                  ))}
+                    {acctExportOpen && (() => {
+                      const walletShort = (mode === 'customer' ? customerProfile : vendorProfile)?.classicAddress?.slice(0, 8) || 'wallet';
+                      const yr = new Date().getFullYear();
+                      const mo = new Date().getMonth();
+                      const qtr = Math.floor(mo / 3);
+                      const periodTag = taxPeriod === 'month'
+                        ? `${yr}-${String(mo + 1).padStart(2, '0')}`
+                        : taxPeriod === 'quarter'
+                          ? `${yr}-Q${qtr + 1}`
+                          : taxPeriod === 'year'
+                            ? `${yr}`
+                            : (taxPeriod === 'custom' && taxCustomStart && taxCustomEnd)
+                              ? `${taxCustomStart}_${taxCustomEnd}`
+                              : `${yr}`;
+
+                      const handleExport = (view: string, csvBuilder: () => string) => {
+                        const csv = csvBuilder();
+                        const dataLines = csv.split('\n').filter(l => l.trim().length > 0).length;
+                        if (dataLines <= 1) {
+                          alert(`No data to export for ${view}.`);
+                        } else {
+                          downloadCSV(`${view}_${walletShort}_${periodTag}.csv`, csv);
+                        }
+                        setAcctExportOpen(false);
+                      };
+
+                      const itemStyle: React.CSSProperties = {
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        padding: '8px 14px', fontSize: 12.5, color: 'var(--ink)',
+                        background: 'transparent', border: 'none', cursor: 'pointer',
+                        textAlign: 'left', width: '100%', fontFamily: 'inherit',
+                        letterSpacing: '-0.01em', borderRadius: 8,
+                      };
+
+                      return (
+                        <div className="glass" style={{
+                          position: 'absolute', top: 'calc(100% + 6px)', right: 0,
+                          zIndex: 50, padding: 6, borderRadius: 12, minWidth: 240,
+                          boxShadow: '0 12px 40px -8px rgba(40, 25, 5, 0.18), 0 4px 12px -4px rgba(40, 25, 5, 0.08)',
+                        }}>
+                          <button style={itemStyle} onClick={() => handleExport('payables',   buildPayablesCSV)}>📄 Payables CSV</button>
+                          <button style={itemStyle} onClick={() => handleExport('cashflow',   buildCashFlowCSV)}>📄 Cash Flow CSV</button>
+                          <button style={itemStyle} onClick={() => handleExport('journal',    buildJournalCSV)}>📄 Journal Entries CSV</button>
+                          <button style={itemStyle} onClick={() => handleExport('onchain',    buildOnChainCSV)}>📄 On-Chain Proof CSV</button>
+                          <button style={itemStyle} onClick={() => handleExport('fees',       buildPlatformFeesCSV)}>📄 Platform Fees CSV</button>
+                          {mode === 'customer' && (
+                            <>
+                              <button style={itemStyle} onClick={() => handleExport('yield',  buildYieldCSV)}>📄 Escrow Yield CSV</button>
+                              <button style={itemStyle} onClick={() => handleExport('1099',   build1099CSV)}>📄 1099 Data CSV</button>
+                            </>
+                          )}
+                          <div style={{ height: 1, background: 'rgba(180,140,60,0.15)', margin: '4px 0' }}/>
+                          <button style={itemStyle} onClick={() => handleExport('all-tables', buildAllTablesCSV)}>📦 All Tables (combined)</button>
+                        </div>
+                      );
+                    })()}
+                  </div>
                 </div>
               }
             >
@@ -17452,7 +18131,7 @@ const addLinkedVendorByDID = async () => {
                   // ── Source 2: synthesized yield platform fees from withdrawn yieldPositions (buyer side) ──
                   const yieldFees: FeeRow[] = yieldPositions
                     .filter(yp => yp.status === 'withdrawn')
-                    .map(yp => {
+                    .map((yp): FeeRow | null => {
                       const po = savedPOs.find(p => p.issuanceId === yp.poIssuanceId);
                       if (!po) return null;
                       if (!userAddrs.has(po.buyerAddress)) return null;
@@ -17462,8 +18141,8 @@ const addLinkedVendorByDID = async () => {
                         timestamp: yp.withdrawTimestamp || 0,
                         poName: po.poName,
                         feeType: 'YIELD_PLATFORM',
-                        category: 'Financing' as FeeCategory,
-                        side: 'buyer' as FeeSide,
+                        category: 'Financing',
+                        side: 'buyer',
                         amountUsd: scFee,
                         currency: 'USD',
                         txHash: yp.withdrawTxHash || '',
@@ -17675,7 +18354,136 @@ const addLinkedVendorByDID = async () => {
                     </>
                   );
                 })()}
-                {acctView === 'tax'      && <Empty msg="1099 Tax Data view — landing in Phase 2"/>}
+                {acctView === 'tax'      && (() => {
+                  // ── Lens guard: 1099 reporting is buyer-side only (matches Yield Q6) ──
+                  if (acctApar === 'receivable') {
+                    return <Empty msg="1099 reporting only appears in Payable lens — flip APAR to view." />;
+                  }
+
+                  // ── Tax year resolver (Q7 — month/quarter ignored, year/custom respected) ──
+                  const taxYearForView = (() => {
+                    if (taxPeriod === 'custom' && taxCustomStart) {
+                      return new Date(taxCustomStart).getFullYear();
+                    }
+                    return currentYear;
+                  })();
+                  const yearStart = new Date(taxYearForView, 0, 1).getTime();
+                  const yearEnd   = new Date(taxYearForView, 11, 31, 23, 59, 59).getTime();
+                  const inTaxYear = (ms: number) => ms >= yearStart && ms <= yearEnd;
+                  const periodIgnoredNote = (taxPeriod === 'month' || taxPeriod === 'quarter')
+                    ? ` · Month/quarter filter ignored — 1099 is annual`
+                    : '';
+
+                  // ── Aggregate CLAIM_PO events from auditLog, grouped by vendor address ──
+                  // Match Cash Flow / Journal pattern: source of truth is real on-chain events, not po.dateIssued.
+                  type VendorRow = {
+                    vendorAddress: string;
+                    company: string;
+                    ytdPayments: number;
+                    poCount: number;
+                    isReportable: boolean;
+                  };
+
+                  // Step 1: Walk auditLog for buyer-side CLAIM_PO events in tax year, group by vendor
+                  const aggMap = new Map<string, { total: number; poIds: Set<string> }>();
+                  for (const entry of auditLog) {
+                    if (entry.action !== 'CLAIM_PO') continue;
+                    if (!inTaxYear(entry.timestamp)) continue;
+                    const po = savedPOs.find(p => p.issuanceId === entry.ref);
+                    if (!po) continue;
+                    if (!userAddrs.has(po.buyerAddress)) continue;     // Buyer-side only
+                    if (po.buyerAddress === po.vendorAddress) continue; // Skip internal/self-POs (no 1099 to self)
+                    const amt = parseFloat(po.total) || 0;
+                    if (amt <= 0) continue;
+                    const cur = aggMap.get(po.vendorAddress) || { total: 0, poIds: new Set<string>() };
+                    cur.total += amt;
+                    cur.poIds.add(po.issuanceId);
+                    aggMap.set(po.vendorAddress, cur);
+                  }
+
+                  // Step 2: Build rows with company name lookup
+                  const allRows: VendorRow[] = Array.from(aggMap.entries()).map(([addr, agg]) => {
+                    const vendor = linkedVendors.find(v => v.classicAddress === addr);
+                    const company = vendor?.company || vendor?.name || `Unlinked · ${addr.slice(0, 8)}…`;
+                    return {
+                      vendorAddress: addr,
+                      company,
+                      ytdPayments: agg.total,
+                      poCount: agg.poIds.size,
+                      isReportable: agg.total >= 600,
+                    };
+                  });
+
+                  // ── Tile metrics ──
+                  const reportableRows  = allRows.filter(r => r.isReportable);
+                  const reportableCount = reportableRows.length;
+                  const totalReportable = reportableRows.reduce((s, r) => s + r.ytdPayments, 0);
+                  const readyToFile     = 0; // TIN tracking not yet implemented (Bug #10)
+
+                  // ── Apply chip filter + search ──
+                  const q = acctTaxQuery.trim().toLowerCase();
+                  const filteredRows = allRows
+                    .filter(r => {
+                      if (acctTaxFilter === 'Reportable')      return r.isReportable;
+                      if (acctTaxFilter === 'Below threshold') return !r.isReportable;
+                      return true; // All
+                    })
+                    .filter(r => !q ||
+                      r.company.toLowerCase().includes(q) ||
+                      r.vendorAddress.toLowerCase().includes(q)
+                    )
+                    .sort((a, b) => b.ytdPayments - a.ytdPayments); // Descending by amount
+
+                  const emptyMsg = allRows.length === 0
+                    ? `No vendor payments in tax year ${taxYearForView}.`
+                    : acctTaxFilter === 'Reportable'
+                      ? `No vendors over $600 threshold in tax year ${taxYearForView}.`
+                      : acctTaxFilter === 'Below threshold'
+                        ? `No vendors below $600 threshold in tax year ${taxYearForView}.`
+                        : 'No matching vendors.';
+
+                  return (
+                    <>
+                      <SummaryTiles tiles={[
+                        { label: 'Tax Year',           value: `${taxYearForView}`,                                            sub: `Calendar year${periodIgnoredNote}`,                                  chip: 'Year',       chipTone: 'blue' },
+                        { label: 'Reportable Vendors', value: `${reportableCount}`,                                           sub: '≥ $600 threshold',                                                   chip: '1099-NEC',   chipTone: 'gold' },
+                        { label: 'Total Reportable',   value: `$${formatNumber(totalReportable, { decimals: 2 })}`,           sub: '1099-NEC reporting scope',                                           chip: 'Sum',        chipTone: 'green' },
+                        { label: 'Ready to File',      value: `${readyToFile}`,                                               sub: 'TIN tracking coming soon',                                           chip: 'Pending',    chipTone: 'neutral' },
+                      ]}/>
+
+                      <FilterBar
+                        query={acctTaxQuery} setQuery={setAcctTaxQuery}
+                        filter={acctTaxFilter} setFilter={setAcctTaxFilter}
+                        filters={['All', 'Reportable', 'Below threshold']}
+                        placeholder="Search vendor name or address…"
+                      />
+
+                      {filteredRows.length === 0 ? (
+                        <Empty msg={emptyMsg} />
+                      ) : (
+                        <Table cols={[
+                          { k: 'vendor', label: 'Vendor',       w: '200px', render: (r: VendorRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.company}</span> },
+                          { k: 'wallet', label: 'Wallet',       w: '130px', render: (r: VendorRow) => (
+                            <button
+                              onClick={() => { navigator.clipboard.writeText(r.vendorAddress); setAcctCopiedHash(r.vendorAddress); setTimeout(() => setAcctCopiedHash(null), 1500); }}
+                              className="mono"
+                              style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--line)', background: acctCopiedHash === r.vendorAddress ? 'var(--gold-soft)' : 'transparent', cursor: 'pointer' }}
+                            >
+                              {acctCopiedHash === r.vendorAddress ? 'Copied!' : `${r.vendorAddress.slice(0, 8)}…`}
+                            </button>
+                          ) },
+                          { k: 'ytd',    label: 'YTD Payments', w: '130px', align: 'right', render: (r: VendorRow) => <span className="mono" style={{ fontSize: 13, fontWeight: 600 }}>${formatNumber(r.ytdPayments, { decimals: 2 })}</span> },
+                          { k: 'count',  label: 'PO Count',     w: '85px',  align: 'right', render: (r: VendorRow) => <span className="mono" style={{ fontSize: 13, color: 'var(--ink-3)' }}>{r.poCount}</span> },
+                          { k: 'status', label: '1099 Status',  w: '140px', render: (r: VendorRow) => (
+                            <Chip tone={r.isReportable ? 'gold' : 'neutral'}>
+                              {r.isReportable ? 'Reportable' : 'Below threshold'}
+                            </Chip>
+                          ) },
+                        ]} rows={filteredRows}/>
+                      )}
+                    </>
+                  );
+                })()}
 
               </Card>
             </Page>
