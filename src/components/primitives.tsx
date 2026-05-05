@@ -446,8 +446,9 @@ export interface TableProps<T = any> {
   onRow?: (row: T) => void;
   empty?: React.ReactNode;
   isRowActive?: (row: T) => boolean;
+  maxHeight?: number;
 }
-export function Table<T = any>({ cols, rows, onRow, empty, isRowActive }: TableProps<T>) {
+export function Table<T = any>({ cols, rows, onRow, empty, isRowActive, maxHeight }: TableProps<T>) {
   const gridCols = cols.map(c => c.w || '1fr').join(' ');
   if (rows.length === 0) {
     return (
@@ -457,7 +458,10 @@ export function Table<T = any>({ cols, rows, onRow, empty, isRowActive }: TableP
     );
   }
   return (
-    <div style={{ width: '100%' }}>
+    <div style={{
+      width: '100%',
+      ...(maxHeight ? { maxHeight, overflowY: 'auto' as const, overflowX: 'hidden' as const } : {}),
+    }}>
       <div style={{
         display: 'grid', gridTemplateColumns: gridCols, padding: '10px 14px', gap: 12,
         fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
@@ -548,67 +552,70 @@ export const SummaryTiles: React.FC<SummaryTilesProps> = ({ tiles }) => (
 // ————— Filter Bar —————
 // Search input + filter chips. Sits between SummaryTiles and Table.
 // Pass hideFilters when a search-only bar is wanted.
-export interface FilterBarProps {
+export interface FilterBarProps<T extends string = string> {
   query: string;
   setQuery: (q: string) => void;
   placeholder?: string;
-  filter?: string;
-  setFilter?: (f: string) => void;
-  filters?: string[];
+  filter?: T;
+  setFilter?: (f: T) => void;
+  filters?: readonly T[];
   hideFilters?: boolean;
 }
 
-export const FilterBar: React.FC<FilterBarProps> = ({
+export function FilterBar<T extends string = string>({
   query, setQuery, placeholder = 'Search…',
-  filter, setFilter, filters = [], hideFilters,
-}) => (
-  <div style={{
-    display: 'flex', gap: 12, alignItems: 'center',
-    marginBottom: 16, flexWrap: 'wrap',
-  }}>
-    <div style={{ flex: '1 1 240px', minWidth: 180, maxWidth: 360 }}>
-      <input
-        value={query}
-        onChange={e => setQuery(e.target.value)}
-        placeholder={placeholder}
-        style={{
-          width: '100%',
-          padding: '9px 14px',
-          fontSize: 13,
-          borderRadius: 10,
-          border: '1px solid rgba(180, 140, 60, 0.2)',
-          background: 'rgba(255, 248, 222, 0.5)',
-          color: 'var(--ink)',
-          outline: 'none',
-          fontFamily: 'inherit',
-          letterSpacing: '-0.01em',
-        }}
-      />
-    </div>
-    {!hideFilters && filters.length > 0 && setFilter && (
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0, marginLeft: 'auto' }}>
-        {filters.map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            style={{
-              padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 500,
-              cursor: 'pointer', whiteSpace: 'nowrap',
-              border: '1px solid rgba(180, 140, 60, 0.2)',
-              background: filter === f
-                ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))'
-                : 'rgba(255, 248, 222, 0.5)',
-              color: filter === f ? '#1a1505' : 'var(--ink-2)',
-              boxShadow: filter === f
-                ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 2px 6px -2px rgba(200,150,50,0.4)'
-                : 'none',
-              transition: 'all 0.15s ease',
-            }}>
-            {f}
-          </button>
-        ))}
+  filter, setFilter, filters, hideFilters,
+}: FilterBarProps<T>) {
+  const list = filters ?? ([] as readonly T[]);
+  return (
+    <div style={{
+      display: 'flex', gap: 12, alignItems: 'center',
+      marginBottom: 16, flexWrap: 'wrap',
+    }}>
+      <div style={{ flex: '1 1 240px', minWidth: 180, maxWidth: 360 }}>
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder={placeholder}
+          style={{
+            width: '100%',
+            padding: '9px 14px',
+            fontSize: 13,
+            borderRadius: 10,
+            border: '1px solid rgba(180, 140, 60, 0.2)',
+            background: 'rgba(255, 248, 222, 0.5)',
+            color: 'var(--ink)',
+            outline: 'none',
+            fontFamily: 'inherit',
+            letterSpacing: '-0.01em',
+          }}
+        />
       </div>
-    )}
-  </div>
-);
+      {!hideFilters && list.length > 0 && setFilter && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', flexShrink: 0, marginLeft: 'auto' }}>
+          {list.map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              style={{
+                padding: '7px 14px', borderRadius: 999, fontSize: 12, fontWeight: 500,
+                cursor: 'pointer', whiteSpace: 'nowrap',
+                border: '1px solid rgba(180, 140, 60, 0.2)',
+                background: filter === f
+                  ? 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))'
+                  : 'rgba(255, 248, 222, 0.5)',
+                color: filter === f ? '#1a1505' : 'var(--ink-2)',
+                boxShadow: filter === f
+                  ? 'inset 0 1px 0 rgba(255,255,255,0.6), 0 2px 6px -2px rgba(200,150,50,0.4)'
+                  : 'none',
+                transition: 'all 0.15s ease',
+              }}>
+              {f}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ————— Empty State —————
 // Centered placeholder for empty tables / sections.

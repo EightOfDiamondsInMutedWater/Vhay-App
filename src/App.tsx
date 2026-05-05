@@ -980,21 +980,22 @@ export default function App() {
   }, [mode, acctView]);
   const [acctPeriodOpen, setAcctPeriodOpen] = useState(false);
   const [acctPayablesQuery, setAcctPayablesQuery] = useState('');
-  const [acctPayablesFilter, setAcctPayablesFilter] = useState<string>('All');
+  const [acctPayablesFilter, setAcctPayablesFilter] = useState<'All' | 'Awaiting Funding' | 'Funded' | 'Pending Accept' | 'Settled'>('All');
   const [acctJournalQuery, setAcctJournalQuery] = useState('');
-  const [acctJournalFilter, setAcctJournalFilter] = useState<string>('All');
+  const [acctJournalFilter, setAcctJournalFilter] = useState<'All' | 'Settled' | 'Committed' | 'Yield'>('All');
   const [acctCopiedHash, setAcctCopiedHash] = useState<string | null>(null);
   const [acctOnchainQuery, setAcctOnchainQuery] = useState('');
   const [acctOnchainSelectedPO, setAcctOnchainSelectedPO] = useState<string | null>(null);
-  const [acctOnchainFilter, setAcctOnchainFilter] = useState<string>('All');
+  const [acctOnchainFilter, setAcctOnchainFilter] = useState<'All' | 'Open' | 'Accepted' | 'Funded' | 'Claimed'>('All');
   // ── Phase 2.1: Cash Flow ──
   const [acctCashflowQuery,  setAcctCashflowQuery]  = useState<string>('');
-  const [acctCashflowFilter, setAcctCashflowFilter] = useState<'all' | 'outflows' | 'inflows' | 'yield'>('all');
+  const [acctCashflowFilter, setAcctCashflowFilter] = useState<'All' | 'Outflows' | 'Inflows' | 'Yield'>('All');
   const [acctFeesQuery,  setAcctFeesQuery]  = useState<string>('');
-  const [acctFeesFilter, setAcctFeesFilter] = useState<string>('All');
+  const [acctFeesFilter, setAcctFeesFilter] = useState<'All' | 'PO Creation' | 'Escrow Lock' | 'Inventory' | 'Financing'>('All');
   const [acctYieldQuery, setAcctYieldQuery] = useState<string>('');
+  const [acctYieldFilter, setAcctYieldFilter] = useState<'All' | '2026' | '2025' | '2024'>('All');
   const [acctTaxQuery,   setAcctTaxQuery]   = useState<string>('');
-  const [acctTaxFilter,  setAcctTaxFilter]  = useState<string>('All');
+  const [acctTaxFilter,  setAcctTaxFilter]  = useState<'All' | 'Reportable' | 'Below threshold'>('All');
   const [acctExportOpen, setAcctExportOpen] = useState<boolean>(false);
   // Click-outside handler for the Accounting export dropdown menu (Patch 2.5-E1).
   useEffect(() => {
@@ -16684,7 +16685,7 @@ const addLinkedVendorByDID = async () => {
                             : 'No POs match these filters.'
                         }/>
                       ) : (
-                        <Table cols={[
+                        <Table maxHeight={520} cols={[
                           { k: 'po', label: 'PO', w: 'minmax(180px, 1.5fr)',
                             render: r => (
                               <div style={{ minWidth: 0 }}>
@@ -16893,18 +16894,18 @@ const addLinkedVendorByDID = async () => {
 
                   // ── Auto-fallback filter chip if invalid for current apar ──
                   const validFiltersForApar: Array<typeof acctCashflowFilter> = acctApar === 'payable'
-                    ? ['all', 'outflows', 'yield']
-                    : ['all', 'inflows'];
+                    ? ['All', 'Outflows', 'Yield']
+                    : ['All', 'Inflows'];
                   const effectiveFilter: typeof acctCashflowFilter = validFiltersForApar.includes(acctCashflowFilter)
                     ? acctCashflowFilter
-                    : 'all';
+                    : 'All';
 
                   // ── Apply filter chip ──
                   const filterChipEvents = lensEvents.filter(e => {
-                    if (effectiveFilter === 'all')      return true;
-                    if (effectiveFilter === 'outflows') return e.direction === 'outflow' || (e.direction === 'internal' && acctApar === 'payable');
-                    if (effectiveFilter === 'inflows')  return e.direction === 'inflow'  || (e.direction === 'internal' && acctApar === 'receivable');
-                    if (effectiveFilter === 'yield')    return e.direction === 'yield';
+                    if (effectiveFilter === 'All')      return true;
+                    if (effectiveFilter === 'Outflows') return e.direction === 'outflow' || (e.direction === 'internal' && acctApar === 'payable');
+                    if (effectiveFilter === 'Inflows')  return e.direction === 'inflow'  || (e.direction === 'internal' && acctApar === 'receivable');
+                    if (effectiveFilter === 'Yield')    return e.direction === 'yield';
                     return true;
                   });
 
@@ -16971,13 +16972,13 @@ const addLinkedVendorByDID = async () => {
                   type ChipKey = typeof acctCashflowFilter;
                   const chips: Array<{ k: ChipKey; l: string; count: number }> = acctApar === 'payable'
                     ? [
-                        { k: 'all',      l: 'All',      count: lensEvents.length },
-                        { k: 'outflows', l: 'Outflows', count: outflowsCount },
-                        { k: 'yield',    l: 'Yield',    count: yieldCount },
+                        { k: 'All',      l: 'All',      count: lensEvents.length },
+                        { k: 'Outflows', l: 'Outflows', count: outflowsCount },
+                        { k: 'Yield',    l: 'Yield',    count: yieldCount },
                       ]
                     : [
-                        { k: 'all',     l: 'All',     count: lensEvents.length },
-                        { k: 'inflows', l: 'Inflows', count: inflowsCount },
+                        { k: 'All',     l: 'All',     count: lensEvents.length },
+                        { k: 'Inflows', l: 'Inflows', count: inflowsCount },
                       ];
 
                   // ── Tone helpers ──
@@ -17058,42 +17059,30 @@ const addLinkedVendorByDID = async () => {
                         )}
                       </Card>
 
-                      {/* ── Filter bar (standard <FilterBar> primitive — Patch 2.6.6-B) ── */}
-                      {/* Map between state keys ('all'/'outflows'/etc) and display labels ('All'/'Outflows'/etc) */}
+                      {/* ── Filter bar (standard <FilterBar> primitive — Patch 2.6.6-B; capitalization normalized in Polish #6) ── */}
                       {/* marginTop wrapper compensates for <Card> not having marginBottom baked in (2.6.6-B2) */}
                       <div style={{ marginTop: 16 }}>
-                        {(() => {
-                          const labelByKey: Record<typeof acctCashflowFilter, string> = {
-                            all: 'All', outflows: 'Outflows', inflows: 'Inflows', yield: 'Yield',
-                          };
-                          const keyByLabel: Record<string, typeof acctCashflowFilter> = {
-                            'All': 'all', 'Outflows': 'outflows', 'Inflows': 'inflows', 'Yield': 'yield',
-                          };
-                          const filterLabels = chips.map(c => labelByKey[c.k]);
-                          return (
-                            <FilterBar
-                              query={acctCashflowQuery}
-                              setQuery={setAcctCashflowQuery}
-                              placeholder="Search PO, counterparty, or tx hash…"
-                              filter={labelByKey[effectiveFilter]}
-                              setFilter={(label) => setAcctCashflowFilter(keyByLabel[label] || 'all')}
-                              filters={filterLabels}
-                            />
-                          );
-                        })()}
+                        <FilterBar
+                          query={acctCashflowQuery}
+                          setQuery={setAcctCashflowQuery}
+                          placeholder="Search PO, counterparty, or tx hash…"
+                          filter={effectiveFilter}
+                          setFilter={setAcctCashflowFilter}
+                          filters={chips.map(c => c.k)}
+                        />
                       </div>
 
                       {/* ── Ledger table ── */}
                       {finalEvents.length === 0 ? (
                         <Empty msg={
                           allEvents.length === 0
-                            ? 'No cash flow activity yet.'
-                            : effectiveFilter !== 'all'
-                              ? `No ${effectiveFilter} in this period.`
+                            ? 'No cash flow activity in this period.'
+                            : effectiveFilter !== 'All'
+                              ? `No ${effectiveFilter.toLowerCase()} in this period.`
                               : 'No activity in this period.'
                         } />
                       ) : (
-                        <Table cols={[
+                        <Table maxHeight={520} cols={[
                           { k: 'date',  label: 'Date',         w: '100px',
                             render: (e: CashFlowEvent) => <span className="mono" style={{ fontSize: 12 }}>{new Date(e.timestamp).toLocaleDateString()}</span> },
                           { k: 'po',    label: 'PO',           w: '1.2fr',
@@ -17398,7 +17387,7 @@ const addLinkedVendorByDID = async () => {
                             : 'No entries match these filters.'
                         }/>
                       ) : (
-                        <Table cols={[
+                        <Table maxHeight={520} cols={[
                           { k: 'date', label: 'Date', w: '90px',
                             render: r => (
                               <span className="mono" style={{ fontSize: 12 }}>
@@ -17834,7 +17823,7 @@ const addLinkedVendorByDID = async () => {
                         <Empty msg={
                           allTimelinesByPO.size === 0
                             ? `No on-chain activity in ${periodLabel}.`
-                            : 'No POs match this search.'
+                            : 'No POs match these filters.'
                         }/>
                       ) : (
                         <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 16, alignItems: 'start' }}>
@@ -17861,7 +17850,7 @@ const addLinkedVendorByDID = async () => {
                               display: 'flex', gap: 3, padding: 3, borderRadius: 9,
                               background: 'rgba(180,140,60,0.08)', marginBottom: 10, flexShrink: 0,
                             }}>
-                              {['All', 'Open', 'Accepted', 'Funded', 'Claimed'].map(f => (
+                              {(['All', 'Open', 'Accepted', 'Funded', 'Claimed'] as const).map(f => (
                                 <button key={f} type="button" onClick={() => setAcctOnchainFilter(f)}
                                   style={{
                                     flex: 1, padding: '4px 6px', borderRadius: 6,
@@ -18181,10 +18170,9 @@ const addLinkedVendorByDID = async () => {
                     )
                     .sort((a, b) => b.timestamp - a.timestamp);
 
-                  // Note: dual-profile users may need to switch modes to see all fees (Bug #8).
                   const emptyMsg = activeSide === 'buyer'
-                    ? 'No buyer-side platform fees from your active wallet in this period. Switch to Customer mode to view buyer-side fees if you operate dual profiles.'
-                    : 'No seller-side platform fees from your active wallet in this period. Switch to Vendor mode to view seller-side fees if you operate dual profiles.';
+                    ? 'No buyer-side platform fees in this period.'
+                    : 'No seller-side platform fees in this period.';
 
                   return (
                     <>
@@ -18207,7 +18195,7 @@ const addLinkedVendorByDID = async () => {
                       {filteredRows.length === 0 ? (
                         <Empty msg={emptyMsg} />
                       ) : (
-                        <Table cols={[
+                        <Table maxHeight={520} cols={[
                           { k: 'date',  label: 'Date',     w: '90px',  render: (r: FeeRow) => <span className="mono" style={{ fontSize: 12 }}>{new Date(r.timestamp).toLocaleDateString()}</span> },
                           { k: 'po',    label: 'PO',       w: '180px', render: (r: FeeRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.poName}</span> },
                           { k: 'cat',   label: 'Fee Type', w: '140px', render: (r: FeeRow) => <span style={{ fontSize: 13 }}>{r.feeType}</span> },
@@ -18302,9 +18290,14 @@ const addLinkedVendorByDID = async () => {
 
                   const closedCount     = allRows.length;
 
+                  // ── Tax-year filter (chips) ──
+                  const yearFilteredRows = acctYieldFilter === 'All'
+                    ? allRows
+                    : allRows.filter(r => new Date(r.timestamp).getFullYear().toString() === acctYieldFilter);
+
                   // ── Search filter ──
                   const q = acctYieldQuery.trim().toLowerCase();
-                  const filteredRows = (q === '' ? allRows : allRows.filter(r =>
+                  const filteredRows = (q === '' ? yearFilteredRows : yearFilteredRows.filter(r =>
                     r.poName.toLowerCase().includes(q) ||
                     r.txHash.toLowerCase().includes(q)
                   ))
@@ -18312,7 +18305,9 @@ const addLinkedVendorByDID = async () => {
 
                   const emptyMsg = closedCount === 0
                     ? 'No realized yield yet — closed yield positions will appear here once escrows are claimed.'
-                    : 'No yield realized in this period.';
+                    : acctYieldFilter !== 'All' && yearFilteredRows.length === 0
+                      ? `No yield realized in tax year ${acctYieldFilter}.`
+                      : 'No yield matches this search.';
 
                   return (
                     <>
@@ -18325,8 +18320,9 @@ const addLinkedVendorByDID = async () => {
 
                       <FilterBar
                         query={acctYieldQuery} setQuery={setAcctYieldQuery}
+                        filter={acctYieldFilter} setFilter={setAcctYieldFilter}
+                        filters={['All', '2026', '2025', '2024']}
                         placeholder="Search PO or tx hash…"
-                        hideFilters
                       />
 
                       {filteredRows.length === 0 ? (
@@ -18437,9 +18433,9 @@ const addLinkedVendorByDID = async () => {
                   const emptyMsg = allRows.length === 0
                     ? `No vendor payments in tax year ${taxYearForView}.`
                     : acctTaxFilter === 'Reportable'
-                      ? `No vendors over $600 threshold in tax year ${taxYearForView}.`
+                      ? 'No vendors over $600 threshold.'
                       : acctTaxFilter === 'Below threshold'
-                        ? `No vendors below $600 threshold in tax year ${taxYearForView}.`
+                        ? 'No vendors below $600 threshold.'
                         : 'No matching vendors.';
 
                   return (
