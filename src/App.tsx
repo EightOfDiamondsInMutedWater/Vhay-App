@@ -100,8 +100,8 @@ interface Item { num: string; qty: string; piecePrice?: string; total: string; i
 interface Attachment { name: string; uri: string; }
 interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string; }
 interface SavedPO { id: string; poName: string; dateIssued: string; total: string; ipfsUri: string; status: 'open' | 'accepted' | 'funded' | 'claimed' | 'updated' | 'recalled' | 'superseded'; issuanceId: string; escrowSequence?: number; txHash: string; buyerAddress: string; vendorAddress: string; paymentTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; vendorUUID?: string; clawbackEnabled?: boolean; parentIssuanceId?: string; yieldOptIn?: boolean; metadata: any; }
-interface Profile { company: string; name: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
-interface PublicProfile { company: string; name: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
+interface PublicProfile { company: string; name: string; jobTitle?: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity?: string; shippingState?: string; shippingZip?: string; shippingCountry?: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
+interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -817,11 +817,23 @@ const YieldBadge: React.FC<{ poIssuanceId: string; positions: YieldPosition[] }>
 
 export default function App() {
   const [mode, setMode] = useState<'customer' | 'vendor'>('customer');
+  useEffect(() => {
+    setActiveTab(prev => {
+      if (prev === 'customerProfile' && mode === 'vendor') return 'vendorProfile';
+      if (prev === 'vendorProfile' && mode === 'customer') return 'customerProfile';
+      return prev;
+    });
+  }, [mode]);
   const [activeTab, setActiveTab] = useState<InternalTab>('create');
   const [inputVendorWalletAddress, setInputVendorWalletAddress] = useState('');
   const [inputCustomerWalletAddress, setInputCustomerWalletAddress] = useState('');
-  const [customerProfileSubTab, setCustomerProfileSubTab] = useState<'profile' | 'links'>('profile');
-  const [vendorProfileSubTab, setVendorProfileSubTab] = useState<'profile' | 'links'>('profile');
+  const [customerPersonEditing, setCustomerPersonEditing] = useState(false);
+  const [customerSeedVisible, setCustomerSeedVisible] = useState(false);
+  const [customerSaving, setCustomerSaving] = useState(false);
+  const [vendorPersonEditing, setVendorPersonEditing] = useState(false);
+  const [vendorSeedVisible, setVendorSeedVisible] = useState(false);
+  const [vendorSaving, setVendorSaving] = useState(false);
+  const [refreshingUUIDs, setRefreshingUUIDs] = useState<Set<string>>(new Set());
   const [overviewSubTab, setOverviewSubTab] = useState<'summary' | 'details'>('summary');
   const [createSubTab, setCreateSubTab] = useState<'creation' | 'update'>('creation');
   const [poName, setPoName] = useState('');
@@ -1116,9 +1128,38 @@ export default function App() {
   const [countdown, setCountdown] = useState('');
   const [ipfsUri, setIpfsUri] = useState('');
   const [savedPOs, setSavedPOs] = useState<SavedPO[]>([]);
-  const [customerProfile, setCustomerProfile] = useState<Profile>({ company: '', name: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
-  const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
-
+  const [customerProfile, setCustomerProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
+  const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
+  const [customerDidStatus, setCustomerDidStatus] = useState<'checking' | 'active' | 'none'>('checking');
+  useEffect(() => {
+    if (!customerProfile.classicAddress) { setCustomerDidStatus('checking'); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await resolveDID(customerProfile.classicAddress);
+        if (cancelled) return;
+        setCustomerDidStatus(result?.raw ? 'active' : 'none');
+      } catch {
+        if (!cancelled) setCustomerDidStatus('none');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [customerProfile.classicAddress]);
+  const [vendorDidStatus, setVendorDidStatus] = useState<'checking' | 'active' | 'none'>('checking');
+  useEffect(() => {
+    if (!vendorProfile.classicAddress) { setVendorDidStatus('checking'); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await resolveDID(vendorProfile.classicAddress);
+        if (cancelled) return;
+        setVendorDidStatus(result?.raw ? 'active' : 'none');
+      } catch {
+        if (!cancelled) setVendorDidStatus('none');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [vendorProfile.classicAddress]);
   // ── User identity set: addresses owned by the user across all profiles ──
   // Future-proof for unified-profile world: when one wallet covers both buy + sell,
   // this Set collapses to size 1 and consumer code (cashflow, journal, etc.) doesn't change.
@@ -1756,6 +1797,18 @@ export default function App() {
   const pendingPublicProfilesRef = useRef<{ [uuid: string]: PublicProfile } | null>(null);
   const [selectedLinkedVendor, setSelectedLinkedVendor] = useState<PublicProfile | null>(null);
   const [selectedLinkedCustomer, setSelectedLinkedCustomer] = useState<PublicProfile | null>(null);
+  useEffect(() => {
+    if (selectedLinkedVendor) {
+      const fresh = publicProfiles[selectedLinkedVendor.profileUUID];
+      if (fresh && fresh !== selectedLinkedVendor) setSelectedLinkedVendor(fresh);
+    }
+  }, [publicProfiles, selectedLinkedVendor]);
+  useEffect(() => {
+    if (selectedLinkedCustomer) {
+      const fresh = publicProfiles[selectedLinkedCustomer.profileUUID];
+      if (fresh && fresh !== selectedLinkedCustomer) setSelectedLinkedCustomer(fresh);
+    }
+  }, [publicProfiles, selectedLinkedCustomer]);
   const [vendorsExpanded, setVendorsExpanded] = useState(false);
   const [customersExpanded, setCustomersExpanded] = useState(false);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
@@ -2424,11 +2477,12 @@ export default function App() {
                 )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
                   {[
-                    { k: 'Email',   v: data.email,   mono: false },
-                    { k: 'Phone',   v: data.phone,   mono: false },
-                    { k: 'Address', v: data.address, mono: false },
-                    { k: 'Wallet',  v: data.classicAddress, mono: true },
-                    { k: 'ID',      v: data.uniqueID, mono: true },
+                    { k: 'Email',            v: data.email,                                          mono: false },
+                    { k: 'Phone',            v: data.phone,                                          mono: false },
+                    { k: 'Billing address',  v: data.address,                                        mono: false },
+                    { k: 'Shipping address', v: data.shippingAddress || (data.address ? '—' : ''),   mono: false },
+                    { k: 'Wallet',           v: data.classicAddress,                                 mono: true },
+                    { k: 'ID',               v: data.uniqueID,                                       mono: true },
                   ].filter(r => r.v).map(r => (
                     <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, minWidth: 0 }}>
                       <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>{r.k}</span>
@@ -3469,7 +3523,7 @@ useEffect(() => {
     }
   }, 60000);
   return () => clearInterval(interval);
-}, [autoRefreshEnabled]);
+}, [autoRefreshEnabled, mode]);
 
 // Keep UUID refs in sync so loadPOsFromLedger always reads current values from stale closures
 useEffect(() => { customerLinkedVendorUUIDsRef.current = customerLinkedVendorUUIDs; }, [customerLinkedVendorUUIDs]);
@@ -4813,10 +4867,10 @@ const getUpdatablePOs = () => {
 
   const getProfileForAddress = (address: string): PublicProfile | null => {
     if (customerProfile.classicAddress === address) {
-      return { company: customerProfile.company, name: customerProfile.name, email: customerProfile.email, phone: customerProfile.phone, address: customerProfile.address, city: customerProfile.city, state: customerProfile.state, zip: customerProfile.zip, country: customerProfile.country, uniqueID: customerProfile.uniqueID, classicAddress: customerProfile.classicAddress, profileUUID: customerProfile.profileUUID, timestamp: Date.now(), walletHistory: customerProfile.walletHistory };
+      return { company: customerProfile.company, name: customerProfile.name, email: customerProfile.email, phone: customerProfile.phone, address: customerProfile.address, city: customerProfile.city, state: customerProfile.state, zip: customerProfile.zip, country: customerProfile.country, shippingAddress: customerProfile.shippingAddress, uniqueID: customerProfile.uniqueID, classicAddress: customerProfile.classicAddress, profileUUID: customerProfile.profileUUID, timestamp: Date.now(), walletHistory: customerProfile.walletHistory };
     }
     if (vendorProfile.classicAddress === address) {
-      return { company: vendorProfile.company, name: vendorProfile.name, email: vendorProfile.email, phone: vendorProfile.phone, address: vendorProfile.address, city: vendorProfile.city, state: vendorProfile.state, zip: vendorProfile.zip, country: vendorProfile.country, uniqueID: vendorProfile.uniqueID, classicAddress: vendorProfile.classicAddress, profileUUID: vendorProfile.profileUUID, timestamp: Date.now(), walletHistory: vendorProfile.walletHistory };
+      return { company: vendorProfile.company, name: vendorProfile.name, email: vendorProfile.email, phone: vendorProfile.phone, address: vendorProfile.address, city: vendorProfile.city, state: vendorProfile.state, zip: vendorProfile.zip, country: vendorProfile.country, shippingAddress: vendorProfile.shippingAddress, uniqueID: vendorProfile.uniqueID, classicAddress: vendorProfile.classicAddress, profileUUID: vendorProfile.profileUUID, timestamp: Date.now(), walletHistory: vendorProfile.walletHistory };
     }
     const allUUIDs = [...customerLinkedVendorUUIDs, ...vendorLinkedCustomerUUIDs];
     for (const uuid of allUUIDs) {
@@ -6817,13 +6871,13 @@ const getUpdatablePOs = () => {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '' });
+          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '', jobTitle: parsed.jobTitle || '', shippingAddress: parsed.shippingAddress || '', shippingCity: parsed.shippingCity || '', shippingState: parsed.shippingState || '', shippingZip: parsed.shippingZip || '', shippingCountry: parsed.shippingCountry || '' });
         } catch (e) {
-          const newProfile = { company: '', name: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: getOrGenerateUUID(`${key}UUID`), walletHistory: [], lastOnChainHash: '' };
+          const newProfile = { company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: getOrGenerateUUID(`${key}UUID`), walletHistory: [], lastOnChainHash: '' };
           setProfile(newProfile); localStorage.setItem(key, JSON.stringify(newProfile));
         }
       } else {
-        const newProfile = { company: '', name: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: getOrGenerateUUID(`${key}UUID`), walletHistory: [], lastOnChainHash: '' };
+        const newProfile = { company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: getOrGenerateUUID(`${key}UUID`), walletHistory: [], lastOnChainHash: '' };
         setProfile(newProfile); localStorage.setItem(key, JSON.stringify(newProfile));
       }
     };
@@ -6838,7 +6892,14 @@ const getUpdatablePOs = () => {
     const savedVendorCustomerUUIDs = localStorage.getItem('vendorLinkedCustomerUUIDs');
     if (savedVendorCustomerUUIDs) try { setVendorLinkedCustomerUUIDs(JSON.parse(savedVendorCustomerUUIDs)); } catch {}
     const savedPublicProfiles = localStorage.getItem('publicProfiles');
-    if (savedPublicProfiles) try { setPublicProfiles(JSON.parse(savedPublicProfiles)); } catch {}
+    if (savedPublicProfiles) try {
+      const parsed = JSON.parse(savedPublicProfiles);
+      const coerced: Record<string, PublicProfile> = {};
+      for (const uuid in parsed) {
+        coerced[uuid] = { ...parsed[uuid], shippingAddress: parsed[uuid].shippingAddress || '' };
+      }
+      setPublicProfiles(coerced);
+    } catch {}
     const savedItems = localStorage.getItem('createItems');
     if (savedItems) try { setItems(JSON.parse(savedItems)); } catch { setItems([]); }
 
@@ -7371,7 +7432,7 @@ const fetchSharedInventoryDoc = async (
       const customerHasNoCred = !customerCredStatus || !customerCredStatus.valid;
       if (customerProfile.lastOnChainHash && contentHash === customerProfile.lastOnChainHash && !customerHasNoCred) { console.log('No profile changes'); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile)); return; }
       if (true) {
-        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
+        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, shippingAddress: updatedProfile.shippingAddress, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
         const client = await getXRPLClient();
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
         // Phase 1A: Use ECDH-derived key instead of manual password
@@ -7437,8 +7498,7 @@ const fetchSharedInventoryDoc = async (
       const vendorHasNoCred = !vendorCredStatus || !vendorCredStatus.valid;
       if (vendorProfile.lastOnChainHash && contentHash === vendorProfile.lastOnChainHash && !vendorHasNoCred) { console.log('No profile changes'); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile)); return; }
       if (true) {
-        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
-        const client = await getXRPLClient();
+        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, shippingAddress: updatedProfile.shippingAddress, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
         // Phase 1A: Use ECDH-derived key instead of manual password
         const ecdhKey = deriveSelfEncryptionKey(wallet);
@@ -7457,6 +7517,7 @@ const fetchSharedInventoryDoc = async (
           DIDDocument: xrpl.convertStringToHex(didDocStr),
           Data: xrpl.convertStringToHex(didDataStr)
         };
+        const client = await getXRPLClient();
         const preparedSet = await client.autofill(didSet);
         const signedSet = wallet.sign(preparedSet);
         await submitBlobQueued(signedSet.tx_blob);
@@ -7513,7 +7574,7 @@ const fetchSharedInventoryDoc = async (
       for (let retry = 0; retry < 3; retry++) {
         try {
           const response = await fetch(gatewayUrl, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
-          if (response.ok) { const { encryptedData } = await response.json(); const decrypted = CryptoJS.AES.decrypt(encryptedData, password).toString(CryptoJS.enc.Utf8); if (!decrypted) throw new Error('Decryption failed'); const profile: PublicProfile = JSON.parse(decrypted); return profile; }
+          if (response.ok) { const { encryptedData } = await response.json(); const decrypted = CryptoJS.AES.decrypt(encryptedData, password).toString(CryptoJS.enc.Utf8); if (!decrypted) throw new Error('Decryption failed'); const parsed = JSON.parse(decrypted); const profile: PublicProfile = { ...parsed, shippingAddress: parsed.shippingAddress || '' }; return profile; }
         } catch (err) { console.error(`Failed with gateway ${gatewayUrl} (attempt ${retry + 1}):`, err); await new Promise(resolve => setTimeout(resolve, 2000)); }
       }
     }
@@ -7701,7 +7762,11 @@ const addLinkedVendorByDID = async () => {
     setIsRefreshing(false);
   };
 
-  const handleRefresh = (uuid: string) => { manualRefreshProfile(uuid); };
+  const handleRefresh = async (uuid: string) => {
+    setRefreshingUUIDs(prev => new Set(prev).add(uuid));
+    try { await manualRefreshProfile(uuid); }
+    finally { setRefreshingUUIDs(prev => { const next = new Set(prev); next.delete(uuid); return next; }); }
+  };
 
   const getLatestProfileHashFromChain = async (address: string): Promise<string | null> => {
     try {
@@ -7940,7 +8005,7 @@ const addLinkedVendorByDID = async () => {
           <main key={mode + '-' + activeTab} className="rise">
         {activeTab === 'create' && mode === 'customer' && (
           <Page
-            tag="Buy · Purchase orders"
+            tag="Buy · Purchase Orders"
             title={createSubTab === 'creation' ? 'Create a Purchase Order' : 'Update a Purchase Order'}
             subtitle={createSubTab === 'creation'
               ? 'Draft a new PO from scratch — configure terms, add line items, attach documents, and issue.'
@@ -8000,7 +8065,7 @@ const addLinkedVendorByDID = async () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
                   {/* 01 · PO overview */}
-                  <Card label={<StepLabel n="01" title="PO overview"/>}>
+                  <Card label={<StepLabel n="01" title="PO Overview"/>}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                       <Field label="PO name" full>
                         <input value={poName} onChange={(e) => setPoName(e.target.value)}
@@ -8072,7 +8137,7 @@ const addLinkedVendorByDID = async () => {
                   </Card>
 
                   {/* 03 · Terms & settlement */}
-                  <Card label={<StepLabel n="03" title="Terms & settlement"/>}>
+                  <Card label={<StepLabel n="03" title="Terms & Settlement"/>}>
                     <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
                       <Field label="Payment terms">
                         <SelectBox value={paymentTerms} onChange={setPaymentTerms}
@@ -8183,7 +8248,7 @@ const addLinkedVendorByDID = async () => {
 
                   {/* 04 · Order request */}
                   <Card
-                    label={<StepLabel n="04" title="Order request"/>}
+                    label={<StepLabel n="04" title="Order Request"/>}
                     actions={
                       <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                         {items.length} line{items.length !== 1 ? 's' : ''}
@@ -8357,7 +8422,7 @@ const addLinkedVendorByDID = async () => {
                   </Card>
 
                   {/* 05 · Supporting documents */}
-                    <Card label={<StepLabel n="05" title="Supporting documents"/>}>
+                    <Card label={<StepLabel n="05" title="Supporting Documents"/>}>
                       {existingAttachments.length > 0 && (
                         <div style={{ marginBottom: 14 }}>
                           <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
@@ -8452,7 +8517,7 @@ const addLinkedVendorByDID = async () => {
                       <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
                         Draft · unsaved
                       </div>
-                      <div style={{ fontSize: 15, fontWeight: 600 }}>Purchase Order value</div>
+                      <div style={{ fontSize: 15, fontWeight: 600 }}>Purchase Order Value</div>
                     </>
                   }>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
@@ -8751,7 +8816,7 @@ const addLinkedVendorByDID = async () => {
                     )}
 
                     {/* 01 · PO overview */}
-                    <Card label={<StepLabel n="01" title="PO overview"/>}>
+                    <Card label={<StepLabel n="01" title="PO Overview"/>}>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                         <Field label="PO name" full>
                           <input value={poName} onChange={(e) => setPoName(e.target.value)}
@@ -8815,7 +8880,7 @@ const addLinkedVendorByDID = async () => {
                     </Card>
 
                     {/* 03 · Terms & settlement */}
-                    <Card label={<StepLabel n="03" title="Terms & settlement"/>}>
+                    <Card label={<StepLabel n="03" title="Terms & Settlement"/>}>
                       <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
                         <Field label="Payment terms">
                           <SelectBox value={paymentTerms} onChange={setPaymentTerms}
@@ -8843,7 +8908,7 @@ const addLinkedVendorByDID = async () => {
 
                     {/* 04 · Order request */}
                     <Card
-                      label={<StepLabel n="04" title="Order request"/>}
+                      label={<StepLabel n="04" title="Order Request"/>}
                       actions={
                         <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                           {items.length} line{items.length !== 1 ? 's' : ''}
@@ -8996,7 +9061,7 @@ const addLinkedVendorByDID = async () => {
                     </Card>
 
                     {/* 05 · Supporting documents */}
-                    <Card label={<StepLabel n="05" title="Supporting documents"/>}>
+                    <Card label={<StepLabel n="05" title="Supporting Documents"/>}>
                       {existingAttachments.length > 0 && (
                         <div style={{ marginBottom: 14 }}>
                           <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
@@ -9100,7 +9165,7 @@ const addLinkedVendorByDID = async () => {
                     <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                       <Btn variant="ghost"
                         onClick={() => { setSelectedUpdatePO(null); setUpdateResult(''); }}>
-                        Discard changes
+                        Discard Changes
                       </Btn>
                       <button type="button"
                         onClick={handleUpdateSCPO}
@@ -9141,7 +9206,7 @@ const addLinkedVendorByDID = async () => {
                             ? 'PO Updated'
                             : updateSubmitting
                               ? 'Updating…'
-                              : 'Send amendment'}
+                              : 'Send Amendment'}
                         </span>
                       </button>
                     </div>
@@ -9182,7 +9247,7 @@ const addLinkedVendorByDID = async () => {
           return (
             <Page
               tag="Buy · Action queue"
-              title={`${totalInFlight} PO${totalInFlight === 1 ? '' : 's'} in flight`}
+              title={`${totalInFlight} PO${totalInFlight === 1 ? '' : 's'} in Flight`}
               subtitle="Open POs are awaiting counter-party acceptance. Accepted POs are ready to fund into escrow.">
 
               <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 20, alignItems: 'flex-start' }}>
@@ -9460,7 +9525,7 @@ const addLinkedVendorByDID = async () => {
                         )}
 
                         {/* 01 · PO overview */}
-                        <Card label={<StepLabel n="01" title="PO overview"/>}>
+                        <Card label={<StepLabel n="01" title="PO Overview"/>}>
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
                             <Field label="PO name" full>
                               <input value={poName} onChange={(e) => setPoName(e.target.value)} style={inpStyle}/>
@@ -9476,7 +9541,7 @@ const addLinkedVendorByDID = async () => {
                         </Card>
 
                         {/* 02 · Terms & settlement */}
-                        <Card label={<StepLabel n="02" title="Terms & settlement"/>}>
+                        <Card label={<StepLabel n="02" title="Terms & Settlement"/>}>
                           <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
                             <Field label="Payment terms">
                               <SelectBox value={paymentTerms} onChange={setPaymentTerms} options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
@@ -9494,7 +9559,7 @@ const addLinkedVendorByDID = async () => {
                         </Card>
 
                         {/* 03 · Order request */}
-                        <Card label={<StepLabel n="03" title="Order request"/>} actions={
+                        <Card label={<StepLabel n="03" title="Order Request"/>} actions={
                           <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
                             {items.length} line{items.length !== 1 ? 's' : ''}
                           </span>
@@ -9594,7 +9659,7 @@ const addLinkedVendorByDID = async () => {
                         </Card>
 
                         {/* 04 · Supporting documents */}
-                        <Card label={<StepLabel n="04" title="Supporting documents"/>}>
+                        <Card label={<StepLabel n="04" title="Supporting Documents"/>}>
                           {existingAttachments.length > 0 && (
                             <div style={{ marginBottom: 14 }}>
                               <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>From original PO · will be kept unless removed</div>
@@ -9661,7 +9726,7 @@ const addLinkedVendorByDID = async () => {
                             setNewTotal('');
                             setVendor('');
                             setSelectedVendorUUID('');
-                          }}>Discard changes</Btn>
+                          }}>Discard Changes</Btn>
                           <button type="button" onClick={handleUpdateSCPO} disabled={updateSubmitting}
                             style={{
                               position: 'relative', padding: '14px 20px', borderRadius: 14, border: 0,
@@ -9677,7 +9742,7 @@ const addLinkedVendorByDID = async () => {
                               <span style={{ position: 'absolute', inset: 0, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)', backgroundSize: '200% 100%', animation: 'shimmer 1.2s linear infinite' }}/>
                             )}
                             {updateSubmitting ? <IconSpark size={16}/> : <IconSend size={14}/>}
-                            <span style={{ position: 'relative' }}>{updateSubmitting ? 'Updating…' : 'Send amendment'}</span>
+                            <span style={{ position: 'relative' }}>{updateSubmitting ? 'Updating…' : 'Send Amendment'}</span>
                           </button>
                         </div>
 
@@ -9811,11 +9876,12 @@ const addLinkedVendorByDID = async () => {
                                 )}
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
                                   {[
-                                    { k: 'Email',   v: data.email,   mono: false },
-                                    { k: 'Phone',   v: data.phone,   mono: false },
-                                    { k: 'Address', v: data.address, mono: false },
-                                    { k: 'Wallet',  v: data.classicAddress, mono: true },
-                                    { k: 'ID',      v: data.uniqueID, mono: true },
+                                    { k: 'Email',            v: data.email,                                          mono: false },
+                                    { k: 'Phone',            v: data.phone,                                          mono: false },
+                                    { k: 'Billing address',  v: data.address,                                        mono: false },
+                                    { k: 'Shipping address', v: data.shippingAddress || (data.address ? '—' : ''),   mono: false },
+                                    { k: 'Wallet',           v: data.classicAddress,                                 mono: true },
+                                    { k: 'ID',               v: data.uniqueID,                                       mono: true },
                                   ].filter(r => r.v).map(r => (
                                     <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, minWidth: 0 }}>
                                       <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>{r.k}</span>
@@ -9923,7 +9989,7 @@ const addLinkedVendorByDID = async () => {
           return (
             <Page
               tag="Sell · Action queue"
-              title={`${totalInFlight} PO${totalInFlight === 1 ? '' : 's'} in flight`}
+              title={`${totalInFlight} PO${totalInFlight === 1 ? '' : 's'} in Flight`}
               subtitle="Open POs are awaiting your acceptance. Funded POs can be claimed on delivery."
               actions={
                 <Btn variant="ghost" icon={IconRefresh} onClick={refreshFinancingStatus}>
@@ -10425,7 +10491,7 @@ const addLinkedVendorByDID = async () => {
           return (
             <Page
               tag="Sell · Inventory"
-              title={invTab === 'stock' ? 'Stock ledger & receipts' : 'Intake & onboarding'}
+              title={invTab === 'stock' ? 'Stock Ledger & Receipts' : 'Intake & Onboarding'}
               subtitle={invTab === 'stock'
                 ? 'Every part, revision, and receipt — searchable, versioned, on-chain attested.'
                 : 'Bring parts into the ledger — bulk upload, intake from XRPL, or register by hand.'}
@@ -10495,7 +10561,7 @@ const addLinkedVendorByDID = async () => {
                       <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
                         {filteredItems.length} of {currentItems.length} parts
                       </div>
-                      <div style={{ fontSize: 18, fontWeight: 600 }}>Stock ledger</div>
+                      <div style={{ fontSize: 18, fontWeight: 600 }}>Stock Ledger</div>
                     </>}>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
@@ -11215,7 +11281,7 @@ const addLinkedVendorByDID = async () => {
                           <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
                             Warehouse · MPT destination
                           </div>
-                          <div style={{ fontSize: 18, fontWeight: 600 }}>Warehouse wallet</div>
+                          <div style={{ fontSize: 18, fontWeight: 600 }}>Warehouse Wallet</div>
                         </>}
                         actions={
                           <Chip tone={fullyConfigured ? 'green' : savedValid ? 'gold' : 'neutral'}>
@@ -11340,7 +11406,7 @@ const addLinkedVendorByDID = async () => {
                       <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
                         Bulk import
                       </div>
-                      <div style={{ fontSize: 18, fontWeight: 600 }}>Upload parts</div>
+                      <div style={{ fontSize: 18, fontWeight: 600 }}>Upload Parts</div>
                     </>}
                     actions={
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -12964,7 +13030,7 @@ const addLinkedVendorByDID = async () => {
           return (
             <Page
               tag="Buy · Overview"
-              title="Procurement overview"
+              title="Procurement Overview"
               subtitle="Spend, pipeline, and purchase order flow across your active supply base."
               actions={
                 <Btn variant="ghost" icon={IconRefresh}
@@ -13008,7 +13074,7 @@ const addLinkedVendorByDID = async () => {
                       Trailing 12 months · committed spend
                     </div>
                     <div style={{ fontSize: 18, fontWeight: 600 }}>
-                      Procurement spend · <span className="mono" style={{ fontWeight: 500 }}>${formatNumber(trailingTotal, { decimals: 0 })}</span>
+                      Procurement Spend · <span className="mono" style={{ fontWeight: 500 }}>${formatNumber(trailingTotal, { decimals: 0 })}</span>
                     </div>
                   </>}
                   actions={
@@ -13030,7 +13096,7 @@ const addLinkedVendorByDID = async () => {
                       Spend by {overviewMix}
                     </div>
                     <div style={{ fontSize: 16, fontWeight: 600 }}>
-                      {overviewMix === 'category' ? 'Category mix' : 'Top suppliers'}
+                      {overviewMix === 'category' ? 'Category Mix' : 'Top suppliers'}
                     </div>
                   </>}
                   actions={
@@ -13084,7 +13150,7 @@ const addLinkedVendorByDID = async () => {
               </div>
 
               {/* All POs table */}
-              <Card layered label="Purchase orders"
+              <Card layered label="Purchase Orders"
                 actions={
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <div className="etched" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 10 }}>
@@ -13694,7 +13760,7 @@ const addLinkedVendorByDID = async () => {
                       Sold by {vOvwMix === 'stage' ? 'order stage' : vOvwMix}
                     </div>
                     <div style={{ fontSize: 16, fontWeight: 600 }}>
-                      {vOvwMix === 'category' ? 'Category mix' : vOvwMix === 'buyer' ? 'Top buyers' : 'Pipeline by stage'}
+                      {vOvwMix === 'category' ? 'Category Mix' : vOvwMix === 'buyer' ? 'Top buyers' : 'Pipeline by stage'}
                     </div>
                   </>}
                   actions={
@@ -13755,7 +13821,7 @@ const addLinkedVendorByDID = async () => {
                 </Card>
               </div>
 
-              <Card layered label="Purchase orders"
+              <Card layered label="Purchase Orders"
                 actions={
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <div className="etched" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 10 }}>
@@ -14124,294 +14190,575 @@ const addLinkedVendorByDID = async () => {
           );
         })()}
         {activeTab === 'customerProfile' && hydrated && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>Profile</h2>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '40px' }}>
-              <button onClick={() => setCustomerProfileSubTab('profile')} style={{ height: '50px', padding: '0 30px', background: customerProfileSubTab === 'profile' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: customerProfileSubTab === 'profile' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Profile
-              </button>
-              <button onClick={() => setCustomerProfileSubTab('links')} style={{ height: '50px', padding: '0 30px', background: customerProfileSubTab === 'links' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: customerProfileSubTab === 'links' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Links
-              </button>
-            </div>
-            {customerProfileSubTab === 'profile' && (
-              <div>
-                <p style={{ textAlign: 'center', marginBottom: '30px', color: '#666' }}>Save your company and wallet info — seed will auto-fill when creating POs.</p>
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Unique ID / Name</label>
-                <input placeholder="Enter unique ID (e.g. Customer123)" value={customerProfile.uniqueID} onChange={(e) => setCustomerProfile({ ...customerProfile, uniqueID: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Company Name</label>
-                <input placeholder="Enter your company name" value={customerProfile.company} onChange={(e) => setCustomerProfile({ ...customerProfile, company: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Contact Name</label>
-                <input placeholder="Your full name" value={customerProfile.name} onChange={(e) => setCustomerProfile({ ...customerProfile, name: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Profile Contact Email Address</label>
-                <input placeholder="Your email address" value={customerProfile.email} onChange={(e) => setCustomerProfile({ ...customerProfile, email: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Phone Number</label>
-                <input placeholder="Your phone number" value={customerProfile.phone} onChange={(e) => setCustomerProfile({ ...customerProfile, phone: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Street Address</label>
-                <input placeholder="Street address" value={customerProfile.address} onChange={(e) => setCustomerProfile({ ...customerProfile, address: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', maxWidth: '600px', margin: '0 auto 20px auto' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>City</label>
-                    <input placeholder="City" value={customerProfile.city} onChange={(e) => setCustomerProfile({ ...customerProfile, city: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+          <Page
+            tag="Profile · Workspace"
+            title={customerProfile.company || 'Profile'}
+            subtitle="Your workspace, team, and platform settings.">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* ——— Person card ——— */}
+              <Card layered style={{ padding: 26 }}>
+                <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+                  <div style={{
+                    width: 96, height: 96, borderRadius: 24,
+                    background: 'linear-gradient(135deg, oklch(0.92 0.1 88), oklch(0.72 0.15 58))',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: '#2a1f08', fontSize: 36, fontWeight: 600, letterSpacing: '-0.04em',
+                    boxShadow: 'inset 0 2px 0 rgba(255,255,255,0.6), 0 10px 30px -10px rgba(200,150,50,0.5)',
+                    flexShrink: 0,
+                  }}>
+                    {(customerProfile.name || '').split(' ').map(s => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '—'}
                   </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>State / Province</label>
-                    <input placeholder="State or province" value={customerProfile.state} onChange={(e) => setCustomerProfile({ ...customerProfile, state: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+                  {customerPersonEditing ? (
+                    <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <Field label="Name" full>
+                        <input value={customerProfile.name} onChange={(e) => setCustomerProfile({ ...customerProfile, name: e.target.value })} placeholder="Your full name" style={inpStyle}/>
+                      </Field>
+                      <Field label="Job title" full>
+                        <input value={customerProfile.jobTitle} onChange={(e) => setCustomerProfile({ ...customerProfile, jobTitle: e.target.value })} placeholder="e.g. Head of procurement" style={inpStyle}/>
+                      </Field>
+                      <Field label="Email" full>
+                        <input value={customerProfile.email} onChange={(e) => setCustomerProfile({ ...customerProfile, email: e.target.value })} placeholder="you@company.com" style={inpStyle}/>
+                      </Field>
+                      <Field label="Phone" full>
+                        <input value={customerProfile.phone} onChange={(e) => setCustomerProfile({ ...customerProfile, phone: e.target.value })} placeholder="+1 (555) 555-0100" style={inpStyle}/>
+                      </Field>
+                      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                        <Btn variant="ghost" onClick={() => setCustomerPersonEditing(false)}>Cancel</Btn>
+                        <Btn variant="primary" icon={IconCheck} onClick={() => { saveCustomerProfile(); setCustomerPersonEditing(false); }}>Save</Btn>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ flex: 1 }}>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                          {customerProfile.jobTitle || 'Add your job title'}
+                        </div>
+                        <h2 style={{ margin: '4px 0 6px', fontSize: 28, fontWeight: 500, letterSpacing: '-0.02em' }}>
+                          {customerProfile.name || 'Add your name'}
+                        </h2>
+                        <div style={{ display: 'flex', gap: 12, color: 'var(--ink-2)', fontSize: 13, flexWrap: 'wrap' }}>
+                          {customerProfile.email && <span>{customerProfile.email}</span>}
+                          {customerProfile.email && customerProfile.phone && <span style={{ color: 'var(--ink-3)' }}>·</span>}
+                          {customerProfile.phone && <span>{customerProfile.phone}</span>}
+                        </div>
+                      </div>
+                      <Btn variant="ghost" onClick={() => setCustomerPersonEditing(true)}>Edit</Btn>
+                    </>
+                  )}
+                </div>
+              </Card>
+
+              {/* ——— Organization ——— */}
+              {/* ——— 3-COLUMN GRID: Organization | Wallet | Verification ——— */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 320px', gap: 16, alignItems: 'stretch' }}>
+
+              {/* — Organization — */}
+              <Card layered label="Organization">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <Field label="Unique ID" full>
+                      <input value={customerProfile.uniqueID} onChange={(e) => setCustomerProfile({ ...customerProfile, uniqueID: e.target.value })} placeholder="e.g. Customer123" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)' }}/>
+                    </Field>
+                    <Field label="Company name" full>
+                      <input value={customerProfile.company} onChange={(e) => setCustomerProfile({ ...customerProfile, company: e.target.value })} placeholder="e.g. Vhay Industries LLC" style={inpStyle}/>
+                    </Field>
                   </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>ZIP / Postal Code</label>
-                    <input placeholder="ZIP or postal code" value={customerProfile.zip} onChange={(e) => setCustomerProfile({ ...customerProfile, zip: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+
+                  <Field label="Billing address" full>
+                    <textarea value={customerProfile.address} onChange={(e) => setCustomerProfile({ ...customerProfile, address: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
+                  </Field>
+
+                  <Field label="Shipping address" full>
+                    <textarea value={customerProfile.shippingAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, shippingAddress: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
+                  </Field>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      {!customerProfile.shippingAddress.trim() && (
+                        <span style={{ color: 'oklch(0.55 0.22 25)', fontSize: 12 }}>Shipping address is required to save</span>
+                      )}
+                    </div>
+                    <div style={{ opacity: customerProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: customerProfile.shippingAddress.trim() ? 'auto' : 'none' }}>
+                      <Btn variant="primary" icon={customerSaving ? IconRefresh : IconCheck} onClick={async () => {
+                        if (customerSaving || !customerProfile.shippingAddress.trim()) return;
+                        setCustomerSaving(true);
+                        try { await saveCustomerProfile(); }
+                        finally { setCustomerSaving(false); }
+                      }}>{customerSaving ? 'Saving…' : 'Save profile'}</Btn>
+                    </div>
                   </div>
                 </div>
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Country</label>
-                <input placeholder="Country" value={customerProfile.country} onChange={(e) => setCustomerProfile({ ...customerProfile, country: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Wallet Seed (secret!)</label>
-                <input placeholder="Your XRPL wallet seed (keep secret)" value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Wallet Address</label>
-                <input placeholder="Your XRPL classic address (r...)" value={customerProfile.classicAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, classicAddress: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                                
-                <button onClick={saveCustomerProfile} style={{ display: 'block', margin: '20px auto 40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Save Profile
-                </button>
-                {customerProfile.classicAddress && (
-                  <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <DIDStatusBadge address={customerProfile.classicAddress} />
-                    {customerCredStatus && (
-                      <span style={{ padding: '8px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold', background: customerCredStatus.valid ? '#E8F5E9' : '#FFF3E0', color: customerCredStatus.valid ? '#2E7D32' : '#E65100', border: customerCredStatus.valid ? '2px solid #2E7D32' : '2px solid #E65100' }}>
-                        {customerCredStatus.valid ? `${customerCredStatus.tier?.charAt(0).toUpperCase()}${customerCredStatus.tier?.slice(1)} ✓` : 'No Credential'}
-                      </span>
-                    )}
+              </Card>
+
+              {/* — Company wallet — */}
+              <Card layered label="Company Wallet">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <Field label="Wallet address" full>
+                    <input value={customerProfile.classicAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, classicAddress: e.target.value })} placeholder="Your XRPL classic address (r…)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', textOverflow: 'ellipsis' }}/>
+                  </Field>
+                  <Field label="Seed phrase" full>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input type={customerSeedVisible ? 'text' : 'password'} value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} placeholder="Your XRPL wallet seed (keep secret)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
+                      <button onClick={() => setCustomerSeedVisible(v => !v)} style={{ background: 'rgba(180,140,60,0.12)', border: '1px solid rgba(180,140,60,0.2)', color: 'var(--ink-2)', fontSize: 12, fontWeight: 600, padding: '0 14px', borderRadius: 10, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                        {customerSeedVisible ? 'Hide' : 'Reveal'}
+                      </button>
+                    </div>
+                  </Field>
+
+                  {/* Security reminder */}
+                  <div style={{ display: 'flex', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(220, 80, 60, 0.06)', border: '1px solid rgba(220, 80, 60, 0.18)', alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: 14, lineHeight: 1.3 }}>🔒</span>
+                    <span style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.45 }}>
+                      Never share this seed phrase. Vhay will never ask for it.
+                    </span>
                   </div>
-                )}
-                <label style={{ display: 'block', textAlign: 'center', color: '#666' }}>
-                  <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
-                  Enable Auto-Refresh
-                </label>
-              </div>
-            )}
-            {customerProfileSubTab === 'links' && (
-              <div>
-                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Link Vendor by Wallet Address</h3>
-                <input placeholder="Enter Vendor Wallet Address (r...)" value={inputVendorWalletAddress} onChange={(e) => setInputVendorWalletAddress(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <button onClick={addLinkedVendorByDID} style={{ display: 'block', margin: '0 auto 20px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Link Vendor
-                </button>
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Linked Vendors</h3>
-                {linkedVendors.length === 0 ? (
-                  <p>No linked vendors</p>
-                ) : (
-                  <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #D88F2E', borderRadius: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>Unique ID</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>Company Name</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Status</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(vendorsExpanded ? linkedVendors : linkedVendors.slice(0, 2)).map(v => (
-                          <tr key={v.profileUUID}>
-                            <td style={{ padding: '10px' }}>{v.uniqueID}</td>
-                            <td style={{ padding: '10px' }}>{v.company}</td>
-                            <td style={{ padding: '10px' }}>{isOutdated(v) ? 'Outdated' : 'Current'}</td>
-                            <td style={{ padding: '10px', display: 'flex', gap: '5px' }}>
-                              <button onClick={() => setSelectedLinkedVendor(v)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                View
-                              </button>
-                              <button onClick={() => handleRefresh(v.profileUUID)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                Refresh
-                              </button>
-                              <button onClick={() => unlinkProfile(v.profileUUID)} style={{ background: '#e74c3c', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                Unlink
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {linkedVendors.length > 2 && (
-                      <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                        <button onClick={() => setVendorsExpanded(!vendorsExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                          {vendorsExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                        </button>
+
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--ink-2)', paddingTop: 4 }}>
+                    <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
+                    Enable auto-refresh
+                  </label>
+                </div>
+              </Card>
+
+              {/* — Verification — */}
+              <Card layered>
+                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                  Identity · Verified on-chain
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Verification</div>
+
+                {customerProfile.classicAddress ? (
+                  <>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {/* Credentials row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: customerCredStatus?.valid ? 'rgba(76,175,80,0.18)' : 'rgba(180,140,60,0.18)', color: customerCredStatus?.valid ? 'oklch(0.5 0.18 145)' : 'var(--ink-3)', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
+                          {customerCredStatus?.valid ? '✓' : '—'}
+                        </div>
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Credentials</span>
+                        <Chip tone={customerCredStatus?.valid ? 'green' : 'gold'}>
+                          {customerCredStatus?.valid ? 'Approved' : 'Not credentialed'}
+                        </Chip>
+                      </div>
+                      {/* DID row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: customerDidStatus === 'active' ? 'rgba(76,175,80,0.18)' : 'rgba(180,140,60,0.18)', flexShrink: 0 }}>
+                          <div style={{ width: 12, height: 12, borderRadius: 999, background: customerDidStatus === 'active' ? 'oklch(0.5 0.18 145)' : customerDidStatus === 'checking' ? 'var(--ink-3)' : 'oklch(0.65 0.16 60)' }}/>
+                        </div>
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>DID</span>
+                        <Chip tone={customerDidStatus === 'active' ? 'green' : customerDidStatus === 'checking' ? 'neutral' : 'gold'}>
+                          {customerDidStatus === 'active' ? 'Active' : customerDidStatus === 'checking' ? 'Checking' : 'Not registered'}
+                        </Chip>
+                      </div>
+                      {/* Permissioned Domain row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: customerCredStatus?.tier ? 'rgba(80,140,220,0.18)' : 'rgba(180,140,60,0.12)', color: customerCredStatus?.tier ? 'oklch(0.55 0.16 240)' : 'var(--ink-3)', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>◆</div>
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Permissioned Domain</span>
+                        <Chip tone={customerCredStatus?.tier ? 'blue' : 'neutral'}>
+                          {customerCredStatus?.tier ? `${customerCredStatus.tier.charAt(0).toUpperCase()}${customerCredStatus.tier.slice(1)}` : '—'}
+                        </Chip>
+                      </div>
+                    </div>
+                    {customerCredStatus?.valid && customerDidStatus === 'active' && (
+                      <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(76,175,80,0.06)', border: '1px solid rgba(76,175,80,0.22)' }}>
+                        <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.42 0.16 145)', marginBottom: 2 }}>
+                          ✓ Verified
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-2)' }}>
+                          Re-issues automatically on change.
+                        </div>
                       </div>
                     )}
+                  </>
+                ) : (
+                  <div style={{ padding: '14px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px dashed rgba(180,140,60,0.25)', fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
+                    Enter a wallet address to view verification.
                   </div>
                 )}
-                {selectedLinkedVendor && (
-                  <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
-                    <h3 style={{ color: '#F2B04A' }}>Vendor Details</h3>
-                    <p><strong style={{ color: '#F2B04A' }}>Unique ID:</strong> {selectedLinkedVendor.uniqueID}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Company Name:</strong> {selectedLinkedVendor.company}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Contact Name:</strong> {selectedLinkedVendor.name}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Email:</strong> {selectedLinkedVendor.email}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Phone:</strong> {selectedLinkedVendor.phone}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Address:</strong> {selectedLinkedVendor.address}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>City:</strong> {selectedLinkedVendor.city}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>State:</strong> {selectedLinkedVendor.state}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>ZIP:</strong> {selectedLinkedVendor.zip}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Country:</strong> {selectedLinkedVendor.country}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Wallet Address:</strong> {selectedLinkedVendor.classicAddress}</p>
-                    {selectedLinkedVendor.linkTxHash && (
-                      <p><strong style={{ color: '#F2B04A' }}>On-chain Link Tx:</strong> <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedVendor.linkTxHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                        {selectedLinkedVendor.linkTxHash.substring(0, 10)}...
-                      </a></p>
-                    )}
-                    <button onClick={() => setSelectedLinkedVendor(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      Close
-                    </button>
-                  </div>
-                )}
+              </Card>
+
               </div>
-            )}
-          </div>
+
+              {/* ——— Profile Links ——— */}
+              <Card layered
+                label={<>
+                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                    Trusted counterparties · {linkedVendors.length} linked
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 600 }}>Linked Sellers</div>
+                </>}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input value={inputVendorWalletAddress} onChange={(e) => setInputVendorWalletAddress(e.target.value)} placeholder="Seller wallet address (r…)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
+                    <Btn variant="primary" icon={IconPlus} onClick={addLinkedVendorByDID}>Link Seller</Btn>
+                  </div>
+                  {linkedVendors.length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>No linked Sellers yet.</div>
+                  ) : (
+                    <>
+                      <div style={{ border: '1px solid rgba(180,140,60,0.18)', borderRadius: 12, overflow: 'hidden' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 13 }}>
+                          <thead>
+                            <tr style={{ background: 'rgba(255, 248, 222, 0.6)' }}>
+                              <th style={{ padding: '10px 12px', textAlign: 'left', width: '28%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Unique ID</th>
+                              <th style={{ padding: '10px 12px', textAlign: 'left', width: '32%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Company</th>
+                              <th style={{ padding: '10px 12px', textAlign: 'left', width: '16%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Status</th>
+                              <th style={{ padding: '10px 12px', textAlign: 'right', width: '24%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(vendorsExpanded ? linkedVendors : linkedVendors.slice(0, 2)).map(v => (
+                              <tr key={v.profileUUID} style={{ borderTop: '1px solid rgba(180,140,60,0.12)' }}>
+                                <td className="mono" style={{ padding: '10px 12px', fontSize: 12 }}>{v.uniqueID}</td>
+                                <td style={{ padding: '10px 12px' }}>{v.company}</td>
+                                <td style={{ padding: '10px 12px' }}>
+                                  <Chip tone={isOutdated(v) ? 'gold' : 'green'}>{isOutdated(v) ? 'Outdated' : 'Current'}</Chip>
+                                </td>
+                                <td style={{ padding: '10px 12px' }}>
+                                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                                    <Btn variant="ghost" onClick={() => setSelectedLinkedVendor(v)}>View</Btn>
+                                    <Btn variant="ghost" icon={IconRefresh} onClick={() => { if (refreshingUUIDs.has(v.profileUUID)) return; handleRefresh(v.profileUUID); }}>{refreshingUUIDs.has(v.profileUUID) ? 'Refreshing…' : 'Refresh'}</Btn>
+                                    <Btn variant="ghost" icon={IconX} onClick={() => unlinkProfile(v.profileUUID)}>Unlink</Btn>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {linkedVendors.length > 2 && (
+                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                          <Btn variant="ghost" onClick={() => setVendorsExpanded(!vendorsExpanded)}>
+                            {vendorsExpanded ? 'Show less' : `Show all ${linkedVendors.length}`}
+                          </Btn>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {selectedLinkedVendor && (
+                    <div className="etched" style={{ padding: 16, borderRadius: 14, marginTop: 4 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Seller details</div>
+                        <Btn variant="ghost" icon={IconX} onClick={() => setSelectedLinkedVendor(null)}>Close</Btn>
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 2 }}>{selectedLinkedVendor.company}</div>
+                      <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 12 }}>{selectedLinkedVendor.uniqueID}</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {[
+                          { k: 'Contact', v: selectedLinkedVendor.name },
+                          { k: 'Email', v: selectedLinkedVendor.email },
+                          { k: 'Phone', v: selectedLinkedVendor.phone },
+                          { k: 'Billing address', v: selectedLinkedVendor.address || [selectedLinkedVendor.city, selectedLinkedVendor.state, selectedLinkedVendor.zip, selectedLinkedVendor.country].filter(Boolean).join(', ') },
+                          { k: 'Shipping address', v: selectedLinkedVendor.shippingAddress || '—' },
+                          { k: 'Wallet', v: selectedLinkedVendor.classicAddress, mono: true },
+                        ].filter(r => r.v).map(r => (
+                          <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+                            <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>{r.k}</span>
+                            <span className={r.mono ? 'mono' : ''} style={{ fontWeight: 500, textAlign: 'right', whiteSpace: 'pre-line', minWidth: 0, wordBreak: 'break-word' }}>{r.v}</span>
+                          </div>
+                        ))}
+                        {selectedLinkedVendor.linkTxHash && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, paddingTop: 8, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
+                            <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>On-chain link</span>
+                            <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedVendor.linkTxHash}`} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 12, color: 'oklch(0.55 0.16 240)', textDecoration: 'none' }}>
+                              {selectedLinkedVendor.linkTxHash.substring(0, 10)}…
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+            </div>
+          </Page>
         )}
         {activeTab === 'vendorProfile' && hydrated && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '30px' }}>Profile</h2>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '20px', marginBottom: '40px' }}>
-              <button onClick={() => setVendorProfileSubTab('profile')} style={{ height: '50px', padding: '0 30px', background: vendorProfileSubTab === 'profile' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: vendorProfileSubTab === 'profile' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Profile
-              </button>
-              <button onClick={() => setVendorProfileSubTab('links')} style={{ height: '50px', padding: '0 30px', background: vendorProfileSubTab === 'links' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'linear-gradient(90deg, rgba(242,176,74,0.85) 0%, rgba(255,217,143,0.85) 100%)', color: '#FFFFFF', border: '1.5px solid #D88F2E', borderRadius: '999px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.18s ease-out', boxShadow: vendorProfileSubTab === 'links' ? 'inset 4px 6px 12px rgba(201,122,42,0.45), inset -1px -1px 2px rgba(255,255,255,0.4)' : '6px 10px 18px rgba(201,122,42,0.45), inset 0 1px 0 rgba(255,255,255,0.35)' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                Links
-              </button>
-            </div>
-            {vendorProfileSubTab === 'profile' && (
-              <div>
-                <p style={{ textAlign: 'center', marginBottom: '30px', color: '#666' }}>Save your company and wallet info — seed will auto-fill when claiming POs.</p>
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Unique ID / Name</label>
-                <input placeholder="Enter unique ID (e.g. Vendor123)" value={vendorProfile.uniqueID} onChange={(e) => setVendorProfile({ ...vendorProfile, uniqueID: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Company Name</label>
-                <input placeholder="Enter your company name" value={vendorProfile.company} onChange={(e) => setVendorProfile({ ...vendorProfile, company: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Contact Name</label>
-                <input placeholder="Your full name" value={vendorProfile.name} onChange={(e) => setVendorProfile({ ...vendorProfile, name: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Profile Contact Email Address</label>
-                <input placeholder="Your email address" value={vendorProfile.email} onChange={(e) => setVendorProfile({ ...vendorProfile, email: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Phone Number</label>
-                <input placeholder="Your phone number" value={vendorProfile.phone} onChange={(e) => setVendorProfile({ ...vendorProfile, phone: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Street Address</label>
-                <input placeholder="Street address" value={vendorProfile.address} onChange={(e) => setVendorProfile({ ...vendorProfile, address: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px', maxWidth: '600px', margin: '0 auto 20px auto' }}>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>City</label>
-                    <input placeholder="City" value={vendorProfile.city} onChange={(e) => setVendorProfile({ ...vendorProfile, city: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+          <Page
+            tag="Profile · Workspace"
+            title={vendorProfile.company || 'Profile'}
+            subtitle="Your workspace, team, and platform settings.">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+              {/* ——— Person card (full width) ——— */}
+              <Card layered style={{ padding: 26 }}>
+                <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start' }}>
+                  <div style={{
+                    width: 96, height: 96, borderRadius: 24,
+                    background: 'linear-gradient(135deg, oklch(0.92 0.1 88), oklch(0.72 0.15 58))',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: '#2a1f08', fontSize: 36, fontWeight: 600, letterSpacing: '-0.04em',
+                    boxShadow: 'inset 0 2px 0 rgba(255,255,255,0.6), 0 10px 30px -10px rgba(200,150,50,0.5)',
+                    flexShrink: 0,
+                  }}>
+                    {(vendorProfile.name || '').split(' ').map(s => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase() || '—'}
                   </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>State / Province</label>
-                    <input placeholder="State or province" value={vendorProfile.state} onChange={(e) => setVendorProfile({ ...vendorProfile, state: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+                  {vendorPersonEditing ? (
+                    <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <Field label="Name" full>
+                        <input value={vendorProfile.name} onChange={(e) => setVendorProfile({ ...vendorProfile, name: e.target.value })} placeholder="Your full name" style={inpStyle}/>
+                      </Field>
+                      <Field label="Job title" full>
+                        <input value={vendorProfile.jobTitle} onChange={(e) => setVendorProfile({ ...vendorProfile, jobTitle: e.target.value })} placeholder="e.g. Head of sales" style={inpStyle}/>
+                      </Field>
+                      <Field label="Email" full>
+                        <input value={vendorProfile.email} onChange={(e) => setVendorProfile({ ...vendorProfile, email: e.target.value })} placeholder="you@company.com" style={inpStyle}/>
+                      </Field>
+                      <Field label="Phone" full>
+                        <input value={vendorProfile.phone} onChange={(e) => setVendorProfile({ ...vendorProfile, phone: e.target.value })} placeholder="+1 (555) 555-0100" style={inpStyle}/>
+                      </Field>
+                      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                        <Btn variant="ghost" onClick={() => setVendorPersonEditing(false)}>Cancel</Btn>
+                        <Btn variant="primary" icon={IconCheck} onClick={() => { saveVendorProfile(); setVendorPersonEditing(false); }}>Save</Btn>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ flex: 1 }}>
+                        <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                          {vendorProfile.jobTitle || 'Add your job title'}
+                        </div>
+                        <h2 style={{ margin: '4px 0 6px', fontSize: 28, fontWeight: 500, letterSpacing: '-0.02em' }}>
+                          {vendorProfile.name || 'Add your name'}
+                        </h2>
+                        <div style={{ display: 'flex', gap: 12, color: 'var(--ink-2)', fontSize: 13, flexWrap: 'wrap' }}>
+                          {vendorProfile.email && <span>{vendorProfile.email}</span>}
+                          {vendorProfile.email && vendorProfile.phone && <span style={{ color: 'var(--ink-3)' }}>·</span>}
+                          {vendorProfile.phone && <span>{vendorProfile.phone}</span>}
+                        </div>
+                      </div>
+                      <Btn variant="ghost" onClick={() => setVendorPersonEditing(true)}>Edit</Btn>
+                    </>
+                  )}
+                </div>
+              </Card>
+
+              {/* ——— 3-COLUMN GRID: Organization | Wallet | Verification ——— */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 320px', gap: 16, alignItems: 'stretch' }}>
+
+              {/* — Organization — */}
+              <Card layered label="Organization">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <Field label="Unique ID" full>
+                      <input value={vendorProfile.uniqueID} onChange={(e) => setVendorProfile({ ...vendorProfile, uniqueID: e.target.value })} placeholder="e.g. Vendor123" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)' }}/>
+                    </Field>
+                    <Field label="Company name" full>
+                      <input value={vendorProfile.company} onChange={(e) => setVendorProfile({ ...vendorProfile, company: e.target.value })} placeholder="e.g. Vhay Industries LLC" style={inpStyle}/>
+                    </Field>
                   </div>
-                  <div>
-                    <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>ZIP / Postal Code</label>
-                    <input placeholder="ZIP or postal code" value={vendorProfile.zip} onChange={(e) => setVendorProfile({ ...vendorProfile, zip: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '30px', border: '2px solid #D88F2E' }} />
+
+                  <Field label="Billing address" full>
+                    <textarea value={vendorProfile.address} onChange={(e) => setVendorProfile({ ...vendorProfile, address: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
+                  </Field>
+
+                  <Field label="Shipping address" full>
+                    <textarea value={vendorProfile.shippingAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, shippingAddress: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
+                  </Field>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      {!vendorProfile.shippingAddress.trim() && (
+                        <span style={{ color: 'oklch(0.55 0.22 25)', fontSize: 12 }}>Shipping address is required to save</span>
+                      )}
+                    </div>
+                    <div style={{ opacity: vendorProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: vendorProfile.shippingAddress.trim() ? 'auto' : 'none' }}>
+                      <Btn variant="primary" icon={vendorSaving ? IconRefresh : IconCheck} onClick={async () => {
+                        if (vendorSaving || !vendorProfile.shippingAddress.trim()) return;
+                        setVendorSaving(true);
+                        try { await saveVendorProfile(); }
+                        finally { setVendorSaving(false); }
+                      }}>{vendorSaving ? 'Saving…' : 'Save profile'}</Btn>
+                    </div>
                   </div>
                 </div>
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Country</label>
-                <input placeholder="Country" value={vendorProfile.country} onChange={(e) => setVendorProfile({ ...vendorProfile, country: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Wallet Seed (secret!)</label>
-                <input placeholder="Your XRPL wallet seed (keep secret)" value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <label style={{ display: 'block', marginBottom: '5px', color: '#F2B04A', fontWeight: 'bold', textAlign: 'center' }}>Wallet Address</label>
-                <input placeholder="Your XRPL classic address (r...)" value={vendorProfile.classicAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, classicAddress: e.target.value })} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                                
-                <button onClick={saveVendorProfile} style={{ display: 'block', margin: '0 auto 40px auto', background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Save Profile
-                </button>
-                {vendorProfile.classicAddress && (
-                  <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <DIDStatusBadge address={vendorProfile.classicAddress} />
-                    {vendorCredStatus && (
-                      <span style={{ padding: '8px 16px', borderRadius: '20px', fontSize: '14px', fontWeight: 'bold', background: vendorCredStatus.valid ? '#E8F5E9' : '#FFF3E0', color: vendorCredStatus.valid ? '#2E7D32' : '#E65100', border: vendorCredStatus.valid ? '2px solid #2E7D32' : '2px solid #E65100' }}>
-                        {vendorCredStatus.valid ? `${vendorCredStatus.tier?.charAt(0).toUpperCase()}${vendorCredStatus.tier?.slice(1)} ✓` : 'No Credential'}
-                      </span>
-                    )}
+              </Card>
+
+              {/* — Company wallet — */}
+              <Card layered label="Company Wallet">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <Field label="Wallet address" full>
+                    <input value={vendorProfile.classicAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, classicAddress: e.target.value })} placeholder="Your XRPL classic address (r…)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', textOverflow: 'ellipsis' }}/>
+                  </Field>
+                  <Field label="Seed phrase" full>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input type={vendorSeedVisible ? 'text' : 'password'} value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} placeholder="Your XRPL wallet seed (keep secret)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
+                      <button onClick={() => setVendorSeedVisible(v => !v)} style={{ background: 'rgba(180,140,60,0.12)', border: '1px solid rgba(180,140,60,0.2)', color: 'var(--ink-2)', fontSize: 12, fontWeight: 600, padding: '0 14px', borderRadius: 10, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                        {vendorSeedVisible ? 'Hide' : 'Reveal'}
+                      </button>
+                    </div>
+                  </Field>
+
+                  {/* Security reminder */}
+                  <div style={{ display: 'flex', gap: 10, padding: '12px 14px', borderRadius: 12, background: 'rgba(220, 80, 60, 0.06)', border: '1px solid rgba(220, 80, 60, 0.18)', alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: 14, lineHeight: 1.3 }}>🔒</span>
+                    <span style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.45 }}>
+                      Never share this seed phrase. Vhay will never ask for it.
+                    </span>
                   </div>
-                )}
-                <label style={{ display: 'block', textAlign: 'center', color: '#666' }}>
-                  <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
-                  Enable Auto-Refresh
-                </label>
-              </div>
-            )}
-            {vendorProfileSubTab === 'links' && (
-              <div>
-                <h3 style={{ color: '#F2B04A', textAlign: 'center', margin: '40px 0 20px' }}>Link Customer by Wallet Address</h3>
-                <input placeholder="Enter Customer Wallet Address (r...)" value={inputCustomerWalletAddress} onChange={(e) => setInputCustomerWalletAddress(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <button onClick={addLinkedCustomerByDID} style={{ display: 'block', margin: '0 auto 20px auto', background: '#27ae60', color: 'white', padding: '15px 50px', fontSize: '18px', borderRadius: '50px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Link Customer
-                </button>
-                <h3 style={{ color: '#F2B04A', marginBottom: '10px' }}>Linked Customers</h3>
-                {linkedCustomers.length === 0 ? (
-                  <p>No linked customers</p>
-                ) : (
-                  <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #D88F2E', borderRadius: '15px' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
-                      <thead>
-                        <tr style={{ background: '#FFF3E0', position: 'sticky', top: 0, zIndex: 1 }}>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>Unique ID</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '30%' }}>Company Name</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Status</th>
-                          <th style={{ padding: '10px', textAlign: 'left', width: '20%' }}>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(customersExpanded ? linkedCustomers : linkedCustomers.slice(0, 2)).map(c => (
-                          <tr key={c.profileUUID}>
-                            <td style={{ padding: '10px' }}>{c.uniqueID}</td>
-                            <td style={{ padding: '10px' }}>{c.company}</td>
-                            <td style={{ padding: '10px' }}>{isOutdated(c) ? 'Outdated' : 'Current'}</td>
-                            <td style={{ padding: '10px', display: 'flex', gap: '5px' }}>
-                              <button onClick={() => setSelectedLinkedCustomer(c)} style={{ background: '#27ae60', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                View
-                              </button>
-                              <button onClick={() => handleRefresh(c.profileUUID)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                Refresh
-                              </button>
-                              <button onClick={() => unlinkProfile(c.profileUUID)} style={{ background: '#e74c3c', color: 'white', padding: '8px', borderRadius: '20px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                                Unlink
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                    {linkedCustomers.length > 2 && (
-                      <div style={{ textAlign: 'center', marginTop: '10px' }}>
-                        <button onClick={() => setCustomersExpanded(!customersExpanded)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '8px 16px', borderRadius: '30px', border: 'none', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                          {customersExpanded ? 'Show Less ▲' : 'Show More ▼'}
-                        </button>
+
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--ink-2)', paddingTop: 4 }}>
+                    <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
+                    Enable auto-refresh
+                  </label>
+                </div>
+              </Card>
+
+              {/* — Verification — */}
+              <Card layered>
+                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                  Identity · Verified on-chain
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>Verification</div>
+
+                {vendorProfile.classicAddress ? (
+                  <>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {/* Credentials row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: vendorCredStatus?.valid ? 'rgba(76,175,80,0.18)' : 'rgba(180,140,60,0.18)', color: vendorCredStatus?.valid ? 'oklch(0.5 0.18 145)' : 'var(--ink-3)', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
+                          {vendorCredStatus?.valid ? '✓' : '—'}
+                        </div>
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Credentials</span>
+                        <Chip tone={vendorCredStatus?.valid ? 'green' : 'gold'}>
+                          {vendorCredStatus?.valid ? 'Approved' : 'Not credentialed'}
+                        </Chip>
+                      </div>
+                      {/* DID row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: vendorDidStatus === 'active' ? 'rgba(76,175,80,0.18)' : 'rgba(180,140,60,0.18)', flexShrink: 0 }}>
+                          <div style={{ width: 12, height: 12, borderRadius: 999, background: vendorDidStatus === 'active' ? 'oklch(0.5 0.18 145)' : vendorDidStatus === 'checking' ? 'var(--ink-3)' : 'oklch(0.65 0.16 60)' }}/>
+                        </div>
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>DID</span>
+                        <Chip tone={vendorDidStatus === 'active' ? 'green' : vendorDidStatus === 'checking' ? 'neutral' : 'gold'}>
+                          {vendorDidStatus === 'active' ? 'Active' : vendorDidStatus === 'checking' ? 'Checking' : 'Not registered'}
+                        </Chip>
+                      </div>
+                      {/* Permissioned Domain row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
+                        <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: vendorCredStatus?.tier ? 'rgba(80,140,220,0.18)' : 'rgba(180,140,60,0.12)', color: vendorCredStatus?.tier ? 'oklch(0.55 0.16 240)' : 'var(--ink-3)', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>◆</div>
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Permissioned Domain</span>
+                        <Chip tone={vendorCredStatus?.tier ? 'blue' : 'neutral'}>
+                          {vendorCredStatus?.tier ? `${vendorCredStatus.tier.charAt(0).toUpperCase()}${vendorCredStatus.tier.slice(1)}` : '—'}
+                        </Chip>
+                      </div>
+                    </div>
+                    {vendorCredStatus?.valid && vendorDidStatus === 'active' && (
+                      <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(76,175,80,0.06)', border: '1px solid rgba(76,175,80,0.22)' }}>
+                        <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.42 0.16 145)', marginBottom: 2 }}>
+                          ✓ Verified
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-2)' }}>
+                          Re-issues automatically on change.
+                        </div>
                       </div>
                     )}
+                  </>
+                ) : (
+                  <div style={{ padding: '14px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px dashed rgba(180,140,60,0.25)', fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
+                    Enter a wallet address to view verification.
                   </div>
                 )}
-                {selectedLinkedCustomer && (
-                  <div style={{ marginTop: '40px', border: '1px solid #D88F2E', padding: '15px', background: '#f9f9f9', borderRadius: '20px' }}>
-                    <h3 style={{ color: '#F2B04A' }}>Customer Details</h3>
-                    <p><strong style={{ color: '#F2B04A' }}>Unique ID:</strong> {selectedLinkedCustomer.uniqueID}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Company Name:</strong> {selectedLinkedCustomer.company}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Contact Name:</strong> {selectedLinkedCustomer.name}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Email:</strong> {selectedLinkedCustomer.email}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Phone:</strong> {selectedLinkedCustomer.phone}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Address:</strong> {selectedLinkedCustomer.address}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>City:</strong> {selectedLinkedCustomer.city}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>State:</strong> {selectedLinkedCustomer.state}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>ZIP:</strong> {selectedLinkedCustomer.zip}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Country:</strong> {selectedLinkedCustomer.country}</p>
-                    <p><strong style={{ color: '#F2B04A' }}>Wallet Address:</strong> {selectedLinkedCustomer.classicAddress}</p>
-                    {selectedLinkedCustomer.linkTxHash && (
-                      <p><strong style={{ color: '#F2B04A' }}>On-chain Link Tx:</strong> <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedCustomer.linkTxHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                        {selectedLinkedCustomer.linkTxHash.substring(0, 10)}...
-                      </a></p>
-                    )}
-                    <button onClick={() => setSelectedLinkedCustomer(null)} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '10px 20px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                      Close
-                    </button>
-                  </div>
-                )}
+              </Card>
+
               </div>
-            )}
-          </div>
+
+              {/* ——— Profile Links (full width below grid) ——— */}
+              <Card layered
+                label={<>
+                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                    Trusted counterparties · {linkedCustomers.length} linked
+                  </div>
+                  <div style={{ fontSize: 18, fontWeight: 600 }}>Linked Buyers</div>
+                </>}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input value={inputCustomerWalletAddress} onChange={(e) => setInputCustomerWalletAddress(e.target.value)} placeholder="Buyer wallet address (r…)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
+                    <Btn variant="primary" icon={IconPlus} onClick={addLinkedCustomerByDID}>Link Buyer</Btn>
+                  </div>
+                  {linkedCustomers.length === 0 ? (
+                    <div style={{ padding: '20px', textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>No linked Buyers yet.</div>
+                  ) : (
+                    <>
+                      <div style={{ border: '1px solid rgba(180,140,60,0.18)', borderRadius: 12, overflow: 'hidden' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: 13 }}>
+                          <thead>
+                            <tr style={{ background: 'rgba(255, 248, 222, 0.6)' }}>
+                              <th style={{ padding: '10px 12px', textAlign: 'left', width: '28%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Unique ID</th>
+                              <th style={{ padding: '10px 12px', textAlign: 'left', width: '32%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Company</th>
+                              <th style={{ padding: '10px 12px', textAlign: 'left', width: '16%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Status</th>
+                              <th style={{ padding: '10px 12px', textAlign: 'right', width: '24%', fontWeight: 600, fontSize: 11, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(customersExpanded ? linkedCustomers : linkedCustomers.slice(0, 2)).map(c => (
+                              <tr key={c.profileUUID} style={{ borderTop: '1px solid rgba(180,140,60,0.12)' }}>
+                                <td className="mono" style={{ padding: '10px 12px', fontSize: 12 }}>{c.uniqueID}</td>
+                                <td style={{ padding: '10px 12px' }}>{c.company}</td>
+                                <td style={{ padding: '10px 12px' }}>
+                                  <Chip tone={isOutdated(c) ? 'gold' : 'green'}>{isOutdated(c) ? 'Outdated' : 'Current'}</Chip>
+                                </td>
+                                <td style={{ padding: '10px 12px' }}>
+                                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                                    <Btn variant="ghost" onClick={() => setSelectedLinkedCustomer(c)}>View</Btn>
+                                    <Btn variant="ghost" icon={IconRefresh} onClick={() => { if (refreshingUUIDs.has(c.profileUUID)) return; handleRefresh(c.profileUUID); }}>{refreshingUUIDs.has(c.profileUUID) ? 'Refreshing…' : 'Refresh'}</Btn>
+                                    <Btn variant="ghost" icon={IconX} onClick={() => unlinkProfile(c.profileUUID)}>Unlink</Btn>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {linkedCustomers.length > 2 && (
+                        <div style={{ display: 'flex', justifyContent: 'center' }}>
+                          <Btn variant="ghost" onClick={() => setCustomersExpanded(!customersExpanded)}>
+                            {customersExpanded ? 'Show less' : `Show all ${linkedCustomers.length}`}
+                          </Btn>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {selectedLinkedCustomer && (
+                    <div className="etched" style={{ padding: 16, borderRadius: 14, marginTop: 4 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Buyer details</div>
+                        <Btn variant="ghost" icon={IconX} onClick={() => setSelectedLinkedCustomer(null)}>Close</Btn>
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 2 }}>{selectedLinkedCustomer.company}</div>
+                      <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 12 }}>{selectedLinkedCustomer.uniqueID}</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {[
+                          { k: 'Contact', v: selectedLinkedCustomer.name },
+                          { k: 'Email', v: selectedLinkedCustomer.email },
+                          { k: 'Phone', v: selectedLinkedCustomer.phone },
+                          { k: 'Billing address', v: selectedLinkedCustomer.address || [selectedLinkedCustomer.city, selectedLinkedCustomer.state, selectedLinkedCustomer.zip, selectedLinkedCustomer.country].filter(Boolean).join(', ') },
+                          { k: 'Shipping address', v: selectedLinkedCustomer.shippingAddress || '—' },
+                          { k: 'Wallet', v: selectedLinkedCustomer.classicAddress, mono: true },
+                        ].filter(r => r.v).map(r => (
+                          <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+                            <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>{r.k}</span>
+                            <span className={r.mono ? 'mono' : ''} style={{ fontWeight: 500, textAlign: 'right', whiteSpace: 'pre-line', minWidth: 0, wordBreak: 'break-word' }}>{r.v}</span>
+                          </div>
+                        ))}
+                        {selectedLinkedCustomer.linkTxHash && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, paddingTop: 8, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
+                            <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>On-chain link</span>
+                            <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedCustomer.linkTxHash}`} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 12, color: 'oklch(0.55 0.16 240)', textDecoration: 'none' }}>
+                              {selectedLinkedCustomer.linkTxHash.substring(0, 10)}…
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Card>
+
+            </div>
+          </Page>
         )}
         {activeTab === 'financing' && (() => {
           const credStatus = mode === 'vendor' ? vendorCredStatus : customerCredStatus;
@@ -14519,7 +14866,7 @@ const addLinkedVendorByDID = async () => {
                       style={{ position: 'relative', overflow: 'visible', zIndex: 50 }}
                       label={<>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Counterparty</div>
-                        <div style={{ fontSize: 15, fontWeight: 600 }}>Request financing partner</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Request Financing Partner</div>
                       </>}
                       actions={<Chip tone="blue">DID verified · {LENDERS.length} connected · Devnet placeholder</Chip>}>
                       <div style={{ position: 'relative' }}>
@@ -14746,7 +15093,7 @@ const addLinkedVendorByDID = async () => {
                                 label={<>
                                   <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>{selectedPO.poName} · {selectedBuyerLabel}</div>
                                   <div style={{ fontSize: 18, fontWeight: 600 }}>
-                                    {selectedIsEligible ? 'Request PO advance' :
+                                    {selectedIsEligible ? 'Request PO Advance' :
                                      selectedReq?.status === 'pending_lender' ? 'Pending lender review' :
                                      selectedReq?.status === 'approved'       ? 'Approved · awaiting disbursement' :
                                      selectedReq?.status === 'disbursed'      ? 'Funds disbursed' :
@@ -14846,7 +15193,7 @@ const addLinkedVendorByDID = async () => {
                     <Card layered
                       label={<>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Activity</div>
-                        <div style={{ fontSize: 15, fontWeight: 600 }}>Financing requests</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Financing Requests</div>
                       </>}
                       actions={allRequests.length > 0 && <Chip tone="neutral">{allRequests.length} total</Chip>}>
 
@@ -14977,7 +15324,7 @@ const addLinkedVendorByDID = async () => {
                       style={{ position: 'relative', overflow: 'visible', zIndex: 50 }}
                       label={<>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Counterparty</div>
-                        <div style={{ fontSize: 15, fontWeight: 600 }}>Request financing partner</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Request Financing Partner</div>
                       </>}
                       actions={<Chip tone="blue">DID verified · {LENDERS.length} connected · Devnet placeholder</Chip>}>
                       <div style={{ position: 'relative' }}>
@@ -15164,7 +15511,7 @@ const addLinkedVendorByDID = async () => {
                             <Card layered
                               label={<>
                                 <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Configure</div>
-                                <div style={{ fontSize: 16, fontWeight: 600 }}>Inventory credit line</div>
+                                <div style={{ fontSize: 16, fontWeight: 600 }}>Inventory Credit Line</div>
                               </>}>
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                                 {/* Pledge slider */}
@@ -15268,7 +15615,7 @@ const addLinkedVendorByDID = async () => {
                             <Card layered
                               label={<>
                                 <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Collateral</div>
-                                <div style={{ fontSize: 16, fontWeight: 600 }}>Pledged inventory · {itemsRanked.length} SKU{itemsRanked.length === 1 ? '' : 's'}</div>
+                                <div style={{ fontSize: 16, fontWeight: 600 }}>Pledged Inventory · {itemsRanked.length} SKU{itemsRanked.length === 1 ? '' : 's'}</div>
                               </>}
                               actions={<div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <Chip tone="neutral">{itemsRanked.filter(i => isPledged(i.nftId, creditLines)).length} pledged</Chip>
@@ -15366,7 +15713,7 @@ const addLinkedVendorByDID = async () => {
                       <Card layered
                         label={<>
                           <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>Open lines</div>
-                          <div style={{ fontSize: 16, fontWeight: 600 }}>Active credit lines</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>Active Credit Lines</div>
                         </>}
                         actions={<Chip tone="green">{creditLines.filter(l => l.status === 'active').length} active</Chip>}>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -15739,7 +16086,7 @@ const addLinkedVendorByDID = async () => {
                     <Card layered
                       label={<>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Activity</div>
-                        <div style={{ fontSize: 15, fontWeight: 600 }}>Credit line requests</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Credit Line Requests</div>
                       </>}
                       actions={creditLines.length > 0 && <Chip tone="neutral">{creditLines.length} total</Chip>}>
                       {creditLines.length === 0 ? (
@@ -15820,7 +16167,7 @@ const addLinkedVendorByDID = async () => {
           return (
             <Page
               tag="Buy · Financing"
-              title="Escrow yield"
+              title="Escrow Yield"
               subtitle="Funded POs earn yield in permissioned escrow pools until claimed by the seller. Balances are tokenized and redeemable on demand."
               actions={
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -15960,7 +16307,7 @@ const addLinkedVendorByDID = async () => {
                       <Card layered
                         label={<>
                           <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Trailing 12 months</div>
-                          <div style={{ fontSize: 16, fontWeight: 600 }}>Escrow pool balance · <span className="mono" style={{ fontWeight: 500 }}>${formatNumber(poolSeries[poolSeries.length - 1]?.v || 0, { decimals: 0 })}</span></div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>Escrow Pool Balance · <span className="mono" style={{ fontWeight: 500 }}>${formatNumber(poolSeries[poolSeries.length - 1]?.v || 0, { decimals: 0 })}</span></div>
                         </>}
                         actions={<LegendSwatch color="oklch(0.68 0.16 148)" label="In pool"/>}>
                         <StackedAreaChart
@@ -15974,7 +16321,7 @@ const addLinkedVendorByDID = async () => {
                       <Card layered
                         label={<>
                           <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Cumulative</div>
-                          <div style={{ fontSize: 16, fontWeight: 600 }}>Yield earned · over time</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>Yield Earned · Over Time</div>
                         </>}
                         actions={<Chip tone="gold">Demo data · coming soon</Chip>}>
                         <div style={{
@@ -16027,7 +16374,7 @@ const addLinkedVendorByDID = async () => {
                     <Card layered
                       label={<>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Live</div>
-                        <div style={{ fontSize: 16, fontWeight: 600 }}>POs earning yield · {accruing.length}</div>
+                        <div style={{ fontSize: 16, fontWeight: 600 }}>POs Earning Yield · {accruing.length}</div>
                       </>}
                       actions={<div className="glass-strong" style={{ display: 'flex', padding: 3, borderRadius: 10, gap: 2 }}>
                         {[
@@ -17029,7 +17376,7 @@ const addLinkedVendorByDID = async () => {
                       <Card layered
                         label={<>
                           <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Trailing 12 months</div>
-                          <div style={{ fontSize: 16, fontWeight: 600 }}>{acctApar === 'payable' ? 'Outflows + yield by month' : 'Inflows by month'}</div>
+                          <div style={{ fontSize: 16, fontWeight: 600 }}>{acctApar === 'payable' ? 'Outflows + Yield by Month' : 'Inflows by Month'}</div>
                         </>}
                         actions={acctApar === 'payable' ? (
                           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
