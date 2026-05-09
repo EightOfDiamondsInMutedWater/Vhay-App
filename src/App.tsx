@@ -1109,6 +1109,7 @@ export default function App() {
   const [vendorCredStatus, setVendorCredStatus] = useState<{ valid: boolean; tier?: string } | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   const [feeEntries, setFeeEntries] = useState<FeeEntry[]>([]);
+  const [feeEntriesLoading, setFeeEntriesLoading] = useState(false);
   const [feeSearchTerm, setFeeSearchTerm] = useState('');
   const [openExpanded, setOpenExpanded] = useState(false);
   const [acceptedExpanded, setAcceptedExpanded] = useState(false);
@@ -1144,6 +1145,20 @@ export default function App() {
     scanAuditLog(addr)
       .then(entries => { setAuditLog(entries); setAuditLogLoading(false); })
       .catch(() => setAuditLogLoading(false));
+  }, [adminLoggedIn, adminSection, adminSubTab]);
+
+  // Auto-refresh fee entries when entering the Fee Dashboard sub-tab.
+  // Always re-scans the company wallet's FEE_PAYMENT history on each visit so the
+  // dashboard reflects all platform fees in real time. (Bug #12)
+  useEffect(() => {
+    if (!adminLoggedIn) return;
+    if (adminSection !== 'corporate' || adminSubTab !== 'fees') return;
+    const companyWallet = process.env.REACT_APP_COMPANY_WALLET;
+    if (!companyWallet) return;
+    setFeeEntriesLoading(true);
+    scanFeeEntries(companyWallet)
+      .then(fees => { setFeeEntries(fees); setFeeEntriesLoading(false); })
+      .catch(() => setFeeEntriesLoading(false));
   }, [adminLoggedIn, adminSection, adminSubTab]);
   const [customerDidStatus, setCustomerDidStatus] = useState<'checking' | 'active' | 'none'>('checking');
   useEffect(() => {
@@ -3900,8 +3915,6 @@ useEffect(() => {
       const txHash = createResult.result.hash;
       const newPO: SavedPO = { id: Date.now().toString(), poName, dateIssued: new Date().toLocaleDateString(), total: totalEscrowAmount, ipfsUri, status: 'open', issuanceId, txHash, buyerAddress: wallet.classicAddress, vendorAddress: vendor, paymentTerms, escrowCurrency, vendorUUID: selectedVendorUUID, clawbackEnabled: true, yieldOptIn: yieldOptIn && escrowCurrency === 'RLUSD', metadata: fullMetadata };
       saveNewPO(newPO);
-      const newFee: FeeEntry = { date: new Date().toLocaleString(), poName, amount: feeLabel, txHash: feeResult.result.hash };
-      setFeeEntries(prev => [...prev, newFee]);
 
       // ── Phase 6A: Write yield intent memo on-chain at PO creation ────────────
       // This is the canonical on-chain record of yield opt-in intent.
@@ -18988,7 +19001,7 @@ const addLinkedVendorByDID = async () => {
                 {adminSection === 'corporate' && adminSubTab === 'fees' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
                     {/* 4 stat tiles — Card-wrapped, label + value */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
                       <Card>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
                           Total SC.PO Created
@@ -19021,6 +19034,17 @@ const addLinkedVendorByDID = async () => {
                           {new Set(savedPOs.map(po => po.vendorAddress)).size}
                         </div>
                       </Card>
+                      <Card>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+                          Subscription Revenue
+                        </div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em', color: 'var(--ink-3)' }}>
+                          —
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                          $30/mo · coming soon
+                        </div>
+                      </Card>
                     </div>
 
                     {/* Collected Fees — Card with title + search + exports in actions slot */}
@@ -19045,6 +19069,26 @@ const addLinkedVendorByDID = async () => {
                               width: 220,
                             }}
                           />
+                          <Btn
+                            variant="ghost"
+                            icon={IconRefresh}
+                            disabled={feeEntriesLoading}
+                            onClick={async () => {
+                              const companyWallet = process.env.REACT_APP_COMPANY_WALLET;
+                              if (!companyWallet) return alert('Company wallet not configured');
+                              setFeeEntriesLoading(true);
+                              try {
+                                const fees = await scanFeeEntries(companyWallet);
+                                setFeeEntries(fees);
+                              } catch (e: any) {
+                                alert('Refresh failed: ' + e.message);
+                              } finally {
+                                setFeeEntriesLoading(false);
+                              }
+                            }}
+                          >
+                            {feeEntriesLoading ? 'Refreshing…' : 'Refresh'}
+                          </Btn>
                           <Btn
                             variant="ghost"
                             disabled={exportLoading}
@@ -19072,43 +19116,86 @@ const addLinkedVendorByDID = async () => {
                         </div>
                       }
                     >
-                      {filteredFees.length === 0 ? (
+                      {feeEntriesLoading ? (
+                        <Empty msg="Refreshing…"/>
+                      ) : filteredFees.length === 0 ? (
                         <Empty msg="No fees collected yet"/>
-                      ) : (
-                        <Table maxHeight={520} cols={[
-                          { k: 'date', label: 'Date', w: '110px',
-                            render: (e: any) => <span className="mono" style={{ fontSize: 12 }}>{e.date}</span> },
-                          { k: 'po', label: 'PO Name', w: 'minmax(140px, 0.8fr)',
-                            render: (e: any) => <span style={{ fontSize: 13 }}>{e.poName}</span> },
-                          { k: 'amount', label: 'Amount', w: 'minmax(220px, 1.4fr)',
-                            render: (e: any) => <span className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{e.amount}</span> },
-                          { k: 'tx', label: 'Tx Hash', w: '120px',
-                            render: (e: any) => e.txHash ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(e.txHash);
-                                  setAcctCopiedHash(e.txHash);
-                                  setTimeout(() => setAcctCopiedHash(null), 1500);
-                                }}
-                                title="Click to copy full hash"
-                                style={{
-                                  fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
-                                  borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
-                                  background: acctCopiedHash === e.txHash
-                                    ? 'oklch(0.92 0.1 140)'
-                                    : 'rgba(255, 248, 222, 0.5)',
-                                  color: acctCopiedHash === e.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
-                                  cursor: 'pointer', transition: 'all 0.15s ease',
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}>
-                                {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…`}
-                              </button>
-                            ) : (
-                              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>
-                            ) },
-                        ]} rows={filteredFees}/>
-                      )}
+                      ) : (() => {
+                        const feeTypeChip = (ft: string) => {
+                          if (ft === 'CREATE')      return { tone: 'blue' as const,    label: 'PO Creation' };
+                          if (ft === 'ESCROW_LOCK') return { tone: 'gold' as const,    label: 'Escrow Lock' };
+                          if (ft === 'NFT_MINT')    return { tone: 'green' as const,   label: 'NFT Mint' };
+                          if (ft === 'UNIT_MINT')   return { tone: 'neutral' as const, label: 'Unit Mint' };
+                          return { tone: 'neutral' as const, label: ft || '—' };
+                        };
+                        const gridCols = '110px minmax(140px, 0.7fr) minmax(140px, 0.9fr) 130px 130px';
+                        return (
+                          <div style={{ maxHeight: 520, overflow: 'auto', borderRadius: 10, border: '1px solid rgba(180, 140, 60, 0.12)' }}>
+                            <div>
+                              <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: gridCols,
+                                gap: 10, padding: '10px 14px',
+                                borderBottom: '1px solid rgba(180, 140, 60, 0.15)',
+                                position: 'sticky', top: 0, zIndex: 2,
+                                background: 'rgba(255, 248, 222, 0.95)',
+                                backdropFilter: 'blur(8px)',
+                                fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--ink-3)',
+                                whiteSpace: 'nowrap',
+                              }} className="mono">
+                                <span>Date</span>
+                                <span>PO Name</span>
+                                <span>Amount</span>
+                                <span>Fee Type</span>
+                                <span>Tx Hash</span>
+                              </div>
+                              {filteredFees.map((e: any, idx: number) => {
+                                const fc = feeTypeChip(e.feeType);
+                                return (
+                                  <div key={e.txHash || idx} style={{
+                                    display: 'grid',
+                                    gridTemplateColumns: gridCols,
+                                    gap: 10, padding: '11px 14px', alignItems: 'center',
+                                    borderBottom: '1px solid rgba(180, 140, 60, 0.08)',
+                                    fontSize: 12,
+                                  }}>
+                                    <span className="mono" style={{ fontSize: 12 }}>{e.date}</span>
+                                    <span style={{ fontSize: 13 }}>{e.poName}</span>
+                                    <span className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{e.amount}</span>
+                                    <span><Chip tone={fc.tone}>{fc.label}</Chip></span>
+                                    <span>
+                                      {e.txHash ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            navigator.clipboard.writeText(e.txHash);
+                                            setAcctCopiedHash(e.txHash);
+                                            setTimeout(() => setAcctCopiedHash(null), 1500);
+                                          }}
+                                          title="Click to copy full hash"
+                                          style={{
+                                            fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
+                                            borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                            background: acctCopiedHash === e.txHash
+                                              ? 'oklch(0.92 0.1 140)'
+                                              : 'rgba(255, 248, 222, 0.5)',
+                                            color: acctCopiedHash === e.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
+                                            cursor: 'pointer', transition: 'all 0.15s ease',
+                                            fontVariantNumeric: 'tabular-nums',
+                                          }}>
+                                          {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…`}
+                                        </button>
+                                      ) : (
+                                        <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>
+                                      )}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </Card>
                   </div>
                 )}
