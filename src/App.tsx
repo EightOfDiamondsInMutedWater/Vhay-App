@@ -933,7 +933,8 @@ export default function App() {
   const [deploying, setDeploying] = useState(false);
   const [revokeAddress, setRevokeAddress] = useState('');
   const [revoking, setRevoking] = useState(false);
-  const [adminSubTab, setAdminSubTab] = useState<'fees' | 'credentials' | 'auditLog' | 'lenderSim'>('fees');
+  const [adminSection, setAdminSection] = useState<'corporate' | 'lenderSim'>('corporate');
+  const [adminSubTab, setAdminSubTab] = useState<'fees' | 'auditLog' | 'credentials'>('fees');
   const [simLenderSeed, setSimLenderSeed] = useState('');
   const [simVendorAddress, setSimVendorAddress] = useState('');
   const [simRequestId, setSimRequestId] = useState('');
@@ -1130,6 +1131,20 @@ export default function App() {
   const [savedPOs, setSavedPOs] = useState<SavedPO[]>([]);
   const [customerProfile, setCustomerProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
   const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
+
+  // Auto-fetch on-chain audit log when entering the Audit Log sub-tab.
+  // Replaces the fetch side-effect previously welded into the pill onClick (Session 8 Patch 1).
+  useEffect(() => {
+    if (!adminLoggedIn) return;
+    if (adminSection !== 'corporate' || adminSubTab !== 'auditLog') return;
+    if (auditLog.length > 0) return;
+    const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
+    if (!addr) return;
+    setAuditLogLoading(true);
+    scanAuditLog(addr)
+      .then(entries => { setAuditLog(entries); setAuditLogLoading(false); })
+      .catch(() => setAuditLogLoading(false));
+  }, [adminLoggedIn, adminSection, adminSubTab]);
   const [customerDidStatus, setCustomerDidStatus] = useState<'checking' | 'active' | 'none'>('checking');
   useEffect(() => {
     if (!customerProfile.classicAddress) { setCustomerDidStatus('checking'); return; }
@@ -2665,7 +2680,7 @@ export default function App() {
         `Credit Line ID: ${pledgeId.slice(0, 8).toUpperCase()}\n` +
         `Gross Value: $${grossVal}\n` +
         `Credit Limit: $${lineAmt} (${(pledgeHaircut * 100).toFixed(0)}% advance rate)\n` +
-        `Tx: ${txHash}\n\n` +
+        `Tx Hash: ${txHash}\n\n` +
         `The lender has been notified on-chain. Await their approval and first disbursement.`
       );
 
@@ -2734,7 +2749,7 @@ export default function App() {
         `✅ Draw request submitted!\n\n` +
         `Amount: $${drawAmt.toFixed(2)} RLUSD\n` +
         `New Balance: $${newBalance}\n` +
-        `Tx: ${result.result.hash}\n\n` +
+        `Tx Hash: ${result.result.hash}\n\n` +
         `The lender has been notified on-chain. Funds will be disbursed to your wallet shortly.`
       );
 
@@ -13392,8 +13407,8 @@ const addLinkedVendorByDID = async () => {
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             {[
                               { label: 'Issuance ID', value: overviewSelectedPO.issuanceId, copyable: true },
-                              { label: 'Tx hash',     value: overviewSelectedPO.txHash,     copyable: true },
-                              { label: 'Escrow seq',  value: overviewSelectedPO.escrowSequence ? String(overviewSelectedPO.escrowSequence) : '', copyable: true },
+                              { label: 'Tx Hash',     value: overviewSelectedPO.txHash,     copyable: true },
+                              { label: 'Escrow Seq',  value: overviewSelectedPO.escrowSequence ? String(overviewSelectedPO.escrowSequence) : '', copyable: true },
                               { label: 'Yield',       value: overviewSelectedPO.yieldOptIn ? 'Opted in' : '', copyable: false },
                             ].filter(r => r.value).map(r => {
                               const v = r.value as string;
@@ -14052,8 +14067,8 @@ const addLinkedVendorByDID = async () => {
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                             {[
                               { label: 'Issuance ID', value: vOvwSelectedPO.issuanceId, copyable: true },
-                              { label: 'Tx hash',     value: vOvwSelectedPO.txHash,     copyable: true },
-                              { label: 'Escrow seq',  value: vOvwSelectedPO.escrowSequence ? String(vOvwSelectedPO.escrowSequence) : '', copyable: true },
+                              { label: 'Tx Hash',     value: vOvwSelectedPO.txHash,     copyable: true },
+                              { label: 'Escrow Seq',  value: vOvwSelectedPO.escrowSequence ? String(vOvwSelectedPO.escrowSequence) : '', copyable: true },
                               { label: 'Yield',       value: vOvwSelectedPO.yieldOptIn ? 'Opted in' : '', copyable: false },
                             ].filter(r => r.value).map(r => {
                               const v = r.value as string;
@@ -17790,7 +17805,7 @@ const addLinkedVendorByDID = async () => {
                                 {r.isMemo ? 'Committed' : 'Settled'}
                               </Chip>
                             ) },
-                          { k: 'tx', label: 'Tx', w: '120px',
+                          { k: 'tx', label: 'Tx Hash', w: '120px',
                             render: r => r.txHash ? (
                               <button
                                 type="button"
@@ -18833,495 +18848,868 @@ const addLinkedVendorByDID = async () => {
           );
         })()}
         {activeTab === 'admin' && (
-          <div style={{ background: '#FFF9E6', padding: '30px', borderRadius: '20px', boxShadow: '0 4px 15px rgba(212,175,55,0.1)', maxWidth: '900px', margin: '0 auto' }}>
-            <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '20px' }}>Admin</h2>
-            {!adminLoggedIn ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 1100, margin: '0 auto', width: '100%' }}>
+            {/* Page header — Internal · Vhay only */}
+            <header style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap' }}>
               <div>
-                <p style={{ textAlign: 'center', marginBottom: '20px', color: '#666' }}>Enter your company seed to access admin features</p>
-                <input type="password" placeholder="Company Seed (password)" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} style={{ width: '100%', maxWidth: '600px', padding: '15px', borderRadius: '30px', border: '2px solid #D88F2E', margin: '0 auto 20px auto', display: 'block' }} />
-                <button onClick={() => { if (adminPassword === process.env.REACT_APP_COMPANY_SEED) { setAdminLoggedIn(true); alert('Admin access granted'); } else { alert('Incorrect seed'); } }} style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', borderRadius: '30px', cursor: 'pointer' }} onMouseEnter={handleMouseEnter} onMouseLeave={handleMouseLeave} onMouseDown={handleMouseDown} onMouseUp={handleMouseUp}>
-                  Login
-                </button>
+                <Chip tone="dark" style={{ marginBottom: 12 }}>Internal · Vhay only</Chip>
+                <h1 style={{ margin: 0, fontSize: 40, fontWeight: 500, letterSpacing: '-0.03em', lineHeight: 1 }}>
+                  Admin
+                </h1>
+                <p style={{ margin: '10px 0 0', color: 'var(--ink-2)', fontSize: 14, maxWidth: 620, lineHeight: 1.5 }}>
+                  {!adminLoggedIn
+                    ? 'Sign in to access Vhay corporate operations and testing tools.'
+                    : adminSection === 'corporate'
+                      ? 'Operations, audit, and credentials for the Vhay platform.'
+                      : 'Simulator for testing the financing flow before real partners onboard.'}
+                </p>
               </div>
+            </header>
+
+            {!adminLoggedIn ? (
+              /* Locked Card — admin seed gate */
+              <Card strong layered style={{ maxWidth: 460, margin: '24px auto 0', padding: 32, textAlign: 'center', width: '100%' }}>
+                <div style={{ fontSize: 28, marginBottom: 14, opacity: 0.7 }}>🔒</div>
+                <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em' }}>Admin access</h3>
+                <p style={{ margin: '0 0 20px', color: 'var(--ink-2)', fontSize: 13 }}>Enter your company seed to continue.</p>
+                <input
+                  type="password"
+                  placeholder="Company seed"
+                  value={adminPassword}
+                  onChange={(e) => setAdminPassword(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return;
+                    if (adminPassword === process.env.REACT_APP_COMPANY_SEED) { setAdminLoggedIn(true); }
+                    else { alert('Incorrect seed'); }
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '12px 16px',
+                    borderRadius: 12,
+                    border: '1px solid rgba(180, 140, 60, 0.18)',
+                    background: 'rgba(255, 248, 222, 0.5)',
+                    fontSize: 14,
+                    fontFamily: 'inherit',
+                    boxSizing: 'border-box',
+                    marginBottom: 14,
+                    outline: 'none',
+                    color: 'var(--ink)',
+                  }}
+                />
+                <Btn
+                  variant="primary"
+                  style={{ width: '100%', justifyContent: 'center' }}
+                  onClick={() => {
+                    if (adminPassword === process.env.REACT_APP_COMPANY_SEED) { setAdminLoggedIn(true); }
+                    else { alert('Incorrect seed'); }
+                  }}
+                >
+                  Unlock
+                </Btn>
+              </Card>
             ) : (
-              <div>
-                {/* Admin Sub-Tabs */}
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', marginBottom: '30px' }}>
-                  <button onClick={() => setAdminSubTab('fees')} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #D88F2E', background: adminSubTab === 'fees' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white', color: adminSubTab === 'fees' ? 'white' : '#D88F2E', cursor: 'pointer', fontWeight: 'bold' }}>
-                    Fee Dashboard
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                {/* Outer segmented control — Vhay Corporate ↔ Lender Simulation. Mode-independent (visible in buy + sell). */}
+                <div className="glass-strong" style={{
+                  display: 'flex', alignItems: 'center', padding: 4, borderRadius: 999, position: 'relative',
+                  width: 380, height: 44, margin: '0 auto',
+                }}>
+                  <div style={{
+                    position: 'absolute', top: 4, bottom: 4,
+                    left: adminSection === 'corporate' ? 4 : '50%',
+                    width: 'calc(50% - 4px)',
+                    background: 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                    borderRadius: 999,
+                    transition: 'left 0.35s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.8), 0 4px 12px -4px rgba(200,150,50,0.6)',
+                  }}/>
+                  <button
+                    onClick={() => setAdminSection('corporate')}
+                    style={{
+                      flex: 1, height: '100%', position: 'relative', zIndex: 1,
+                      color: adminSection === 'corporate' ? '#2a1f08' : 'var(--ink-3)',
+                      fontWeight: 600, fontSize: 13, letterSpacing: '-0.01em',
+                      background: 'transparent', border: 'none', cursor: 'pointer',
+                      transition: 'color 0.25s ease',
+                    }}
+                  >
+                    Vhay Corporate
                   </button>
-                  <button onClick={() => setAdminSubTab('credentials')} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #D88F2E', background: adminSubTab === 'credentials' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white', color: adminSubTab === 'credentials' ? 'white' : '#D88F2E', cursor: 'pointer', fontWeight: 'bold' }}>
-                    Domain & Credentials
-                  </button>
-                  <button onClick={() => setAdminSubTab('lenderSim')} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #553C9A', background: adminSubTab === 'lenderSim' ? 'linear-gradient(90deg, #553C9A, #6B46C1)' : 'white', color: adminSubTab === 'lenderSim' ? 'white' : '#553C9A', cursor: 'pointer', fontWeight: 'bold' }}>
-                    🧪 Lender Sim
-                  </button>
-                  <button onClick={() => {
-                    setAdminSubTab('auditLog');
-                    if (auditLog.length === 0) {
-                      const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
-                      if (addr) {
-                        setAuditLogLoading(true);
-                        scanAuditLog(addr).then(entries => { setAuditLog(entries); setAuditLogLoading(false); }).catch(() => setAuditLogLoading(false));
-                      }
-                    }
-                  }} style={{ padding: '10px 30px', borderRadius: '20px', border: '2px solid #D88F2E', background: adminSubTab === 'auditLog' ? 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)' : 'white', color: adminSubTab === 'auditLog' ? 'white' : '#D88F2E', cursor: 'pointer', fontWeight: 'bold' }}>
-                    Audit Log
+                  <button
+                    onClick={() => setAdminSection('lenderSim')}
+                    style={{
+                      flex: 1, height: '100%', position: 'relative', zIndex: 1,
+                      color: adminSection === 'lenderSim' ? '#2a1f08' : 'var(--ink-3)',
+                      fontWeight: 600, fontSize: 13, letterSpacing: '-0.01em',
+                      background: 'transparent', border: 'none', cursor: 'pointer',
+                      transition: 'color 0.25s ease',
+                    }}
+                  >
+                    Lender Simulation
                   </button>
                 </div>
 
+                {/* Inner chip row — sub-tabs of Vhay Corporate */}
+                {adminSection === 'corporate' && (
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    {([
+                      { k: 'fees',        label: 'Fee Dashboard' },
+                      { k: 'auditLog',    label: 'Audit Log' },
+                      { k: 'credentials', label: 'Domain & Credentials' },
+                    ] as const).map(({ k, label }) => {
+                      const active = adminSubTab === k;
+                      return (
+                        <button
+                          key={k}
+                          onClick={() => setAdminSubTab(k)}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center',
+                            padding: '7px 14px',
+                            borderRadius: 999,
+                            background: active ? 'rgba(240, 200, 100, 0.28)' : 'rgba(255, 248, 222, 0.4)',
+                            color: active ? '#6a4a10' : 'var(--ink-2)',
+                            border: active ? '1px solid rgba(180, 140, 60, 0.4)' : '1px solid rgba(180, 140, 60, 0.14)',
+                            boxShadow: active ? 'inset 0 1px 0 rgba(255, 255, 255, 0.6)' : 'none',
+                            fontSize: 13, fontWeight: active ? 600 : 500,
+                            letterSpacing: '-0.005em',
+                            cursor: 'pointer',
+                            transition: 'all 0.18s ease',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
                 {/* Fee Dashboard Sub-Tab */}
-                {adminSubTab === 'fees' && (
-                  <div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '20px', marginBottom: '40px' }}>
-                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Total SC.PO Created</h4>
-                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{savedPOs.length}</p>
-                      </div>
-                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Total Fees Collected</h4>
-                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>${feeEntries.reduce((sum, fee) => sum + parseFloat(fee.amount.split(' ')[0].replace('$', '') || '0'), 0).toFixed(2)}</p>
-                      </div>
-                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Unique Customers</h4>
-                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{new Set(savedPOs.map(po => po.buyerAddress)).size}</p>
-                      </div>
-                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', textAlign: 'center' }}>
-                        <h4 style={{ color: '#F2B04A', margin: '0 0 10px' }}>Unique Vendors</h4>
-                        <p style={{ fontSize: '24px', fontWeight: 'bold', margin: 0 }}>{new Set(savedPOs.map(po => po.vendorAddress)).size}</p>
-                      </div>
+                {adminSection === 'corporate' && adminSubTab === 'fees' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                    {/* 4 stat tiles — Card-wrapped, label + value */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16 }}>
+                      <Card>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+                          Total SC.PO Created
+                        </div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
+                          {savedPOs.length}
+                        </div>
+                      </Card>
+                      <Card>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+                          Total Fees Collected
+                        </div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
+                          ${feeEntries.reduce((sum, fee) => sum + parseFloat(fee.amount.split(' ')[0].replace('$', '') || '0'), 0).toFixed(2)}
+                        </div>
+                      </Card>
+                      <Card>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+                          Unique Customers
+                        </div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
+                          {new Set(savedPOs.map(po => po.buyerAddress)).size}
+                        </div>
+                      </Card>
+                      <Card>
+                        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
+                          Unique Vendors
+                        </div>
+                        <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
+                          {new Set(savedPOs.map(po => po.vendorAddress)).size}
+                        </div>
+                      </Card>
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                      <h3 style={{ color: '#F2B04A', margin: 0 }}>Collected Fees</h3>
-                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                        <input type="text" placeholder="Search by PO Name or Date" value={feeSearchTerm} onChange={(e) => setFeeSearchTerm(e.target.value)} style={{ padding: '10px', borderRadius: '20px', border: '2px solid #D88F2E', width: '240px' }} />
-                        <button disabled={exportLoading} onClick={async () => {
-                          const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
-                          if (!addr) return alert('No wallet address found');
-                          setExportLoading(true);
-                          try { const bundle = await buildExportBundle(addr); exportAsJSON(bundle); } catch (e: any) { alert('Export failed: ' + e.message); } finally { setExportLoading(false); }
-                        }} style={{ padding: '10px 20px', borderRadius: '20px', border: '2px solid #D88F2E', background: 'white', color: '#D88F2E', cursor: 'pointer', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-                          {exportLoading ? 'Exporting...' : '⬇ JSON'}
-                        </button>
-                        <button disabled={exportLoading} onClick={async () => {
-                          const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
-                          if (!addr) return alert('No wallet address found');
-                          setExportLoading(true);
-                          try { const bundle = await buildExportBundle(addr); exportAsCSV(bundle); } catch (e: any) { alert('Export failed: ' + e.message); } finally { setExportLoading(false); }
-                        }} style={{ padding: '10px 20px', borderRadius: '20px', border: '2px solid #D88F2E', background: 'white', color: '#D88F2E', cursor: 'pointer', fontWeight: 'bold', whiteSpace: 'nowrap' }}>
-                          {exportLoading ? 'Exporting...' : '⬇ CSV'}
-                        </button>
-                      </div>
-                    </div>
-                    {filteredFees.length === 0 ? <p>No fees collected yet</p> : (
-                      <div className="scpo-table-wrap"><table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #D88F2E' }}>
-                        <thead>
-                          <tr style={{ background: '#FFF3E0' }}>
-                            <th style={{ padding: '10px' }}>Date</th>
-                            <th style={{ padding: '10px' }}>PO Name</th>
-                            <th style={{ padding: '10px' }}>Amount</th>
-                            <th style={{ padding: '10px' }}>Tx Hash</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filteredFees.map((entry, i) => (
-                            <tr key={i}>
-                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.date}</td>
-                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.poName}</td>
-                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>{entry.amount}</td>
-                              <td style={{ padding: '10px', border: '1px solid #D88F2E' }}>
-                                <a href={`https://devnet.xrpl.org/transactions/${entry.txHash}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>{entry.txHash.substring(0, 10)}...</a>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table></div>
-                    )}
+
+                    {/* Collected Fees — Card with title + search + exports in actions slot */}
+                    <Card
+                      label="Collected Fees"
+                      actions={
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <input
+                            type="text"
+                            placeholder="Search by PO name or date"
+                            value={feeSearchTerm}
+                            onChange={(e) => setFeeSearchTerm(e.target.value)}
+                            style={{
+                              padding: '8px 12px',
+                              borderRadius: 10,
+                              border: '1px solid rgba(180, 140, 60, 0.18)',
+                              background: 'rgba(255, 248, 222, 0.5)',
+                              fontSize: 13,
+                              fontFamily: 'inherit',
+                              color: 'var(--ink)',
+                              outline: 'none',
+                              width: 220,
+                            }}
+                          />
+                          <Btn
+                            variant="ghost"
+                            disabled={exportLoading}
+                            onClick={async () => {
+                              const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
+                              if (!addr) return alert('No wallet address found');
+                              setExportLoading(true);
+                              try { const bundle = await buildExportBundle(addr); exportAsJSON(bundle); } catch (e: any) { alert('Export failed: ' + e.message); } finally { setExportLoading(false); }
+                            }}
+                          >
+                            {exportLoading ? 'Exporting…' : '↓ JSON'}
+                          </Btn>
+                          <Btn
+                            variant="ghost"
+                            disabled={exportLoading}
+                            onClick={async () => {
+                              const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
+                              if (!addr) return alert('No wallet address found');
+                              setExportLoading(true);
+                              try { const bundle = await buildExportBundle(addr); exportAsCSV(bundle); } catch (e: any) { alert('Export failed: ' + e.message); } finally { setExportLoading(false); }
+                            }}
+                          >
+                            {exportLoading ? 'Exporting…' : '↓ CSV'}
+                          </Btn>
+                        </div>
+                      }
+                    >
+                      {filteredFees.length === 0 ? (
+                        <Empty msg="No fees collected yet"/>
+                      ) : (
+                        <Table maxHeight={520} cols={[
+                          { k: 'date', label: 'Date', w: '110px',
+                            render: (e: any) => <span className="mono" style={{ fontSize: 12 }}>{e.date}</span> },
+                          { k: 'po', label: 'PO Name', w: 'minmax(140px, 0.8fr)',
+                            render: (e: any) => <span style={{ fontSize: 13 }}>{e.poName}</span> },
+                          { k: 'amount', label: 'Amount', w: 'minmax(220px, 1.4fr)',
+                            render: (e: any) => <span className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{e.amount}</span> },
+                          { k: 'tx', label: 'Tx Hash', w: '120px',
+                            render: (e: any) => e.txHash ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(e.txHash);
+                                  setAcctCopiedHash(e.txHash);
+                                  setTimeout(() => setAcctCopiedHash(null), 1500);
+                                }}
+                                title="Click to copy full hash"
+                                style={{
+                                  fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
+                                  borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                  background: acctCopiedHash === e.txHash
+                                    ? 'oklch(0.92 0.1 140)'
+                                    : 'rgba(255, 248, 222, 0.5)',
+                                  color: acctCopiedHash === e.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
+                                  cursor: 'pointer', transition: 'all 0.15s ease',
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}>
+                                {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…`}
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>
+                            ) },
+                        ]} rows={filteredFees}/>
+                      )}
+                    </Card>
                   </div>
                 )}
 
                 {/* Domain & Credentials Sub-Tab */}
-                {adminSubTab === 'auditLog' && (
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                      <h3 style={{ color: '#F2B04A', margin: 0 }}>On-Chain Audit Log</h3>
-                      <div style={{ display: 'flex', gap: '10px' }}>
-                        <select value={auditLogFilter} onChange={e => setAuditLogFilter(e.target.value)} style={{ padding: '10px', borderRadius: '20px', border: '2px solid #D88F2E', minWidth: '180px' }}>
-                          <option value=''>All Actions</option>
-                          <option value='CREATE_PO'>Create PO</option>
-                          <option value='ACCEPT_PO'>Accept PO</option>
-                          <option value='FUND_ESCROW'>Fund Escrow</option>
-                          <option value='CLAIM_PO'>Claim PO</option>
-                          <option value='RECALL_PO'>Recall PO</option>
-                          <option value='UPDATE_PO'>Update PO</option>
-                          <option value='FEE_PAYMENT'>Fee Payment</option>
-                          <option value='LINK_PROFILE'>Link Profile</option>
-                        </select>
-                        <button onClick={() => {
-                          const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
-                          if (addr) {
-                            setAuditLogLoading(true);
-                            scanAuditLog(addr).then(entries => { setAuditLog(entries); setAuditLogLoading(false); }).catch(() => setAuditLogLoading(false));
-                          }
-                        }} style={{ padding: '10px 20px', borderRadius: '20px', border: '2px solid #D88F2E', background: 'white', color: '#D88F2E', cursor: 'pointer', fontWeight: 'bold' }}>↻ Refresh</button>
-                      </div>
-                    </div>
-                    {auditLogLoading ? <p style={{ textAlign: 'center', color: '#999' }}>Scanning chain...</p> : (
-                      <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #D88F2E' }}>
-                        <thead>
-                          <tr style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white' }}>
-                            <th style={{ padding: '12px', textAlign: 'left' }}>Date</th>
-                            <th style={{ padding: '12px', textAlign: 'left' }}>Action</th>
-                            <th style={{ padding: '12px', textAlign: 'left' }}>Ref</th>
-                            <th style={{ padding: '12px', textAlign: 'left' }}>Account</th>
-                            <th style={{ padding: '12px', textAlign: 'left' }}>Tx Hash</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {auditLog.filter(e => !auditLogFilter || e.action === auditLogFilter).reverse().map((entry, i) => (
-                            <tr key={i} style={{ borderBottom: '1px solid #FFE0B2', background: i % 2 === 0 ? '#FFFDF8' : 'white' }}>
-                              <td style={{ padding: '10px 12px', fontSize: '13px' }}>{entry.date}</td>
-                              <td style={{ padding: '10px 12px' }}><span style={{ background: '#FFF3E0', color: '#D88F2E', padding: '3px 10px', borderRadius: '10px', fontSize: '12px', fontWeight: 'bold' }}>{entry.action}</span></td>
-                              <td style={{ padding: '10px 12px', fontSize: '12px', fontFamily: 'monospace', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.ref}</td>
-                              <td style={{ padding: '10px 12px', fontSize: '12px', fontFamily: 'monospace' }}>{entry.account.slice(0, 8)}...{entry.account.slice(-4)}</td>
-                              <td style={{ padding: '10px 12px', fontSize: '12px', fontFamily: 'monospace' }}><a href={`https://devnet.xrpl.org/transactions/${entry.txHash}`} target='_blank' rel='noreferrer' style={{ color: '#D88F2E' }}>{entry.txHash.slice(0, 8)}...</a></td>
-                            </tr>
-                          ))}
-                          {auditLog.filter(e => !auditLogFilter || e.action === auditLogFilter).length === 0 && (
-                            <tr><td colSpan={5} style={{ padding: '20px', textAlign: 'center', color: '#999' }}>No audit entries found</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
+                {adminSection === 'corporate' && adminSubTab === 'auditLog' && (() => {
+                  const filtered = auditLog.filter(e => !auditLogFilter || e.action === auditLogFilter).reverse();
+                  const actionTone = (action: string): 'blue' | 'green' | 'red' | 'gold' | 'neutral' => {
+                    if (action === 'CREATE_PO' || action === 'UPDATE_PO' || action === 'LINK_PROFILE') return 'blue';
+                    if (action === 'ACCEPT_PO' || action === 'CLAIM_PO' || action === 'FUND_ESCROW') return 'green';
+                    if (action === 'RECALL_PO') return 'red';
+                    if (action === 'FEE_PAYMENT') return 'gold';
+                    return 'neutral';
+                  };
+                  const actionLabel = (action: string): string => ({
+                    CREATE_PO:    'Create PO',
+                    ACCEPT_PO:    'Accept PO',
+                    FUND_ESCROW:  'Fund Escrow',
+                    CLAIM_PO:     'Claim PO',
+                    RECALL_PO:    'Recall PO',
+                    UPDATE_PO:    'Update PO',
+                    FEE_PAYMENT:  'Fee Payment',
+                    LINK_PROFILE: 'Link Profile',
+                  } as Record<string, string>)[action] || action;
 
-                {adminSubTab === 'lenderSim' && (
-                  <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-                    <div style={{ background: '#F3F0FF', border: '2px solid #553C9A', borderRadius: '16px', padding: '20px', marginBottom: '20px' }}>
-                      <p style={{ color: '#553C9A', fontWeight: 'bold', margin: '0 0 4px' }}>🧪 Lender Simulator — Dev Only</p>
-                      <p style={{ color: '#666', fontSize: '12px', margin: 0 }}>Writes FINANCE_APPROVED or FINANCE_DENIED memos on-chain from a lender wallet, so you can test the full financing flow without a real lender.</p>
-                    </div>
-
-                    {/* Scan for pending requests */}
-                    <div style={{ background: '#FAF5FF', border: '1px solid #B794F4', borderRadius: '12px', padding: '14px', marginBottom: '20px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#553C9A' }}>📥 Pending Financing Requests</span>
-                        <button
-                          onClick={async () => {
-                            setSimScanning(true);
-                            try {
-                              const addr = vendorProfile.classicAddress || customerProfile.classicAddress;
-                              if (!addr) return alert('No wallet address found');
-                              const all = await scanFinancingRequests(addr);
-                              setSimPendingRequests(all.filter(r => r.status === 'pending_lender'));
-                            } catch (e: any) {
-                              alert('Scan failed: ' + e.message);
-                            } finally {
-                              setSimScanning(false);
-                            }
-                          }}
-                          style={{ padding: '6px 14px', borderRadius: '20px', border: '1px solid #553C9A', background: 'white', color: '#553C9A', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
-                        >
-                          {simScanning ? 'Scanning...' : '↻ Scan Chain'}
-                        </button>
-                      </div>
-                      {simPendingRequests.length === 0 ? (
-                        <p style={{ fontSize: '12px', color: '#999', margin: 0 }}>No pending requests found — click Scan Chain to load</p>
+                  return (
+                    <Card
+                      label="On-Chain Audit Log"
+                      actions={
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                          <select
+                            value={auditLogFilter}
+                            onChange={e => setAuditLogFilter(e.target.value)}
+                            style={{
+                              padding: '8px 12px',
+                              borderRadius: 10,
+                              border: '1px solid rgba(180, 140, 60, 0.18)',
+                              background: 'rgba(255, 248, 222, 0.5)',
+                              fontSize: 13,
+                              fontFamily: 'inherit',
+                              color: 'var(--ink)',
+                              outline: 'none',
+                              minWidth: 180,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <option value=''>All Actions</option>
+                            <option value='CREATE_PO'>Create PO</option>
+                            <option value='ACCEPT_PO'>Accept PO</option>
+                            <option value='FUND_ESCROW'>Fund Escrow</option>
+                            <option value='CLAIM_PO'>Claim PO</option>
+                            <option value='RECALL_PO'>Recall PO</option>
+                            <option value='UPDATE_PO'>Update PO</option>
+                            <option value='FEE_PAYMENT'>Fee Payment</option>
+                            <option value='LINK_PROFILE'>Link Profile</option>
+                          </select>
+                          <Btn
+                            variant="ghost"
+                            icon={IconRefresh}
+                            onClick={() => {
+                              const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
+                              if (addr) {
+                                setAuditLogLoading(true);
+                                scanAuditLog(addr).then(entries => { setAuditLog(entries); setAuditLogLoading(false); }).catch(() => setAuditLogLoading(false));
+                              }
+                            }}
+                          >
+                            Refresh
+                          </Btn>
+                        </div>
+                      }
+                    >
+                      {auditLogLoading ? (
+                        <Empty msg="Scanning chain…"/>
+                      ) : filtered.length === 0 ? (
+                        <Empty msg="No audit entries found"/>
                       ) : (
-                        <select
-                          onChange={e => {
-                            const req = simPendingRequests.find(r => r.requestId === e.target.value);
-                            if (req) {
-                              setSimRequestId(req.requestId);
-                              setSimVendorAddress(req.vendorAddress);
-                              setSimAdvanceAmount((parseFloat(req.requestedAmount) || 0).toFixed(2));
-                            }
-                          }}
-                          defaultValue=""
-                          style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #B794F4', fontSize: '12px' }}
-                        >
-                          <option value="" disabled>— Select a request to auto-fill —</option>
-                          {simPendingRequests.map(req => (
-                            <option key={req.requestId} value={req.requestId}>
-                              ${req.requestedAmount} RLUSD — {req.vendorAddress.slice(0, 8)}...{req.vendorAddress.slice(-4)} — {req.requestId.slice(0, 8)}...
-                            </option>
-                          ))}
-                        </select>
+                        <Table maxHeight={520} cols={[
+                          { k: 'date', label: 'Date', w: '110px',
+                            render: (e: any) => <span className="mono" style={{ fontSize: 12 }}>{e.date}</span> },
+                          { k: 'action', label: 'Action', w: '140px',
+                            render: (e: any) => <Chip tone={actionTone(e.action)}>{actionLabel(e.action)}</Chip> },
+                          { k: 'ref', label: 'Ref', w: 'minmax(140px, 1.4fr)',
+                            render: (e: any) => <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>{e.ref}</span> },
+                          { k: 'account', label: 'Account', w: '150px',
+                            render: (e: any) => <span className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>{e.account.slice(0, 8)}…{e.account.slice(-4)}</span> },
+                          { k: 'tx', label: 'Tx Hash', w: '120px',
+                            render: (e: any) => e.txHash ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(e.txHash);
+                                  setAcctCopiedHash(e.txHash);
+                                  setTimeout(() => setAcctCopiedHash(null), 1500);
+                                }}
+                                title="Click to copy full hash"
+                                style={{
+                                  fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
+                                  borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                  background: acctCopiedHash === e.txHash
+                                    ? 'oklch(0.92 0.1 140)'
+                                    : 'rgba(255, 248, 222, 0.5)',
+                                  color: acctCopiedHash === e.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
+                                  cursor: 'pointer', transition: 'all 0.15s ease',
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}>
+                                {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…`}
+                              </button>
+                            ) : (
+                              <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>
+                            ) },
+                        ]} rows={filtered}/>
                       )}
-                    </div>
+                    </Card>
+                  );
+                })()}
 
-                    {/* Inputs */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px' }}>
-                      <div>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Lender Wallet Seed</label>
-                        <input type="password" placeholder="sXXXXX..." value={simLenderSeed} onChange={e => setSimLenderSeed(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Vendor Wallet Address (recipient)</label>
-                        <input placeholder="rXXXXX..." value={simVendorAddress} onChange={e => setSimVendorAddress(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Request ID (from financing request)</label>
-                        <input placeholder="uuid-xxxx..." value={simRequestId} onChange={e => setSimRequestId(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
-                        <p style={{ fontSize: '11px', color: '#999', margin: '4px 0 0' }}>Find this in the console log after submitting a financing request</p>
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Advance Amount (RLUSD)</label>
-                          <input placeholder="800.00" value={simAdvanceAmount} onChange={e => setSimAdvanceAmount(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>APR (e.g. 0.12)</label>
-                          <input placeholder="0.12" value={simAPR} onChange={e => setSimAPR(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#553C9A', display: 'block', marginBottom: '4px' }}>Repay By (days)</label>
-                          <input placeholder="30" value={simRepayByDays} onChange={e => setSimRepayByDays(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #B794F4', fontSize: '13px', boxSizing: 'border-box' }} />
-                        </div>
-                      </div>
-                      <div>
-                        <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#9B2C2C', display: 'block', marginBottom: '4px' }}>Denial Reason (only for DENY)</label>
-                        <input placeholder="e.g. Insufficient escrow term" value={simDenyReason} onChange={e => setSimDenyReason(e.target.value)} style={{ width: '100%', padding: '10px 14px', borderRadius: '10px', border: '1px solid #FC8181', fontSize: '13px', boxSizing: 'border-box' }} />
-                      </div>
-                    </div>
+                {adminSection === 'lenderSim' && (() => {
+                  const inputStyle: React.CSSProperties = {
+                    width: '100%',
+                    padding: '10px 14px',
+                    borderRadius: 10,
+                    border: '1px solid rgba(180, 140, 60, 0.18)',
+                    background: 'rgba(255, 248, 222, 0.5)',
+                    fontSize: 13,
+                    fontFamily: 'inherit',
+                    color: 'var(--ink)',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  };
+                  const denyInputStyle: React.CSSProperties = {
+                    ...inputStyle,
+                    border: '1px solid rgba(220, 140, 120, 0.4)',
+                  };
+                  const labelStyle: React.CSSProperties = {
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: '0.05em',
+                    textTransform: 'uppercase',
+                    color: 'var(--ink-3)',
+                    display: 'block',
+                    marginBottom: 6,
+                  };
+                  const denyLabelStyle: React.CSSProperties = {
+                    ...labelStyle,
+                    color: 'oklch(0.55 0.18 28)',
+                  };
+                  const approveBtnStyle = (disabled: boolean): React.CSSProperties => ({
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: 12,
+                    background: disabled
+                      ? 'rgba(150, 200, 130, 0.4)'
+                      : 'linear-gradient(180deg, oklch(0.68 0.14 140), oklch(0.55 0.16 140))',
+                    color: 'white',
+                    border: '1px solid transparent',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    letterSpacing: '-0.01em',
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    boxShadow: disabled ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 12px -4px oklch(0.55 0.16 140 / 0.5)',
+                    transition: 'all 0.18s ease',
+                  });
+                  const denyBtnStyle = (disabled: boolean): React.CSSProperties => ({
+                    flex: 1,
+                    padding: '12px',
+                    borderRadius: 12,
+                    background: disabled
+                      ? 'rgba(220, 140, 120, 0.4)'
+                      : 'linear-gradient(180deg, oklch(0.65 0.16 30), oklch(0.55 0.18 28))',
+                    color: 'white',
+                    border: '1px solid transparent',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    letterSpacing: '-0.01em',
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    boxShadow: disabled ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 12px -4px oklch(0.55 0.18 28 / 0.5)',
+                    transition: 'all 0.18s ease',
+                  });
+                  const approveDisabled = simSubmitting || !simLenderSeed || !simVendorAddress || !simRequestId || !simAdvanceAmount;
+                  const denyDisabled    = simSubmitting || !simLenderSeed || !simVendorAddress || !simRequestId || !simDenyReason;
 
-                    {/* Action Buttons */}
-                    <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
-                      <button
-                        disabled={simSubmitting || !simLenderSeed || !simVendorAddress || !simRequestId || !simAdvanceAmount}
-                        onClick={async () => {
-                          setSimSubmitting(true);
-                          setSimResult('');
-                          try {
-                            const client = await getXRPLClient();
-                            const lenderWallet = xrpl.Wallet.fromSeed(simLenderSeed);
-                            const repayBy = Math.floor(Date.now() / 1000) + parseInt(simRepayByDays) * 86400;
-                            // Step 1: Write FINANCE_APPROVED memo on-chain
-                            const approveTx: Payment = {
-                              TransactionType: 'Payment',
-                              Account: lenderWallet.classicAddress,
-                              Destination: simVendorAddress,
-                              Amount: '1',
-                              Memos: [buildMemo(SCPO_ACTIONS.FINANCE_APPROVED, simRequestId, {
-                                reqId:   simRequestId,
-                                apr:     parseFloat(simAPR),
-                                advAmt:  simAdvanceAmount,
-                                repayBy: repayBy,
-                              } as any)],
-                            };
-                            const prepared = await client.autofill(approveTx);
-                            prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
-                            const signed = lenderWallet.sign(prepared);
-                            const result = await submitBlobQueued(signed.tx_blob);
-                            const txHash = result.result.hash;
-                            console.log(`[LenderSim] FINANCE_APPROVED memo tx: ${txHash}`);
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, maxWidth: 640, margin: '0 auto', width: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'center' }}>
+                        <Chip tone="dark">🧪 Test environment · writes on-chain memos from a lender wallet</Chip>
+                      </div>
 
-                            // Step 2: Lender sends advance RLUSD to company wallet
-                            // SC.PO company wallet then forwards to vendor at disburse time
-                            const rlusdIssuer = process.env.REACT_APP_RLUSD_ISSUER || '';
-                            const companyWalletAddress = process.env.REACT_APP_COMPANY_WALLET || '';
-                            const fundTx: Payment = {
-                              TransactionType: 'Payment',
-                              Account: lenderWallet.classicAddress,
-                              Destination: companyWalletAddress,
-                              Amount: {
-                                currency: 'USD',
-                                issuer: rlusdIssuer,
-                                value: simAdvanceAmount,
-                              } as any,
-                              Memos: [buildMemo(SCPO_ACTIONS.FINANCE_APPROVED, simRequestId, {
-                                reqId:  simRequestId,
-                                note:   'advance_funding',
-                                amt:    simAdvanceAmount,
-                              } as any)],
-                            };
-                            const preparedFund = await client.autofill(fundTx);
-                            preparedFund.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
-                            const signedFund = lenderWallet.sign(preparedFund);
-                            const fundResult = await submitBlobQueued(signedFund.tx_blob);
-                            const fundTxHash = fundResult.result.hash;
-                            console.log(`[LenderSim] Lender → Company wallet transfer tx: ${fundTxHash}`);
-
-                            setSimResult(`✅ FINANCE_APPROVED written!\nTx: ${txHash}\n\n💸 Lender sent $${simAdvanceAmount} RLUSD to SC.PO company wallet.\nFund Tx: ${fundTxHash}\n\nSwitch to vendor mode and click "💸 Disburse Advance" on the funded PO.`);
-                          } catch (err: any) {
-                            setSimResult(`❌ Error: ${err.message}`);
-                          } finally {
-                            setSimSubmitting(false);
-                          }
-                        }}
-                        style={{ flex: 1, padding: '12px', background: simSubmitting ? '#ccc' : 'linear-gradient(90deg, #276749, #38A169)', color: 'white', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: simSubmitting ? 'not-allowed' : 'pointer', fontSize: '14px' }}
+                      <Card
+                        label="Pending Financing Requests"
+                        actions={
+                          <Btn
+                            variant="ghost"
+                            icon={IconRefresh}
+                            disabled={simScanning}
+                            onClick={async () => {
+                              setSimScanning(true);
+                              try {
+                                const addr = vendorProfile.classicAddress || customerProfile.classicAddress;
+                                if (!addr) return alert('No wallet address found');
+                                const all = await scanFinancingRequests(addr);
+                                setSimPendingRequests(all.filter(r => r.status === 'pending_lender'));
+                              } catch (e: any) {
+                                alert('Scan failed: ' + e.message);
+                              } finally {
+                                setSimScanning(false);
+                              }
+                            }}
+                          >
+                            {simScanning ? 'Scanning…' : 'Scan Chain'}
+                          </Btn>
+                        }
                       >
-                        {simSubmitting ? 'Submitting...' : '✅ Approve Financing'}
-                      </button>
-                      <button
-                        disabled={simSubmitting || !simLenderSeed || !simVendorAddress || !simRequestId || !simDenyReason}
-                        onClick={async () => {
-                          setSimSubmitting(true);
-                          setSimResult('');
-                          try {
-                            const client = await getXRPLClient();
-                            const lenderWallet = xrpl.Wallet.fromSeed(simLenderSeed);
-                            const denyTx: Payment = {
-                              TransactionType: 'Payment',
-                              Account: lenderWallet.classicAddress,
-                              Destination: simVendorAddress,
-                              Amount: '1',
-                              Memos: [buildMemo(SCPO_ACTIONS.FINANCE_DENIED, simRequestId, {
-                                reqId:  simRequestId,
-                                reason: simDenyReason,
-                              } as any)],
-                            };
-                            const prepared = await client.autofill(denyTx);
-                            prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
-                            const lenderWallet2 = xrpl.Wallet.fromSeed(simLenderSeed);
-                            const signed = lenderWallet2.sign(prepared);
-                            const result = await submitBlobQueued(signed.tx_blob);
-                            const txHash = result.result.hash;
-                            setSimResult(`❌ FINANCE_DENIED written!\nTx: ${txHash}`);
-                            console.log(`[LenderSim] FINANCE_DENIED tx: ${txHash}`);
-                          } catch (err: any) {
-                            setSimResult(`❌ Error: ${err.message}`);
-                          } finally {
-                            setSimSubmitting(false);
-                          }
-                        }}
-                        style={{ flex: 1, padding: '12px', background: simSubmitting ? '#ccc' : 'linear-gradient(90deg, #9B2C2C, #E53E3E)', color: 'white', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: simSubmitting ? 'not-allowed' : 'pointer', fontSize: '14px' }}
-                      >
-                        {simSubmitting ? 'Submitting...' : '❌ Deny Financing'}
-                      </button>
-                    </div>
-
-                    {/* Result */}
-                    {simResult && (
-                      <div style={{ background: simResult.startsWith('✅') ? '#F0FFF4' : '#FFF5F5', border: `1px solid ${simResult.startsWith('✅') ? '#9AE6B4' : '#FC8181'}`, borderRadius: '10px', padding: '14px', fontSize: '13px', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
-                        {simResult}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {adminSubTab === 'credentials' && (
-                  <div>
-                    {/* Permissioned Domain Section */}
-                    <h3 style={{ color: '#F2B04A', marginBottom: '20px' }}>Permissioned Domain</h3>
-                    {process.env.REACT_APP_DOMAIN_ID ? (
-                      <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', marginBottom: '30px' }}>
-                        <p style={{ margin: '0 0 5px', fontWeight: 'bold', color: '#2E7D32' }}>Domain Active ✓</p>
-                        <p style={{ margin: 0, fontSize: '13px', wordBreak: 'break-all', color: '#666' }}>ID: {process.env.REACT_APP_DOMAIN_ID}</p>
-                      </div>
-                    ) : (
-                      <div style={{ marginBottom: '30px' }}>
-                        <p style={{ color: '#666', marginBottom: '15px' }}>No Permissioned Domain deployed yet. Deploy one to enable credential-based access control.</p>
-                        <button
-                          onClick={async () => {
-                            try {
-                              setDeploying(true);
-                              const client = await getXRPLClient();
-                              const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
-                              const id = await deployPermissionedDomain(client, platformWallet);
-                              setDomainID(id);
-                              alert(`Domain created! Copy this Domain ID to your .env file as REACT_APP_DOMAIN_ID:\n\n${id}`);
-                            } catch (err: any) {
-                              console.error('Deploy failed:', err);
-                              alert(`Error: ${err.message}`);
-                            } finally {
-                              setDeploying(false);
-                            }
-                          }}
-                          disabled={deploying}
-                          style={{ background: 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', padding: '15px 50px', borderRadius: '30px', cursor: deploying ? 'not-allowed' : 'pointer', opacity: deploying ? 0.6 : 1 }}
-                        >
-                          {deploying ? 'Deploying...' : 'Deploy Permissioned Domain'}
-                        </button>
-                        {domainID && (
-                          <div style={{ background: '#FFF3E0', padding: '20px', borderRadius: '20px', marginTop: '15px' }}>
-                            <p style={{ margin: '0 0 5px', fontWeight: 'bold', color: '#2E7D32' }}>Domain Created ✓</p>
-                            <p style={{ margin: 0, fontSize: '13px', wordBreak: 'break-all', color: '#666' }}>ID: {domainID}</p>
-                            <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#999' }}>Copy the ID above into your .env file as REACT_APP_DOMAIN_ID, then restart the dev server.</p>
-                          </div>
+                        {simPendingRequests.length === 0 ? (
+                          <p style={{ fontSize: 12, color: 'var(--ink-3)', margin: 0 }}>
+                            No pending requests found — click Scan Chain to load.
+                          </p>
+                        ) : (
+                          <select
+                            onChange={e => {
+                              const req = simPendingRequests.find(r => r.requestId === e.target.value);
+                              if (req) {
+                                setSimRequestId(req.requestId);
+                                setSimVendorAddress(req.vendorAddress);
+                                setSimAdvanceAmount((parseFloat(req.requestedAmount) || 0).toFixed(2));
+                              }
+                            }}
+                            defaultValue=""
+                            style={{
+                              width: '100%',
+                              padding: '10px 14px',
+                              borderRadius: 10,
+                              border: '1px solid rgba(180, 140, 60, 0.18)',
+                              background: 'rgba(255, 248, 222, 0.5)',
+                              fontSize: 13,
+                              fontFamily: 'inherit',
+                              color: 'var(--ink)',
+                              outline: 'none',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <option value="" disabled>— Select a request to auto-fill —</option>
+                            {simPendingRequests.map(req => (
+                              <option key={req.requestId} value={req.requestId}>
+                                ${req.requestedAmount} RLUSD — {req.vendorAddress.slice(0, 8)}…{req.vendorAddress.slice(-4)} — {req.requestId.slice(0, 8)}…
+                              </option>
+                            ))}
+                          </select>
                         )}
-                      </div>
-                    )}
+                      </Card>
 
-                    {/* Credential Revocation Section */}
-                    <div style={{ borderTop: '2px solid #D88F2E', paddingTop: '30px' }}>
-                      <h3 style={{ color: '#F2B04A', marginBottom: '20px' }}>Credential Management</h3>
-                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '15px' }}>
-                        <input
-                          type="text"
-                          placeholder="Wallet address to revoke (rXXX...)"
-                          value={revokeAddress}
-                          onChange={(e) => setRevokeAddress(e.target.value)}
-                          style={{ flex: 1, padding: '12px', borderRadius: '20px', border: '2px solid #D88F2E' }}
-                        />
-                        <button
-                          onClick={async () => {
-                            if (!revokeAddress) return alert('Enter a wallet address');
-                            if (!window.confirm(`Revoke credential for ${revokeAddress}? This will block them from creating or receiving POs.`)) return;
-                            try {
-                              setRevoking(true);
-                              const client = await getXRPLClient();
-                              const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
-                              await revokeCredential(client, platformWallet, revokeAddress);
-                              alert(`Credential revoked for ${revokeAddress}`);
-                              setRevokeAddress('');
-                            } catch (err: any) {
-                              alert(`Revocation failed: ${err.message}`);
-                            } finally {
-                              setRevoking(false);
-                            }
-                          }}
-                          disabled={revoking}
-                          style={{ background: '#E53935', color: 'white', padding: '12px 30px', borderRadius: '20px', cursor: revoking ? 'not-allowed' : 'pointer', opacity: revoking ? 0.6 : 1, border: 'none' }}
-                        >
-                          {revoking ? 'Revoking...' : 'Revoke Credential'}
-                        </button>
-                      </div>
-                      <p style={{ fontSize: '12px', color: '#999', margin: 0 }}>Revoked wallets will be blocked from issuing or receiving POs. The user can regain access by saving their profile again (which re-issues the credential).</p>
+                      <Card label="Submit Financing Decision">
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                          <div>
+                            <label style={labelStyle}>Lender Wallet Seed</label>
+                            <input type="password" placeholder="sXXXXX..." value={simLenderSeed} onChange={e => setSimLenderSeed(e.target.value)} style={inputStyle} />
+                          </div>
+                          <div>
+                            <label style={labelStyle}>Vendor Wallet Address (recipient)</label>
+                            <input placeholder="rXXXXX..." value={simVendorAddress} onChange={e => setSimVendorAddress(e.target.value)} style={inputStyle} />
+                          </div>
+                          <div>
+                            <label style={labelStyle}>Request ID</label>
+                            <input placeholder="uuid-xxxx..." value={simRequestId} onChange={e => setSimRequestId(e.target.value)} style={inputStyle} />
+                            <p style={{ fontSize: 11, color: 'var(--ink-3)', margin: '4px 0 0' }}>Find this in the console log after submitting a financing request.</p>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+                            <div>
+                              <label style={labelStyle}>Advance (RLUSD)</label>
+                              <input placeholder="800.00" value={simAdvanceAmount} onChange={e => setSimAdvanceAmount(e.target.value)} style={inputStyle} />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>APR (e.g. 0.12)</label>
+                              <input placeholder="0.12" value={simAPR} onChange={e => setSimAPR(e.target.value)} style={inputStyle} />
+                            </div>
+                            <div>
+                              <label style={labelStyle}>Repay By (days)</label>
+                              <input placeholder="30" value={simRepayByDays} onChange={e => setSimRepayByDays(e.target.value)} style={inputStyle} />
+                            </div>
+                          </div>
+                          <div>
+                            <label style={denyLabelStyle}>Denial Reason (only for Deny)</label>
+                            <input placeholder="e.g. Insufficient escrow term" value={simDenyReason} onChange={e => setSimDenyReason(e.target.value)} style={denyInputStyle} />
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 12, marginTop: 4 }}>
+                            <button
+                              disabled={approveDisabled}
+                              style={approveBtnStyle(approveDisabled)}
+                              onClick={async () => {
+                                setSimSubmitting(true);
+                                setSimResult('');
+                                try {
+                                  const client = await getXRPLClient();
+                                  const lenderWallet = xrpl.Wallet.fromSeed(simLenderSeed);
+                                  const repayBy = Math.floor(Date.now() / 1000) + parseInt(simRepayByDays) * 86400;
+                                  // Step 1: Write FINANCE_APPROVED memo on-chain
+                                  const approveTx: Payment = {
+                                    TransactionType: 'Payment',
+                                    Account: lenderWallet.classicAddress,
+                                    Destination: simVendorAddress,
+                                    Amount: '1',
+                                    Memos: [buildMemo(SCPO_ACTIONS.FINANCE_APPROVED, simRequestId, {
+                                      reqId:   simRequestId,
+                                      apr:     parseFloat(simAPR),
+                                      advAmt:  simAdvanceAmount,
+                                      repayBy: repayBy,
+                                    } as any)],
+                                  };
+                                  const prepared = await client.autofill(approveTx);
+                                  prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+                                  const signed = lenderWallet.sign(prepared);
+                                  const result = await submitBlobQueued(signed.tx_blob);
+                                  const txHash = result.result.hash;
+                                  console.log(`[LenderSim] FINANCE_APPROVED memo tx: ${txHash}`);
+
+                                  // Step 2: Lender sends advance RLUSD to company wallet
+                                  // SC.PO company wallet then forwards to vendor at disburse time
+                                  const rlusdIssuer = process.env.REACT_APP_RLUSD_ISSUER || '';
+                                  const companyWalletAddress = process.env.REACT_APP_COMPANY_WALLET || '';
+                                  const fundTx: Payment = {
+                                    TransactionType: 'Payment',
+                                    Account: lenderWallet.classicAddress,
+                                    Destination: companyWalletAddress,
+                                    Amount: {
+                                      currency: 'USD',
+                                      issuer: rlusdIssuer,
+                                      value: simAdvanceAmount,
+                                    } as any,
+                                    Memos: [buildMemo(SCPO_ACTIONS.FINANCE_APPROVED, simRequestId, {
+                                      reqId:  simRequestId,
+                                      note:   'advance_funding',
+                                      amt:    simAdvanceAmount,
+                                    } as any)],
+                                  };
+                                  const preparedFund = await client.autofill(fundTx);
+                                  preparedFund.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+                                  const signedFund = lenderWallet.sign(preparedFund);
+                                  const fundResult = await submitBlobQueued(signedFund.tx_blob);
+                                  const fundTxHash = fundResult.result.hash;
+                                  console.log(`[LenderSim] Lender → Company wallet transfer tx: ${fundTxHash}`);
+
+                                  setSimResult(`✅ FINANCE_APPROVED written!\nTx: ${txHash}\n\n💸 Lender sent $${simAdvanceAmount} RLUSD to SC.PO company wallet.\nFund Tx: ${fundTxHash}\n\nSwitch to vendor mode and click "💸 Disburse Advance" on the funded PO.`);
+                                } catch (err: any) {
+                                  setSimResult(`❌ Error: ${err.message}`);
+                                } finally {
+                                  setSimSubmitting(false);
+                                }
+                              }}
+                            >
+                              {simSubmitting ? 'Submitting…' : '✅ Approve Financing'}
+                            </button>
+                            <button
+                              disabled={denyDisabled}
+                              style={denyBtnStyle(denyDisabled)}
+                              onClick={async () => {
+                                setSimSubmitting(true);
+                                setSimResult('');
+                                try {
+                                  const client = await getXRPLClient();
+                                  const lenderWallet = xrpl.Wallet.fromSeed(simLenderSeed);
+                                  const denyTx: Payment = {
+                                    TransactionType: 'Payment',
+                                    Account: lenderWallet.classicAddress,
+                                    Destination: simVendorAddress,
+                                    Amount: '1',
+                                    Memos: [buildMemo(SCPO_ACTIONS.FINANCE_DENIED, simRequestId, {
+                                      reqId:  simRequestId,
+                                      reason: simDenyReason,
+                                    } as any)],
+                                  };
+                                  const prepared = await client.autofill(denyTx);
+                                  prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
+                                  const lenderWallet2 = xrpl.Wallet.fromSeed(simLenderSeed);
+                                  const signed = lenderWallet2.sign(prepared);
+                                  const result = await submitBlobQueued(signed.tx_blob);
+                                  const txHash = result.result.hash;
+                                  setSimResult(`❌ FINANCE_DENIED written!\nTx: ${txHash}`);
+                                  console.log(`[LenderSim] FINANCE_DENIED tx: ${txHash}`);
+                                } catch (err: any) {
+                                  setSimResult(`❌ Error: ${err.message}`);
+                                } finally {
+                                  setSimSubmitting(false);
+                                }
+                              }}
+                            >
+                              {simSubmitting ? 'Submitting…' : '❌ Deny Financing'}
+                            </button>
+                          </div>
+
+                          {simResult && (
+                            <div style={{
+                              background: simResult.startsWith('✅') ? 'rgba(150, 200, 130, 0.15)' : 'rgba(220, 140, 120, 0.15)',
+                              border: `1px solid ${simResult.startsWith('✅') ? 'rgba(150, 200, 130, 0.4)' : 'rgba(220, 140, 120, 0.4)'}`,
+                              borderRadius: 10,
+                              padding: 14,
+                              fontSize: 12,
+                              whiteSpace: 'pre-wrap',
+                              fontFamily: 'JetBrains Mono, monospace',
+                              color: 'var(--ink-2)',
+                              wordBreak: 'break-all',
+                            }}>
+                              {simResult}
+                            </div>
+                          )}
+                        </div>
+                      </Card>
                     </div>
+                  );
+                })()}
 
-                    {/* Phase 6.0b — Institutional Credential */}
-                    <div style={{ borderTop: '2px solid #68D391', paddingTop: '24px', marginTop: '24px' }}>
-                      <h3 style={{ color: '#276749', marginBottom: '8px' }}>🏦 Issue Institutional Credential</h3>
-                      <p style={{ fontSize: '12px', color: '#666', marginBottom: '14px' }}>
-                        Issue to licensed lenders and yield partners only. Grants access to Phase 6 financing features. Complete off-platform identity verification before issuing.
-                      </p>
-                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '8px' }}>
-                        <input
-                          type="text"
-                          placeholder="Lender / partner wallet address (r...)"
-                          value={institutionalCredAddress}
-                          onChange={e => setInstitutionalCredAddress(e.target.value)}
-                          style={{ flex: 1, padding: '12px', borderRadius: '20px', border: '2px solid #68D391' }}
-                        />
-                        <button
-                          onClick={async () => {
-                            if (!institutionalCredAddress) return alert('Enter a wallet address');
-                            if (!window.confirm(`Issue Institutional credential to ${institutionalCredAddress}?\n\nOnly proceed after verifying this entity off-platform.`)) return;
-                            setInstitutionalCredLoading(true);
-                            setInstitutionalCredResult('');
-                            try {
-                              const client = await getXRPLClient();
-                              const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
-                              const result = await issueInstitutionalCredential(client, platformWallet, institutionalCredAddress);
-                              setInstitutionalCredResult(`✅ Issued. Tx: ${result.txHash}`);
-                              setInstitutionalCredAddress('');
-                            } catch (err: any) {
-                              setInstitutionalCredResult(`❌ Failed: ${err.message}`);
-                            } finally {
-                              setInstitutionalCredLoading(false);
-                            }
-                          }}
-                          disabled={institutionalCredLoading}
-                          style={{ background: '#276749', color: 'white', padding: '12px 24px', borderRadius: '20px', cursor: institutionalCredLoading ? 'not-allowed' : 'pointer', opacity: institutionalCredLoading ? 0.6 : 1, border: 'none', fontWeight: 'bold', whiteSpace: 'nowrap' }}
-                        >
-                          {institutionalCredLoading ? 'Issuing...' : 'Issue Credential'}
-                        </button>
-                      </div>
-                      {institutionalCredResult && (
-                        <p style={{ fontSize: '12px', color: institutionalCredResult.startsWith('✅') ? '#276749' : '#E53E3E', margin: 0 }}>{institutionalCredResult}</p>
+                {adminSection === 'corporate' && adminSubTab === 'credentials' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                    {/* Permissioned Domain — full width */}
+                    <Card label="Permissioned Domain">
+                      {process.env.REACT_APP_DOMAIN_ID ? (
+                        <div>
+                          <Chip tone="green" style={{ marginBottom: 10 }}>Active</Chip>
+                          <div className="mono" style={{ fontSize: 12, color: 'var(--ink-2)', wordBreak: 'break-all' }}>
+                            ID: {process.env.REACT_APP_DOMAIN_ID}
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <p style={{ color: 'var(--ink-2)', fontSize: 13, marginTop: 0, marginBottom: 16, lineHeight: 1.5 }}>
+                            No Permissioned Domain deployed yet. Deploy one to enable credential-based access control.
+                          </p>
+                          <Btn
+                            variant="gold"
+                            disabled={deploying}
+                            onClick={async () => {
+                              try {
+                                setDeploying(true);
+                                const client = await getXRPLClient();
+                                const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
+                                const id = await deployPermissionedDomain(client, platformWallet);
+                                setDomainID(id);
+                                alert(`Domain created! Copy this Domain ID to your .env file as REACT_APP_DOMAIN_ID:\n\n${id}`);
+                              } catch (err: any) {
+                                console.error('Deploy failed:', err);
+                                alert(`Error: ${err.message}`);
+                              } finally {
+                                setDeploying(false);
+                              }
+                            }}
+                          >
+                            {deploying ? 'Deploying…' : 'Deploy Permissioned Domain'}
+                          </Btn>
+                          {domainID && (
+                            <div style={{ marginTop: 14, padding: 14, borderRadius: 12, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180, 140, 60, 0.18)' }}>
+                              <Chip tone="green" style={{ marginBottom: 8 }}>Created</Chip>
+                              <div className="mono" style={{ fontSize: 12, color: 'var(--ink-2)', wordBreak: 'break-all', marginBottom: 8 }}>
+                                ID: {domainID}
+                              </div>
+                              <p style={{ fontSize: 11, color: 'var(--ink-3)', margin: 0, lineHeight: 1.4 }}>
+                                Copy the ID above into your .env file as REACT_APP_DOMAIN_ID, then restart the dev server.
+                              </p>
+                            </div>
+                          )}
+                        </div>
                       )}
+                    </Card>
+
+                    {/* Revoke + Issue Institutional — 2-col grid */}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                      {/* Revoke Credential — destructive */}
+                      <Card label="Revoke Credential">
+                        <p style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 0, marginBottom: 14, lineHeight: 1.4 }}>
+                          Block a wallet from creating or receiving POs. They can regain access by re-saving their profile.
+                        </p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <input
+                            type="text"
+                            placeholder="Wallet address (rXXX...)"
+                            value={revokeAddress}
+                            onChange={(e) => setRevokeAddress(e.target.value)}
+                            style={{
+                              padding: '10px 14px',
+                              borderRadius: 10,
+                              border: '1px solid rgba(180, 140, 60, 0.18)',
+                              background: 'rgba(255, 248, 222, 0.5)',
+                              fontSize: 13,
+                              fontFamily: 'inherit',
+                              color: 'var(--ink)',
+                              outline: 'none',
+                            }}
+                          />
+                          <button
+                            onClick={async () => {
+                              if (!revokeAddress) return alert('Enter a wallet address');
+                              if (!window.confirm(`Revoke credential for ${revokeAddress}? This will block them from creating or receiving POs.`)) return;
+                              try {
+                                setRevoking(true);
+                                const client = await getXRPLClient();
+                                const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
+                                await revokeCredential(client, platformWallet, revokeAddress);
+                                alert(`Credential revoked for ${revokeAddress}`);
+                                setRevokeAddress('');
+                              } catch (err: any) {
+                                alert(`Revocation failed: ${err.message}`);
+                              } finally {
+                                setRevoking(false);
+                              }
+                            }}
+                            disabled={revoking}
+                            style={{
+                              padding: '10px 16px',
+                              borderRadius: 12,
+                              background: revoking
+                                ? 'rgba(220, 140, 120, 0.4)'
+                                : 'linear-gradient(180deg, oklch(0.65 0.16 30), oklch(0.55 0.18 28))',
+                              color: 'white',
+                              border: '1px solid transparent',
+                              fontSize: 13,
+                              fontWeight: 600,
+                              letterSpacing: '-0.01em',
+                              cursor: revoking ? 'not-allowed' : 'pointer',
+                              boxShadow: revoking
+                                ? 'none'
+                                : 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 12px -4px oklch(0.55 0.18 28 / 0.5)',
+                              transition: 'all 0.18s ease',
+                            }}
+                          >
+                            {revoking ? 'Revoking…' : 'Revoke Credential'}
+                          </button>
+                        </div>
+                      </Card>
+
+                      {/* Issue Institutional — positive */}
+                      <Card label={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>🏦 Issue Institutional Credential</span>}>
+                        <p style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 0, marginBottom: 14, lineHeight: 1.4 }}>
+                          Issue to licensed lenders and yield partners only. Grants access to Phase 6 financing features. Complete off-platform identity verification before issuing.
+                        </p>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <input
+                            type="text"
+                            placeholder="Lender / partner wallet address (r...)"
+                            value={institutionalCredAddress}
+                            onChange={e => setInstitutionalCredAddress(e.target.value)}
+                            style={{
+                              padding: '10px 14px',
+                              borderRadius: 10,
+                              border: '1px solid rgba(180, 140, 60, 0.18)',
+                              background: 'rgba(255, 248, 222, 0.5)',
+                              fontSize: 13,
+                              fontFamily: 'inherit',
+                              color: 'var(--ink)',
+                              outline: 'none',
+                            }}
+                          />
+                          <button
+                            onClick={async () => {
+                              if (!institutionalCredAddress) return alert('Enter a wallet address');
+                              if (!window.confirm(`Issue Institutional credential to ${institutionalCredAddress}?\n\nOnly proceed after verifying this entity off-platform.`)) return;
+                              setInstitutionalCredLoading(true);
+                              setInstitutionalCredResult('');
+                              try {
+                                const client = await getXRPLClient();
+                                const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
+                                const result = await issueInstitutionalCredential(client, platformWallet, institutionalCredAddress);
+                                setInstitutionalCredResult(`✅ Issued. Tx: ${result.txHash}`);
+                                setInstitutionalCredAddress('');
+                              } catch (err: any) {
+                                setInstitutionalCredResult(`❌ Failed: ${err.message}`);
+                              } finally {
+                                setInstitutionalCredLoading(false);
+                              }
+                            }}
+                            disabled={institutionalCredLoading}
+                            style={{
+                              padding: '10px 16px',
+                              borderRadius: 12,
+                              background: institutionalCredLoading
+                                ? 'rgba(150, 200, 130, 0.4)'
+                                : 'linear-gradient(180deg, oklch(0.68 0.14 140), oklch(0.55 0.16 140))',
+                              color: 'white',
+                              border: '1px solid transparent',
+                              fontSize: 13,
+                              fontWeight: 600,
+                              letterSpacing: '-0.01em',
+                              cursor: institutionalCredLoading ? 'not-allowed' : 'pointer',
+                              boxShadow: institutionalCredLoading
+                                ? 'none'
+                                : 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 12px -4px oklch(0.55 0.16 140 / 0.5)',
+                              transition: 'all 0.18s ease',
+                            }}
+                          >
+                            {institutionalCredLoading ? 'Issuing…' : 'Issue Credential'}
+                          </button>
+                          {institutionalCredResult && (
+                            <p style={{
+                              fontSize: 12,
+                              color: institutionalCredResult.startsWith('✅') ? 'oklch(0.5 0.14 140)' : 'oklch(0.55 0.18 28)',
+                              margin: 0,
+                              wordBreak: 'break-all',
+                            }}>
+                              {institutionalCredResult}
+                            </p>
+                          )}
+                        </div>
+                      </Card>
                     </div>
                   </div>
                 )}
