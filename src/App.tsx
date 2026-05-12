@@ -1501,9 +1501,10 @@ export default function App() {
   // ── Platform Fees CSV builder (lens-aware via fee side, not PO role) ──
   const buildPlatformFeesCSV = (): string => {
     const categorize = (feeType: string): { category: string; side: 'buyer' | 'seller' } => {
-      if (feeType === 'CREATE')                              return { category: 'PO Creation', side: 'buyer'  };
-      if (feeType === 'ESCROW_LOCK')                         return { category: 'Escrow Lock', side: 'buyer'  };
-      if (feeType === 'NFT_MINT' || feeType === 'UNIT_MINT') return { category: 'Inventory',   side: 'seller' };
+      if (feeType === 'CREATE')                                            return { category: 'PO Creation', side: 'buyer'  };
+      if (feeType === 'ESCROW_LOCK')                                       return { category: 'Escrow Lock', side: 'buyer'  };
+      if (feeType === 'NFT_MINT' || feeType === 'UNIT_MINT')               return { category: 'Inventory',   side: 'seller' };
+      if (feeType === 'PO_FINANCING' || feeType === 'INVENTORY_FINANCING') return { category: 'Financing',   side: 'seller' };
       return { category: 'Financing', side: 'buyer' };
     };
     const parseFeeAmount = (raw: string): number => {
@@ -2760,12 +2761,17 @@ export default function App() {
       }
 
       console.log(`[drawFromCreditLine] ✅ COLLATERAL_DRAW written. DrawId: ${drawId}, Amount: $${drawAmt}, Tx: ${result.result.hash}`);
+      const estFeeUsd = drawAmt * 0.0075;
+      const estNetUsd = drawAmt - estFeeUsd;
       alert(
         `✅ Draw request submitted!\n\n` +
-        `Amount: $${drawAmt.toFixed(2)} RLUSD\n` +
-        `New Balance: $${newBalance}\n` +
+        `Draw amount: $${drawAmt.toFixed(2)} RLUSD\n` +
+        `New balance owed to lender: $${newBalance} RLUSD\n` +
         `Tx Hash: ${result.result.hash}\n\n` +
-        `The lender has been notified on-chain. Funds will be disbursed to your wallet shortly.`
+        `The lender has been notified on-chain. Once they approve, your draw will be disbursed to your wallet less a 0.75% Vhay platform fee.\n\n` +
+        `Estimated platform fee:  $${estFeeUsd.toFixed(2)} RLUSD\n` +
+        `Estimated net received:  $${estNetUsd.toFixed(2)} RLUSD\n` +
+        `Amount owed back to lender: $${drawAmt.toFixed(2)} RLUSD (+ interest)`
       );
 
       setDrawAmount('');
@@ -3833,6 +3839,7 @@ useEffect(() => {
     if (items.length === 0) return alert('Add at least one item');
     if (parseFloat(totalEscrowAmount) <= 0) return alert('Total > 0');
     if (!paymentTerms) return alert('Select Payment Terms');
+    if (!customerProfile.shippingAddress.trim()) return alert('Shipping address is required. Please add one to your Profile before creating a PO.');
 
     // Phase 1B: Verify both buyer and vendor hold valid credentials
     const wallet = xrpl.Wallet.fromSeed(seed);
@@ -4528,8 +4535,10 @@ useEffect(() => {
             Account: vendorWallet.classicAddress,
             Destination: companyWalletAddress,
             Amount: { currency: 'USD', issuer: rlusdIssuer, value: split.scpoFee } as any,
-            Memos: [buildMemo(SCPO_ACTIONS.FINANCE_REPAID, activeFinancing.requestId, {
-              reqId: activeFinancing.requestId, lenderTx: lenderTxHash, scTx: '', netTx: '',
+            Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, vendorWallet.classicAddress, {
+              poName: po.poName,
+              feeType: 'PO_FINANCING',
+              amount: `$${split.scpoFee} RLUSD (PO financing platform fee)`,
             } as any)]
           };
           const preparedSCPO = await repayClient.autofill(scpoFeeTx);
@@ -10314,7 +10323,7 @@ const addLinkedVendorByDID = async () => {
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
                                 {isClaimed ? <IconCheck size={14}/> : isClaiming ? <IconSpark size={14}/> : <IconWallet size={14} style={{ color: '#1d4d2d' }}/>}
                                 <span style={{ fontSize: 13, fontWeight: 600 }}>
-                                  {isClaimed ? 'Escrow claimed' : isClaiming ? 'Claiming…' : 'Claim escrow'}
+                                  {isClaimed ? 'Escrow claimed' : isClaiming ? 'Claiming…' : 'Claim Escrow'}
                                 </span>
                               </div>
                               <span style={{ fontSize: 11, color: isClaimed ? 'rgba(14, 32, 16, 0.65)' : 'var(--ink-3)', position: 'relative' }}>
@@ -10359,7 +10368,7 @@ const addLinkedVendorByDID = async () => {
                             }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                               <IconSpark size={14} style={{ color: (financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? '#f9efd2' : '#1a4080' }}/>
-                              <span style={{ fontSize: 13, fontWeight: 600 }}>{(financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? 'Hide advance form' : 'Request advance'}</span>
+                              <span style={{ fontSize: 13, fontWeight: 600 }}>{(financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? 'Hide advance form' : 'Request Advance'}</span>
                             </div>
                             <span style={{ fontSize: 11, color: (financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? 'rgba(249, 239, 210, 0.8)' : 'var(--ink-3)' }}>
                               {(financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId) ? 'Click to collapse' : 'Request working capital early'}
@@ -18461,10 +18470,11 @@ const addLinkedVendorByDID = async () => {
 
                   // ── Map raw feeType → category + side ──
                   const categorize = (feeType: string): { category: FeeCategory; side: FeeSide } => {
-                    if (feeType === 'CREATE')                              return { category: 'PO Creation', side: 'buyer'  };
-                    if (feeType === 'ESCROW_LOCK')                         return { category: 'Escrow Lock', side: 'buyer'  };
-                    if (feeType === 'NFT_MINT' || feeType === 'UNIT_MINT') return { category: 'Inventory',   side: 'seller' };
-                    return { category: 'Financing', side: 'buyer' }; // YIELD_PLATFORM and future advance fees
+                    if (feeType === 'CREATE')                                            return { category: 'PO Creation', side: 'buyer'  };
+                    if (feeType === 'ESCROW_LOCK')                                       return { category: 'Escrow Lock', side: 'buyer'  };
+                    if (feeType === 'NFT_MINT' || feeType === 'UNIT_MINT')               return { category: 'Inventory',   side: 'seller' };
+                    if (feeType === 'PO_FINANCING' || feeType === 'INVENTORY_FINANCING') return { category: 'Financing',   side: 'seller' };
+                    return { category: 'Financing', side: 'buyer' }; // YIELD_PLATFORM and future buyer-side fees
                   };
 
                   // ── Parse fee amount string ($1.00, $0.45 (0.05% of $X), 1.00 RLUSD) ──
@@ -18555,7 +18565,7 @@ const addLinkedVendorByDID = async () => {
                         { label: 'PO Creation Fees',        value: `$${formatNumber(poCreationSum, { decimals: 2 })}`, sub: 'Buyer · $1 flat',                                            chip: 'Buyer',  chipTone: activeSide === 'buyer'  ? 'gold' : 'neutral' },
                         { label: 'Escrow Lock Fees',        value: `$${formatNumber(escrowLockSum, { decimals: 2 })}`, sub: 'Buyer · 0.05% of PO',                                        chip: 'Buyer',  chipTone: activeSide === 'buyer'  ? 'gold' : 'neutral' },
                         { label: 'Inventory Fees',          value: `$${formatNumber(inventorySum, { decimals: 2 })}`,  sub: 'Seller · $1/SKU + $0.01/unit',                               chip: 'Seller', chipTone: activeSide === 'seller' ? 'gold' : 'neutral' },
-                        { label: 'Financing Platform Fees', value: `$${formatNumber(financingSum, { decimals: 2 })}`,  sub: activeSide === 'buyer' ? 'Buyer · yield platform fee' : 'Seller · advance fees coming soon', chip: activeSide === 'buyer' ? 'Buyer' : 'Seller', chipTone: 'neutral' },
+                        { label: 'Financing Platform Fees', value: `$${formatNumber(financingSum, { decimals: 2 })}`,  sub: activeSide === 'buyer' ? 'Buyer · yield platform fee' : 'Seller · 0.75% advance fees', chip: activeSide === 'buyer' ? 'Buyer' : 'Seller', chipTone: 'neutral' },
                         { label: 'Total Platform Fees',     value: `$${formatNumber(totalSum, { decimals: 2 })}`,      sub: `${activeSide === 'buyer' ? 'Buyer' : 'Seller'} lifetime`,    chip: 'All-time', chipTone: 'blue' },
                         { label: 'Fees This Period',        value: `$${formatNumber(periodSum, { decimals: 2 })}`,     sub: taxPeriod === 'custom' ? 'Custom range' : `Active ${taxPeriod}`, chip: 'Period',   chipTone: 'gold' },
                       ]}/>
@@ -19004,10 +19014,10 @@ const addLinkedVendorByDID = async () => {
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
                       <Card>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
-                          Total SC.PO Created
+                          Total POs Created
                         </div>
                         <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
-                          {savedPOs.length}
+                          {feeEntries.filter(e => e.feeType === 'CREATE').length}
                         </div>
                       </Card>
                       <Card>
@@ -19020,18 +19030,18 @@ const addLinkedVendorByDID = async () => {
                       </Card>
                       <Card>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
-                          Unique Customers
+                          Unique Buyers
                         </div>
                         <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
-                          {new Set(savedPOs.map(po => po.buyerAddress)).size}
+                          {new Set(feeEntries.filter(e => e.feeType === 'CREATE').map(e => e.account)).size}
                         </div>
                       </Card>
                       <Card>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8 }}>
-                          Unique Vendors
+                          Unique Sellers
                         </div>
                         <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
-                          {new Set(savedPOs.map(po => po.vendorAddress)).size}
+                          {new Set(feeEntries.filter(e => ['NFT_MINT', 'UNIT_MINT', 'PO_FINANCING', 'INVENTORY_FINANCING'].includes(e.feeType)).map(e => e.account)).size}
                         </div>
                       </Card>
                       <Card>
@@ -19122,10 +19132,12 @@ const addLinkedVendorByDID = async () => {
                         <Empty msg="No fees collected yet"/>
                       ) : (() => {
                         const feeTypeChip = (ft: string) => {
-                          if (ft === 'CREATE')      return { tone: 'blue' as const,    label: 'PO Creation' };
-                          if (ft === 'ESCROW_LOCK') return { tone: 'gold' as const,    label: 'Escrow Lock' };
-                          if (ft === 'NFT_MINT')    return { tone: 'green' as const,   label: 'NFT Mint' };
-                          if (ft === 'UNIT_MINT')   return { tone: 'neutral' as const, label: 'Unit Mint' };
+                          if (ft === 'CREATE')               return { tone: 'blue' as const,    label: 'PO Creation' };
+                          if (ft === 'ESCROW_LOCK')          return { tone: 'gold' as const,    label: 'Escrow Lock' };
+                          if (ft === 'NFT_MINT')             return { tone: 'green' as const,   label: 'NFT Mint' };
+                          if (ft === 'UNIT_MINT')            return { tone: 'neutral' as const, label: 'Unit Mint' };
+                          if (ft === 'PO_FINANCING')         return { tone: 'dark' as const,    label: 'PO Financing' };
+                          if (ft === 'INVENTORY_FINANCING')  return { tone: 'dark' as const,    label: 'Inventory Financing' };
                           return { tone: 'neutral' as const, label: ft || '—' };
                         };
                         const gridCols = '110px minmax(140px, 0.7fr) minmax(140px, 0.9fr) 130px 130px';
