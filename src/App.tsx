@@ -2379,7 +2379,8 @@ export default function App() {
     loadError: string | null,
     chainPO: SavedPO | null,
     currentTab: 'overview' | 'profile' | 'inventory',
-    onTabChange: (t: 'overview' | 'profile' | 'inventory') => void
+    onTabChange: (t: 'overview' | 'profile' | 'inventory') => void,
+    perspective: 'buyer' | 'seller' = 'seller'
   ) => {
     if (!viewedPO) {
       return (
@@ -2491,10 +2492,16 @@ export default function App() {
         {/* PROFILE TAB */}
         {currentTab === 'profile' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-            {[
-              { title: 'Seller', data: vendorProfile, tone: 'gold' as const },
-              { title: 'Buyer',  data: (chainPO ? linkedCustomers.find(c => c.classicAddress === chainPO.buyerAddress) : null) || ({} as any), tone: 'blue' as const },
-            ].map(({ title, data, tone }) => (
+            {(perspective === 'seller'
+              ? [
+                  { title: 'Seller', data: vendorProfile, tone: 'gold' as const },
+                  { title: 'Buyer',  data: (chainPO ? linkedCustomers.find(c => c.classicAddress === chainPO.buyerAddress) : null) || ({} as any), tone: 'blue' as const },
+                ]
+              : [
+                  { title: 'Buyer',  data: customerProfile, tone: 'blue' as const },
+                  { title: 'Seller', data: (chainPO ? linkedVendors.find(v => v.classicAddress === chainPO.vendorAddress) : null) || ({} as any), tone: 'gold' as const },
+                ]
+            ).map(({ title, data, tone }) => (
               <div key={title} className="etched" style={{ padding: 16, borderRadius: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                   <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{title}</div>
@@ -2532,7 +2539,9 @@ export default function App() {
         {currentTab === 'inventory' && (() => {
           const lines = viewedPO.items || [];
           const totalUnits = lines.reduce((s, l) => s + (parseFloat(l.qty as any) || 0), 0);
-          const v2 = vendorInventoryV2 || [];
+          const v2 = perspective === 'seller'
+            ? (vendorInventoryV2 || [])
+            : (chainPO?.vendorAddress ? (linkedVendorInventoryV2[chainPO.vendorAddress] || []) : []);
           return (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
@@ -9789,207 +9798,8 @@ const addLinkedVendorByDID = async () => {
                           </div>
                         )}
                       </div>
-                    ) : !customerScpoActionViewedPO ? (
-                      <div style={{ padding: 40, textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>
-                        {customerScpoActionPoLoadError ? `Load error: ${customerScpoActionPoLoadError}` : 'Loading PO details from IPFS…'}
-                      </div>
                     ) : (
-                      <>
-                        {/* Inline pill tabs */}
-                        <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 12, background: 'rgba(255, 248, 222, 0.4)', border: '1px solid rgba(180,140,60,0.12)', marginBottom: 20, width: 'fit-content' }}>
-                          {[
-                            { k: 'overview' as const,  l: 'Overview',  I: IconFile },
-                            { k: 'profile' as const,   l: 'Profile',   I: IconUser },
-                            { k: 'inventory' as const, l: 'Inventory', I: IconBox },
-                          ].map(t => {
-                            const active = actionDetailTab === t.k;
-                            const I = t.I;
-                            return (
-                              <button key={t.k} type="button" onClick={() => setActionDetailTab(t.k)}
-                                style={{
-                                  display: 'flex', alignItems: 'center', gap: 6,
-                                  padding: '7px 14px', borderRadius: 9,
-                                  background: active ? '#2a1f08' : 'transparent',
-                                  color: active ? '#f9efd2' : 'var(--ink-2)',
-                                  fontSize: 12.5, fontWeight: 600, border: 0, cursor: 'pointer', fontFamily: 'inherit',
-                                  transition: 'all 0.2s ease',
-                                }}>
-                                <I size={13}/> {t.l}
-                              </button>
-                            );
-                          })}
-                        </div>
-
-                        {/* OVERVIEW TAB */}
-                        {actionDetailTab === 'overview' && (
-                          <>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
-                              {[
-                                { label: 'Department', v: customerScpoActionViewedPO.department || '—' },
-                                { label: 'Payment',    v: customerScpoActionViewedPO.paymentTerms || '—' },
-                                { label: 'Delivery',   v: customerScpoActionViewedPO.deliveryTerms || '—' },
-                                { label: 'Escrow ccy', v: customerScpoActionViewedPO.escrowCurrency || 'XRP', mono: true },
-                              ].map(f => (
-                                <div key={f.label} className="etched" style={{ padding: 12, borderRadius: 12 }}>
-                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</div>
-                                  <div className={f.mono ? 'mono' : ''} style={{ fontSize: 13, fontWeight: 500, marginTop: 4 }}>{f.v}</div>
-                                </div>
-                              ))}
-                            </div>
-
-                            {customerScpoActionViewedPO.description && (
-                              <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 18 }}>
-                                <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
-                                <div style={{ fontSize: 13, lineHeight: 1.5 }}>{customerScpoActionViewedPO.description}</div>
-                              </div>
-                            )}
-
-                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
-                              Line items · {customerScpoActionViewedPO.items?.length || 0}
-                            </div>
-                            <div style={{ border: '1px solid rgba(180,140,60,0.15)', borderRadius: 12, overflow: 'hidden', marginBottom: 12 }}>
-                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10, padding: '10px 14px', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace", background: 'rgba(255, 248, 222, 0.5)', borderBottom: '1px solid rgba(180,140,60,0.15)' }}>
-                                <div>Item #</div>
-                                <div style={{ textAlign: 'right' }}>Qty</div>
-                                <div style={{ textAlign: 'right' }}>Unit</div>
-                                <div style={{ textAlign: 'right' }}>Total</div>
-                              </div>
-                              {(customerScpoActionViewedPO.items || []).map((item, i) => (
-                                <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 90px 100px', gap: 10, padding: '10px 14px', alignItems: 'center', fontSize: 13, borderBottom: '1px solid rgba(180,140,60,0.08)' }}>
-                                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.num}</span>
-                                  <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
-                                  <span className="mono" style={{ textAlign: 'right' }}>{item.piecePrice ? `$${item.piecePrice}` : '—'}</span>
-                                  <span className="mono" style={{ textAlign: 'right', fontWeight: 600 }}>${item.total}</span>
-                                </div>
-                              ))}
-                            </div>
-
-                            {customerScpoActionViewedPO.attachments && customerScpoActionViewedPO.attachments.length > 0 && (
-                              <>
-                                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10, marginTop: 18 }}>
-                                  Attachments · {customerScpoActionViewedPO.attachments.length}
-                                </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-                                  {customerScpoActionViewedPO.attachments.map((att, i) => (
-                                    <div key={i} className="etched" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderRadius: 10 }}>
-                                      <div style={{ padding: 6, borderRadius: 6, background: 'rgba(240, 200, 100, 0.25)', color: '#6a4a10', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                        <IconFile size={14}/>
-                                      </div>
-                                      <a href={`https://dweb.link/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ flex: 1, fontSize: 13, color: 'var(--ink)', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`Open ${att.name} on IPFS`}>
-                                        {att.name}
-                                      </a>
-                                    </div>
-                                  ))}
-                                </div>
-                              </>
-                            )}
-
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12, paddingTop: 12, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
-                              <div className="mono" style={{ fontSize: 13 }}>
-                                <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
-                                <span style={{ fontWeight: 600, fontSize: 16 }}>${selectedOpenPO.total}</span>
-                              </div>
-                            </div>
-                          </>
-                        )}
-
-                        {/* PROFILE TAB */}
-                        {actionDetailTab === 'profile' && (
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-                            {[
-                              { title: 'Buyer', data: customerProfile, tone: 'blue' as const },
-                              { title: 'Seller', data: vendorOf(selectedOpenPO) || ({} as any), tone: 'gold' as const },
-                            ].map(({ title, data, tone }) => (
-                              <div key={title} className="etched" style={{ padding: 16, borderRadius: 14 }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{title}</div>
-                                  {data.uniqueID && <Chip tone={tone}>{data.uniqueID}</Chip>}
-                                </div>
-                                <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 2 }}>
-                                  {data.company || data.name || '—'}
-                                </div>
-                                {data.name && data.company && (
-                                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 12 }}>{data.name}</div>
-                                )}
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-                                  {[
-                                    { k: 'Email',            v: data.email,                                          mono: false },
-                                    { k: 'Phone',            v: data.phone,                                          mono: false },
-                                    { k: 'Billing address',  v: data.address,                                        mono: false },
-                                    { k: 'Shipping address', v: data.shippingAddress || (data.address ? '—' : ''),   mono: false },
-                                    { k: 'Wallet',           v: data.classicAddress,                                 mono: true },
-                                    { k: 'ID',               v: data.uniqueID,                                       mono: true },
-                                  ].filter(r => r.v).map(r => (
-                                    <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12, minWidth: 0 }}>
-                                      <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>{r.k}</span>
-                                      <span className={r.mono ? 'mono' : ''} style={{ fontWeight: 500, textAlign: 'right', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.v}>
-                                        {r.mono && r.v.length > 18 ? `${r.v.slice(0, 8)}…${r.v.slice(-6)}` : r.v}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* INVENTORY TAB */}
-                        {actionDetailTab === 'inventory' && (() => {
-                          const lines = customerScpoActionViewedPO.items || [];
-                          const totalUnits = lines.reduce((s, l) => s + (parseFloat(l.qty as any) || 0), 0);
-                          const totalCost = lines.reduce((s, l) => s + (parseFloat(l.total as any) || 0), 0);
-                          const v2 = selectedOpenPO.vendorAddress ? (linkedVendorInventoryV2[selectedOpenPO.vendorAddress] || []) : [];
-                          return (
-                            <>
-                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 16 }}>
-                                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
-                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Line items</div>
-                                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>{lines.length}</div>
-                                </div>
-                                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
-                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Total units</div>
-                                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>{totalUnits}</div>
-                                </div>
-                                <div className="etched" style={{ padding: 12, borderRadius: 12 }}>
-                                  <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Order value</div>
-                                  <div className="mono" style={{ fontSize: 20, fontWeight: 500, marginTop: 4 }}>${selectedOpenPO.total}</div>
-                                </div>
-                              </div>
-
-                              <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 10 }}>
-                                Items on this order
-                              </div>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                                {lines.map((l, i) => {
-                                  const match = v2.find(x => x.nftId === l.invNFTId || x.partNumber === l.num || x.name === l.num);
-                                  const desc = match?.shortDescription || `Custom item — ${l.num}`;
-                                  const category = match?.category || '';
-                                  return (
-                                    <div key={i} className="etched" style={{ padding: 14, borderRadius: 12 }}>
-                                      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 16, alignItems: 'start' }}>
-                                        <div style={{ minWidth: 0 }}>
-                                          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                                            <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{l.num}</span>
-                                            {category && (
-                                              <span style={{ fontSize: 10, color: 'var(--ink-3)', padding: '1px 6px', borderRadius: 4, background: 'rgba(180, 140, 60, 0.1)' }}>{category}</span>
-                                            )}
-                                          </div>
-                                          <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>{match?.name || l.num}</div>
-                                          <div style={{ fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.45 }}>{desc}</div>
-                                        </div>
-                                        <div style={{ textAlign: 'right' }}>
-                                          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{l.qty} units</div>
-                                          <div className="mono" style={{ fontSize: 16, fontWeight: 600, marginTop: 2 }}>${l.total}</div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </>
-                          );
-                        })()}
-                      </>
+                      renderActionDetailTabs(customerScpoActionViewedPO, customerScpoActionPoLoadError, selectedOpenPO, actionDetailTab, setActionDetailTab, 'buyer')
                     )}
                   </Card>
                 )}
