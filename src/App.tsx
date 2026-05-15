@@ -858,6 +858,8 @@ export default function App() {
   const [vendorActionDetailTab, setVendorActionDetailTab] = useState<'overview' | 'profile' | 'inventory'>('overview');
   const [claimJustCelebrated, setClaimJustCelebrated] = useState<string | null>(null);
   const [claimSubmitting, setClaimSubmitting] = useState<string | null>(null);
+  const [fundSubmitting, setFundSubmitting] = useState<string | null>(null);
+  const [acceptSubmitting, setAcceptSubmitting] = useState<string | null>(null);
   // Holds the tab + issuanceId of whichever PO has its financing drawer open, or null if none.
   // Tab-scoped so opening the drawer in Sell · Action doesn't also open it in Sell · Financing.
   type FinancingDrawerScope = { tab: 'action' | 'financing'; poId: string };
@@ -8453,7 +8455,7 @@ const addLinkedVendorByDID = async () => {
                             if (qty > 0 && price > 0) setNewTotal((qty * price).toFixed(2));
                           }}
                           className="mono"
-                          style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right', background: selectedItemPricingLoading ? 'rgba(255, 248, 222, 0.2)' : undefined }}/>
+                          style={{ ...inpStyle, padding: '6px 10px', fontSize: 13, textAlign: 'right', ...(selectedItemPricingLoading ? { background: 'rgba(255, 248, 222, 0.2)' } : {}) }}/>
                         <input placeholder="0.00" value={newTotal}
                           onChange={(e) => setNewTotal(e.target.value)}
                           className="mono"
@@ -9493,25 +9495,53 @@ const addLinkedVendorByDID = async () => {
                         </button>
 
                         {canFund && (
-                          <button type="button" className="action-btn"
-                            onClick={async () => {
-                              if (!selectedOpenPO) return;
-                              await fundEscrow(selectedOpenPO);
-                              setSelectedOpenPO(null);
-                              setCustomerScpoActionViewedPO(null);
-                            }}
-                            style={{
-                              display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
-                              padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(100, 180, 120, 0.3)',
-                              background: 'linear-gradient(180deg, oklch(0.93 0.09 148), oklch(0.85 0.14 148))',
-                              cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                            }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <IconWallet size={14} style={{ color: '#1d4d2d' }}/>
-                              <span style={{ fontSize: 13, fontWeight: 600 }}>Fund</span>
-                            </div>
-                            <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Lock ${selectedOpenPO.total} in escrow</span>
-                          </button>
+                          (() => {
+                            const isFunding = fundSubmitting === selectedOpenPO.issuanceId;
+                            return (
+                              <button type="button" className={isFunding ? '' : 'action-btn'} disabled={isFunding}
+                                onClick={async () => {
+                                  if (!selectedOpenPO) return;
+                                  setFundSubmitting(selectedOpenPO.issuanceId);
+                                  try {
+                                    await fundEscrow(selectedOpenPO);
+                                    setSelectedOpenPO(null);
+                                    setCustomerScpoActionViewedPO(null);
+                                  } finally {
+                                    setFundSubmitting(null);
+                                  }
+                                }}
+                                style={{
+                                  position: 'relative',
+                                  display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                                  padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(100, 180, 120, 0.3)',
+                                  background: 'linear-gradient(180deg, oklch(0.93 0.09 148), oklch(0.85 0.14 148))',
+                                  cursor: isFunding ? 'default' : 'pointer',
+                                  fontFamily: 'inherit', textAlign: 'left',
+                                  overflow: 'hidden',
+                                  boxShadow: isFunding
+                                    ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 4px rgba(100, 200, 120, 0.25), 0 0 24px 4px rgba(100, 200, 120, 0.4)'
+                                    : 'inset 0 1px 0 rgba(255,255,255,0.7)',
+                                  transition: 'all 0.5s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                                }}>
+                                {isFunding && (
+                                  <span style={{
+                                    position: 'absolute', inset: 0,
+                                    background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)',
+                                    backgroundSize: '200% 100%',
+                                    animation: 'shimmer 1.2s linear infinite',
+                                    pointerEvents: 'none',
+                                  }}/>
+                                )}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+                                  {isFunding ? <IconSpark size={14}/> : <IconWallet size={14} style={{ color: '#1d4d2d' }}/>}
+                                  <span style={{ fontSize: 13, fontWeight: 600 }}>{isFunding ? 'Funding…' : 'Fund'}</span>
+                                </div>
+                                <span style={{ fontSize: 11, color: 'var(--ink-3)', position: 'relative' }}>
+                                  {isFunding ? 'Locking on-chain…' : `Lock $${selectedOpenPO.total} in escrow`}
+                                </span>
+                              </button>
+                            );
+                          })()
                         )}
                       </div>
                     )}
@@ -10045,32 +10075,59 @@ const addLinkedVendorByDID = async () => {
                     {/* Action buttons row */}
                     {activePO.status === 'open' && (
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, marginBottom: 18 }}>
-                        <button type="button" className="action-btn"
-                          onClick={async () => {
-                            if (!activePO) return;
-                            await acceptMPTOfferForPO(activePO);
-                            clearSelection();
-                          }}
-                          style={{
-                            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
-                            padding: '16px 20px', borderRadius: 12, border: '1px solid rgba(100, 180, 120, 0.3)',
-                            background: 'linear-gradient(180deg, oklch(0.93 0.09 148), oklch(0.85 0.14 148))',
-                            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                          }}>
-                          <div>
-                            <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
-                              Respond to buyer
-                            </div>
-                            <div style={{ fontSize: 15, fontWeight: 600, marginTop: 3 }}>Accept purchase order</div>
-                          </div>
-                          <div style={{
-                            width: 36, height: 36, borderRadius: 999,
-                            background: 'rgba(29, 77, 45, 0.15)', color: '#1d4d2d',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          }}>
-                            <IconCheck size={18}/>
-                          </div>
-                        </button>
+                        {(() => {
+                          const isAccepting = acceptSubmitting === activePO.issuanceId;
+                          return (
+                            <button type="button" className={isAccepting ? '' : 'action-btn'} disabled={isAccepting}
+                              onClick={async () => {
+                                if (!activePO) return;
+                                setAcceptSubmitting(activePO.issuanceId);
+                                try {
+                                  await acceptMPTOfferForPO(activePO);
+                                  clearSelection();
+                                } finally {
+                                  setAcceptSubmitting(null);
+                                }
+                              }}
+                              style={{
+                                position: 'relative',
+                                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+                                padding: '16px 20px', borderRadius: 12, border: '1px solid rgba(100, 180, 120, 0.3)',
+                                background: 'linear-gradient(180deg, oklch(0.93 0.09 148), oklch(0.85 0.14 148))',
+                                cursor: isAccepting ? 'default' : 'pointer',
+                                fontFamily: 'inherit', textAlign: 'left',
+                                overflow: 'hidden',
+                                boxShadow: isAccepting
+                                  ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 4px rgba(100, 200, 120, 0.25), 0 0 24px 4px rgba(100, 200, 120, 0.4)'
+                                  : 'inset 0 1px 0 rgba(255,255,255,0.7)',
+                                transition: 'all 0.5s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                              }}>
+                              {isAccepting && (
+                                <span style={{
+                                  position: 'absolute', inset: 0,
+                                  background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)',
+                                  backgroundSize: '200% 100%',
+                                  animation: 'shimmer 1.2s linear infinite',
+                                  pointerEvents: 'none',
+                                }}/>
+                              )}
+                              <div style={{ position: 'relative' }}>
+                                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>
+                                  {isAccepting ? 'Accepting on-chain…' : 'Respond to buyer'}
+                                </div>
+                                <div style={{ fontSize: 15, fontWeight: 600, marginTop: 3 }}>{isAccepting ? 'Accepting…' : 'Accept Purchase Order'}</div>
+                              </div>
+                              <div style={{
+                                width: 36, height: 36, borderRadius: 999,
+                                background: 'rgba(29, 77, 45, 0.15)', color: '#1d4d2d',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                position: 'relative',
+                              }}>
+                                {isAccepting ? <IconSpark size={18}/> : <IconCheck size={18}/>}
+                              </div>
+                            </button>
+                          );
+                        })()}
                       </div>
                     )}
 
@@ -13041,6 +13098,8 @@ const addLinkedVendorByDID = async () => {
                           const name = lv?.company || lv?.name || (r.vendorAddress ? r.vendorAddress.slice(0, 8) + '…' : '—');
                           return <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '100%' }}>{name}</span>;
                         } },
+                      { k: 'openDate', label: 'Open Date', w: '100px',
+                        render: (r: SavedPO) => <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{r.dateIssued || '—'}</span> },
                       { k: 'age',      label: 'Age',      w: '70px',
                         render: (r: SavedPO) => <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{ageString(r.dateIssued)}</span> },
                       { k: 'total',    label: 'Total',    w: '110px', align: 'right',
@@ -13048,6 +13107,7 @@ const addLinkedVendorByDID = async () => {
                       { k: 'stage',    label: 'Stage',    w: '110px',
                         render: (r: SavedPO) => <Chip tone={stageToneMap[r.status] || 'neutral'}>{r.status}</Chip> },
                     ]}
+                    stickyHeader
                     rows={filteredPOs}
                     onRow={async (r: SavedPO) => {
                       setOverviewSelectedPO(r);
@@ -13712,6 +13772,8 @@ const addLinkedVendorByDID = async () => {
                           const name = lc?.company || lc?.name || (r.buyerAddress ? r.buyerAddress.slice(0, 8) + '…' : '—');
                           return <span style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block', maxWidth: '100%' }}>{name}</span>;
                         } },
+                      { k: 'openDate', label: 'Open Date', w: '100px',
+                        render: (r: SavedPO) => <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{r.dateIssued || '—'}</span> },
                       { k: 'age', label: 'Age', w: '70px',
                         render: (r: SavedPO) => <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>{ageString(r.dateIssued)}</span> },
                       { k: 'total', label: 'Total', w: '110px', align: 'right',
@@ -13719,6 +13781,7 @@ const addLinkedVendorByDID = async () => {
                       { k: 'stage', label: 'Stage', w: '110px',
                         render: (r: SavedPO) => <Chip tone={stageToneMap[r.status] || 'neutral'}>{r.status}</Chip> },
                     ]}
+                    stickyHeader
                     rows={filteredPOs}
                     onRow={async (r: SavedPO) => {
                       setVOvwSelectedPO(r);
@@ -16879,7 +16942,7 @@ const addLinkedVendorByDID = async () => {
                             : 'No POs match these filters.'
                         }/>
                       ) : (
-                        <Table maxHeight={520} cols={[
+                        <Table stickyHeader maxHeight={520} cols={[
                           { k: 'po', label: 'PO', w: 'minmax(180px, 1.5fr)',
                             render: r => (
                               <div style={{ minWidth: 0 }}>
@@ -17276,7 +17339,7 @@ const addLinkedVendorByDID = async () => {
                               : 'No activity in this period.'
                         } />
                       ) : (
-                        <Table maxHeight={520} cols={[
+                        <Table stickyHeader maxHeight={520} cols={[
                           { k: 'date',  label: 'Date',         w: '100px',
                             render: (e: CashFlowEvent) => <span className="mono" style={{ fontSize: 12 }}>{new Date(e.timestamp).toLocaleDateString()}</span> },
                           { k: 'po',    label: 'PO',           w: '1.2fr',
@@ -17287,21 +17350,26 @@ const addLinkedVendorByDID = async () => {
                             render: (e: CashFlowEvent) => <Chip tone={directionChipTone(e.direction)}>{directionChipLabel(e.direction)}</Chip> },
                           { k: 'tx',    label: 'Tx Hash',      w: '140px',
                             render: (e: CashFlowEvent) => e.txHash ? (
-                              <span
+                              <button
+                                type="button"
                                 onClick={() => {
                                   navigator.clipboard.writeText(e.txHash);
                                   setAcctCopiedHash(e.txHash);
-                                  setTimeout(() => setAcctCopiedHash(prev => prev === e.txHash ? null : prev), 1500);
+                                  setTimeout(() => setAcctCopiedHash(null), 1500);
                                 }}
-                                className="mono"
+                                title="Click to copy full hash"
                                 style={{
-                                  fontSize: 11, color: acctCopiedHash === e.txHash ? 'oklch(0.55 0.14 140)' : 'oklch(0.5 0.14 68)',
-                                  cursor: 'pointer', userSelect: 'none',
-                                }}
-                                title="Click to copy"
-                              >
+                                  fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
+                                  borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                  background: acctCopiedHash === e.txHash
+                                    ? 'oklch(0.92 0.1 140)'
+                                    : 'rgba(255, 248, 222, 0.5)',
+                                  color: acctCopiedHash === e.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
+                                  cursor: 'pointer', transition: 'all 0.15s ease',
+                                  fontVariantNumeric: 'tabular-nums',
+                                }}>
                                 {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…${e.txHash.slice(-6)}`}
-                              </span>
+                              </button>
                             ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
                           { k: 'amt',   label: 'Amount',       w: '130px', align: 'right',
                             render: (e: CashFlowEvent) => (
@@ -17581,7 +17649,7 @@ const addLinkedVendorByDID = async () => {
                             : 'No entries match these filters.'
                         }/>
                       ) : (
-                        <Table maxHeight={520} cols={[
+                        <Table stickyHeader maxHeight={520} cols={[
                           { k: 'date', label: 'Date', w: '90px',
                             render: r => (
                               <span className="mono" style={{ fontSize: 12 }}>
@@ -18390,19 +18458,32 @@ const addLinkedVendorByDID = async () => {
                       {filteredRows.length === 0 ? (
                         <Empty msg={emptyMsg} />
                       ) : (
-                        <Table maxHeight={520} cols={[
+                        <Table stickyHeader maxHeight={520} cols={[
                           { k: 'date',  label: 'Date',     w: '90px',  render: (r: FeeRow) => <span className="mono" style={{ fontSize: 12 }}>{new Date(r.timestamp).toLocaleDateString()}</span> },
-                          { k: 'po',    label: 'PO',       w: '180px', render: (r: FeeRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.poName}</span> },
+                          { k: 'po',    label: 'PO',       w: 'minmax(180px, 1fr)', render: (r: FeeRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.poName}</span> },
                           { k: 'cat',   label: 'Fee Type', w: '140px', render: (r: FeeRow) => <span style={{ fontSize: 13 }}>{r.feeType}</span> },
                           { k: 'amt',   label: 'Amount',   w: '110px', render: (r: FeeRow) => <span className="mono" style={{ fontSize: 13 }}>${formatNumber(r.amountUsd, { decimals: 2 })}</span> },
                           { k: 'ccy',   label: 'Currency', w: '70px',  render: (r: FeeRow) => <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>{r.currency}</span> },
                           { k: 'tx',    label: 'Tx Hash',  w: '120px', render: (r: FeeRow) => r.txHash ? (
                             <button
-                              onClick={() => { navigator.clipboard.writeText(r.txHash); setAcctCopiedHash(r.txHash); setTimeout(() => setAcctCopiedHash(null), 1500); }}
-                              className="mono"
-                              style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--line)', background: acctCopiedHash === r.txHash ? 'var(--gold-soft)' : 'transparent', cursor: 'pointer' }}
-                            >
-                              {acctCopiedHash === r.txHash ? 'Copied!' : `${r.txHash.slice(0, 8)}…`}
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(r.txHash);
+                                setAcctCopiedHash(r.txHash);
+                                setTimeout(() => setAcctCopiedHash(null), 1500);
+                              }}
+                              title="Click to copy full hash"
+                              style={{
+                                fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
+                                borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                background: acctCopiedHash === r.txHash
+                                  ? 'oklch(0.92 0.1 140)'
+                                  : 'rgba(255, 248, 222, 0.5)',
+                                color: acctCopiedHash === r.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
+                                cursor: 'pointer', transition: 'all 0.15s ease',
+                                fontVariantNumeric: 'tabular-nums',
+                              }}>
+                              {acctCopiedHash === r.txHash ? '✓ Copied' : `${r.txHash.slice(0, 8)}…`}
                             </button>
                           ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
                         ]} rows={filteredRows}/>
@@ -18523,7 +18604,7 @@ const addLinkedVendorByDID = async () => {
                       {filteredRows.length === 0 ? (
                         <Empty msg={emptyMsg} />
                       ) : (
-                        <Table cols={[
+                        <Table stickyHeader maxHeight={520} cols={[
                           { k: 'date',      label: 'Date',         w: '85px',  render: (r: YieldRow) => <span className="mono" style={{ fontSize: 12 }}>{new Date(r.timestamp).toLocaleDateString()}</span> },
                           { k: 'po',        label: 'PO',           w: '160px', render: (r: YieldRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.poName}</span> },
                           { k: 'principal', label: 'Principal',    w: '100px', align: 'right', render: (r: YieldRow) => <span className="mono" style={{ fontSize: 13 }}>${formatNumber(r.principal, { decimals: 2 })}</span> },
@@ -18533,11 +18614,24 @@ const addLinkedVendorByDID = async () => {
                           { k: 'net',       label: 'Net Yield',    w: '100px', align: 'right', render: (r: YieldRow) => <span className="mono" style={{ fontSize: 13, fontWeight: 600, color: 'oklch(0.55 0.14 140)' }}>+${formatNumber(r.netYield, { decimals: 2 })}</span> },
                           { k: 'tx',        label: 'Tx Hash',      w: '110px', render: (r: YieldRow) => r.txHash ? (
                             <button
-                              onClick={() => { navigator.clipboard.writeText(r.txHash); setAcctCopiedHash(r.txHash); setTimeout(() => setAcctCopiedHash(null), 1500); }}
-                              className="mono"
-                              style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, border: '1px solid var(--line)', background: acctCopiedHash === r.txHash ? 'var(--gold-soft)' : 'transparent', cursor: 'pointer' }}
-                            >
-                              {acctCopiedHash === r.txHash ? 'Copied!' : `${r.txHash.slice(0, 8)}…`}
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(r.txHash);
+                                setAcctCopiedHash(r.txHash);
+                                setTimeout(() => setAcctCopiedHash(null), 1500);
+                              }}
+                              title="Click to copy full hash"
+                              style={{
+                                fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
+                                borderRadius: 6, border: '1px solid rgba(180,140,60,0.18)',
+                                background: acctCopiedHash === r.txHash
+                                  ? 'oklch(0.92 0.1 140)'
+                                  : 'rgba(255, 248, 222, 0.5)',
+                                color: acctCopiedHash === r.txHash ? 'oklch(0.35 0.12 140)' : 'var(--ink-2)',
+                                cursor: 'pointer', transition: 'all 0.15s ease',
+                                fontVariantNumeric: 'tabular-nums',
+                              }}>
+                              {acctCopiedHash === r.txHash ? '✓ Copied' : `${r.txHash.slice(0, 8)}…`}
                             </button>
                           ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
                         ]} rows={filteredRows}/>
@@ -18652,7 +18746,7 @@ const addLinkedVendorByDID = async () => {
                       {filteredRows.length === 0 ? (
                         <Empty msg={emptyMsg} />
                       ) : (
-                        <Table cols={[
+                        <Table stickyHeader maxHeight={520} cols={[
                           { k: 'vendor', label: 'Vendor',       w: '200px', render: (r: VendorRow) => <span style={{ fontSize: 13, color: 'var(--ink-2)' }}>{r.company}</span> },
                           { k: 'wallet', label: 'Wallet',       w: '130px', render: (r: VendorRow) => (
                             <button
@@ -19095,7 +19189,7 @@ const addLinkedVendorByDID = async () => {
                       ) : filtered.length === 0 ? (
                         <Empty msg="No audit entries found"/>
                       ) : (
-                        <Table maxHeight={520} cols={[
+                        <Table stickyHeader maxHeight={520} cols={[
                           { k: 'date', label: 'Date', w: '110px',
                             render: (e: any) => <span className="mono" style={{ fontSize: 12 }}>{e.date}</span> },
                           { k: 'action', label: 'Action', w: '140px',

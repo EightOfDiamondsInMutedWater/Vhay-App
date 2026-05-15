@@ -66,34 +66,8 @@ export const TopBar: React.FC<Props> = ({
         zIndex: 2,
       }}
     >
-      {/* Brand */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div
-          style={{
-            width: 44,
-            height: 44,
-            borderRadius: 10,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            overflow: 'hidden',
-          }}
-        >
-          <img
-            src={logoSrc}
-            alt="Vhay"
-            style={{
-              width: '100%',
-              height: '100%',
-              objectFit: 'contain',
-              filter: 'drop-shadow(0 2px 6px rgba(180, 120, 20, 0.25))',
-            }}
-          />
-        </div>
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.01em' }}>Vhay</div>
-        </div>
-      </div>
+      {/* Brand slot — logo moved to sidebar bottom */}
+      <div/>
 
       {/* Mode toggle */}
       <div

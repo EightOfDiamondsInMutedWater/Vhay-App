@@ -371,53 +371,145 @@ export const StackedAreaChart: React.FC<StackedAreaChartProps> = ({
       </div>
     );
   }
-  const w = 100, h = 40;
+
+  // Compose data
   const combined = Array.from({ length: n }).map((_, i) => ({
     m: bottomSeries[i]?.m ?? topSeries[i]?.m ?? '',
     b: bottomSeries[i]?.v ?? 0,
     t: topSeries[i]?.v ?? 0,
   }));
-  const max = Math.max(1, ...combined.map(d => d.b + d.t));
 
-  // Bottom layer points (from 0 → b)
-  const bottomPts: [number, number][] = combined.map((d, i) => [(i / (n - 1)) * w, h - (d.b / max) * h]);
+  // Nice ceiling for max — rounds raw max up to a clean tick boundary so peaks never clip
+  const rawMax = Math.max(1, ...combined.map(d => d.b + d.t));
+  const niceMax = (() => {
+    if (rawMax <= 0) return 1;
+    const exp = Math.floor(Math.log10(rawMax));
+    const power = Math.pow(10, exp);
+    const norm = rawMax / power;
+    let mult: number;
+    if (norm <= 1) mult = 1;
+    else if (norm <= 2) mult = 2;
+    else if (norm <= 2.5) mult = 2.5;
+    else if (norm <= 5) mult = 5;
+    else mult = 10;
+    return mult * power;
+  })();
+
+  // Format Y-axis tick values: $X / $Xk / $X.XM / cents
+  const formatY = (v: number): string => {
+    if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(v % 1_000_000 === 0 ? 0 : 1)}M`;
+    if (v >= 1_000)     return `$${(v / 1_000).toFixed(v % 1_000 === 0 ? 0 : 1)}k`;
+    if (v > 0 && v < 1) return `$${v.toFixed(2)}`;
+    return `$${Math.round(v)}`;
+  };
+
+  // 5 tick lines: 0%, 25%, 50%, 75%, 100% of niceMax
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(p => p * niceMax);
+
+  // Layout: HTML container with absolute-positioned axis labels around an SVG.
+  // SVG handles only the chart shapes and is stretched horizontally;
+  // axis labels are HTML overlays rendered at native browser scale so they
+  // never get squished/stretched by the SVG's preserveAspectRatio="none".
+  const yAxisWidth = 40;   // px reserved for Y-axis labels on the left
+  const xAxisHeight = 18;  // px reserved for X-axis labels at the bottom
+  const plotHeight = height - xAxisHeight;
+
+  // Data mapped to internal viewBox 100 × 40
+  const w = 100, h = 40;
+  const xPath = (i: number) => (i / (n - 1)) * w;
+  const yPath = (v: number) => h - (v / niceMax) * h;
+
+  const bottomPts: [number, number][] = combined.map((d, i) => [xPath(i), yPath(d.b)]);
   const bottomPath = smoothPath(bottomPts);
   const bottomArea = `${bottomPath} L ${w} ${h} L 0 ${h} Z`;
 
-  // Top layer points (stacked: from b → b+t)
-  const topPts: [number, number][] = combined.map((d, i) => [(i / (n - 1)) * w, h - ((d.b + d.t) / max) * h]);
+  const topPts: [number, number][] = combined.map((d, i) => [xPath(i), yPath(d.b + d.t)]);
   const topPath = smoothPath(topPts);
-  // top area goes from topPts line down to bottomPts line
   const topArea = `${topPath} L ${bottomPts[bottomPts.length - 1][0]} ${bottomPts[bottomPts.length - 1][1]} ${bottomPts.slice().reverse().map(p => `L ${p[0]} ${p[1]}`).join(' ')} Z`;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h + 10}`} preserveAspectRatio="none" style={{ width: '100%', height, display: 'block' }}>
-      <defs>
-        <linearGradient id="stackG-bottom" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor={bottomAccent} stopOpacity="0.55"/>
-          <stop offset="1" stopColor={bottomAccent} stopOpacity="0"/>
-        </linearGradient>
-        <linearGradient id="stackG-top" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor={topAccent} stopOpacity="0.5"/>
-          <stop offset="1" stopColor={topAccent} stopOpacity="0"/>
-        </linearGradient>
-        <pattern id="stackGrid" width="10" height="10" patternUnits="userSpaceOnUse">
-          <path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(180,140,60,0.08)" strokeWidth="0.2"/>
-        </pattern>
-      </defs>
-      <rect x="0" y="0" width={w} height={h} fill="url(#stackGrid)"/>
-      {/* bottom fill (funded) */}
-      <path d={bottomArea} fill="url(#stackG-bottom)"/>
-      <path d={bottomPath} fill="none" stroke={bottomAccent} strokeWidth="0.7" vectorEffect="non-scaling-stroke"/>
-      {/* top fill (claimed stacked above funded) */}
-      <path d={topArea} fill="url(#stackG-top)"/>
-      <path d={topPath} fill="none" stroke={topAccent} strokeWidth="0.7" vectorEffect="non-scaling-stroke"/>
-      {/* month labels */}
-      {combined.map((d, i) => (
-        <text key={'t' + i} x={(i / (n - 1)) * w} y={h + 7} fontSize="2.3" textAnchor="middle"
-          fill="rgba(100, 80, 40, 0.6)" fontFamily="JetBrains Mono, monospace">{d.m}</text>
-      ))}
-    </svg>
+    <div style={{ position: 'relative', height, width: '100%', fontFamily: "'JetBrains Mono', ui-monospace, monospace" }}>
+      {/* Y-axis labels (HTML overlay, never stretched) */}
+      <div style={{
+        position: 'absolute', left: 0, top: 0,
+        width: yAxisWidth, height: plotHeight,
+        pointerEvents: 'none',
+      }}>
+        {yTicks.map((tick, i) => (
+          <div key={`y-${i}`} style={{
+            position: 'absolute',
+            top: `${(1 - tick / niceMax) * 100}%`,
+            right: 4,
+            transform: 'translateY(-50%)',
+            fontSize: 10,
+            color: 'rgba(100, 80, 40, 0.6)',
+            whiteSpace: 'nowrap',
+          }}>
+            {formatY(tick)}
+          </div>
+        ))}
+      </div>
+
+      {/* SVG chart shapes (paths only, stretched horizontally) */}
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{
+        position: 'absolute',
+        left: yAxisWidth, top: 0,
+        width: `calc(100% - ${yAxisWidth}px)`,
+        height: plotHeight,
+        display: 'block',
+      }}>
+        <defs>
+          <linearGradient id="stackG-bottom" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor={bottomAccent} stopOpacity="0.55"/>
+            <stop offset="1" stopColor={bottomAccent} stopOpacity="0"/>
+          </linearGradient>
+          <linearGradient id="stackG-top" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor={topAccent} stopOpacity="0.5"/>
+            <stop offset="1" stopColor={topAccent} stopOpacity="0"/>
+          </linearGradient>
+        </defs>
+
+        {/* Horizontal gridlines at each tick position */}
+        {yTicks.map((tick, i) => (
+          <line key={`gl-${i}`}
+            x1={0} y1={yPath(tick)}
+            x2={w} y2={yPath(tick)}
+            stroke="rgba(180,140,60,0.12)" strokeWidth="0.15"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+
+        {/* bottom fill */}
+        <path d={bottomArea} fill="url(#stackG-bottom)"/>
+        <path d={bottomPath} fill="none" stroke={bottomAccent} strokeWidth="0.7" vectorEffect="non-scaling-stroke"/>
+
+        {/* top fill stacked above bottom */}
+        <path d={topArea} fill="url(#stackG-top)"/>
+        <path d={topPath} fill="none" stroke={topAccent} strokeWidth="0.7" vectorEffect="non-scaling-stroke"/>
+      </svg>
+
+      {/* X-axis month labels (HTML overlay, never stretched, smart edge anchoring) */}
+      <div style={{
+        position: 'absolute',
+        left: yAxisWidth, top: plotHeight,
+        width: `calc(100% - ${yAxisWidth}px)`, height: xAxisHeight,
+        pointerEvents: 'none',
+      }}>
+        {combined.map((d, i) => (
+          <div key={`x-${i}`} style={{
+            position: 'absolute',
+            left: `${(i / (n - 1)) * 100}%`,
+            top: 4,
+            transform: i === 0 ? 'translateX(0)' : i === n - 1 ? 'translateX(-100%)' : 'translateX(-50%)',
+            fontSize: 10,
+            color: 'rgba(100, 80, 40, 0.6)',
+            whiteSpace: 'nowrap',
+          }}>
+            {d.m}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 };
 
@@ -447,8 +539,10 @@ export interface TableProps<T = any> {
   empty?: React.ReactNode;
   isRowActive?: (row: T) => boolean;
   maxHeight?: number;
+  /** Pins the header row to the top of the scroll container. Requires maxHeight to be set — otherwise the header sticks to the page scroll, which is usually not the intent. */
+  stickyHeader?: boolean;
 }
-export function Table<T = any>({ cols, rows, onRow, empty, isRowActive, maxHeight }: TableProps<T>) {
+export function Table<T = any>({ cols, rows, onRow, empty, isRowActive, maxHeight, stickyHeader }: TableProps<T>) {
   const gridCols = cols.map(c => c.w || '1fr').join(' ');
   if (rows.length === 0) {
     return (
@@ -467,6 +561,7 @@ export function Table<T = any>({ cols, rows, onRow, empty, isRowActive, maxHeigh
         fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase',
         color: 'var(--ink-3)', fontFamily: "'JetBrains Mono', ui-monospace, monospace",
         borderBottom: '1px solid rgba(180,140,60,0.1)',
+        ...(stickyHeader ? { position: 'sticky' as const, top: 0, zIndex: 1, background: 'rgba(255, 248, 222, 0.95)' } : {}),
       }}>
         {cols.map(c => <div key={c.k} style={{ textAlign: c.align || 'left' }}>{c.label}</div>)}
       </div>

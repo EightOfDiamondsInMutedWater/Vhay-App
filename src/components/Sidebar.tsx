@@ -52,6 +52,7 @@ export const Sidebar: React.FC<Props> = ({ mode, activeTab, setActiveTab }) => {
   const activeDisplay = internalToDisplay(activeTab);
 
   return (
+    <div style={{ position: 'sticky', top: 12, display: 'flex', flexDirection: 'column', gap: 16 }}>
     <nav
       className="glass layered-plate"
       style={{
@@ -142,5 +143,21 @@ export const Sidebar: React.FC<Props> = ({ mode, activeTab, setActiveTab }) => {
         </div>
       </div>
     </nav>
+
+    {/* Brand mark — below the ribbon, prominent brand statement */}
+    <div style={{ display: 'flex', justifyContent: 'center' }}>
+      <img
+        src="/logo.png"
+        alt="Vhay"
+        style={{
+          width: 200,
+          height: 200,
+          objectFit: 'contain',
+          filter: 'drop-shadow(0 6px 20px rgba(180, 120, 20, 0.35))',
+          opacity: 0.95,
+        }}
+      />
+    </div>
+    </div>
   );
 };
