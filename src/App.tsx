@@ -857,9 +857,22 @@ export default function App() {
   const [vendorActionSearchQuery, setVendorActionSearchQuery] = useState('');
   const [vendorActionDetailTab, setVendorActionDetailTab] = useState<'overview' | 'profile' | 'inventory'>('overview');
   const [claimJustCelebrated, setClaimJustCelebrated] = useState<string | null>(null);
+  const [recallJustCelebrated, setRecallJustCelebrated] = useState<string | null>(null);
+  const [fundJustCelebrated, setFundJustCelebrated] = useState<string | null>(null);
+  const [acceptJustCelebrated, setAcceptJustCelebrated] = useState<string | null>(null);
   const [claimSubmitting, setClaimSubmitting] = useState<string | null>(null);
   const [fundSubmitting, setFundSubmitting] = useState<string | null>(null);
   const [acceptSubmitting, setAcceptSubmitting] = useState<string | null>(null);
+  const [recallSubmitting, setRecallSubmitting] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    tone?: 'danger' | 'neutral';
+    kind?: 'info' | 'confirm';
+  } | null>(null);
+  const confirmResolverRef = useRef<((value: boolean) => void) | null>(null);
   // Holds the tab + issuanceId of whichever PO has its financing drawer open, or null if none.
   // Tab-scoped so opening the drawer in Sell · Action doesn't also open it in Sell · Financing.
   type FinancingDrawerScope = { tab: 'action' | 'financing'; poId: string };
@@ -2138,6 +2151,79 @@ export default function App() {
     }, 3000);
     return () => clearTimeout(t);
   }, [claimJustCelebrated]);
+
+  // After Recall PO success, celebrate for 3 seconds, then clear
+  // the buyer-side selection so the right panel returns to the empty state.
+  useEffect(() => {
+    if (!recallJustCelebrated) return;
+    const t = setTimeout(() => {
+      setRecallJustCelebrated(null);
+      setSelectedOpenPO(null);
+      setCustomerScpoActionViewedPO(null);
+      setCustomerScpoActionPoLoadError(null);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [recallJustCelebrated]);
+
+  // After Fund Escrow success, celebrate for 3 seconds, then clear
+  // the buyer-side selection so the right panel returns to the empty state.
+  useEffect(() => {
+    if (!fundJustCelebrated) return;
+    const t = setTimeout(() => {
+      setFundJustCelebrated(null);
+      setSelectedOpenPO(null);
+      setCustomerScpoActionViewedPO(null);
+      setCustomerScpoActionPoLoadError(null);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [fundJustCelebrated]);
+
+  // After Accept PO success, celebrate for 3 seconds, then clear
+  // the vendor-side selection so the right panel returns to the empty state.
+  useEffect(() => {
+    if (!acceptJustCelebrated) return;
+    const t = setTimeout(() => {
+      setAcceptJustCelebrated(null);
+      setSelectedOpenPO(null);
+      setVendorScpoActionViewedPO(null);
+      setVendorScpoActionPoLoadError(null);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [acceptJustCelebrated]);
+
+  // Promise-based in-app confirm dialog — drop-in replacement for window.confirm.
+  // openConfirm({...}) returns Promise<boolean>; resolves true on Confirm, false on Cancel / backdrop click / Escape.
+  const openConfirm = (config: {
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    tone?: 'danger' | 'neutral';
+    kind?: 'info' | 'confirm';
+  }): Promise<boolean> => {
+    return new Promise((resolve) => {
+      confirmResolverRef.current = resolve;
+      setConfirmDialog(config);
+    });
+  };
+  const closeConfirm = (result: boolean) => {
+    setConfirmDialog(null);
+    confirmResolverRef.current?.(result);
+    confirmResolverRef.current = null;
+  };
+  // Escape key closes the dialog as Cancel.
+  useEffect(() => {
+    if (!confirmDialog) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setConfirmDialog(null);
+        confirmResolverRef.current?.(false);
+        confirmResolverRef.current = null;
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [confirmDialog]);
   const [isLoadingEditPO, setIsLoadingEditPO] = useState(false);
   const [escrowCurrency, setEscrowCurrency] = useState<'XRP' | 'RLUSD'>(isRLUSDConfigured() ? 'RLUSD' : 'XRP');
   const linkedVendors = customerLinkedVendorUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
@@ -3524,7 +3610,83 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       isLoadingPOs.current = false;
       return;
     }
-    setSavedPOs([...livePOs].sort((a, b) => new Date(b.dateIssued).getTime() - new Date(a.dateIssued).getTime()));
+   // Rank-based status ratchet: blocks BACKWARD transitions of a PO's status
+    // while allowing forward ones. The canonical lifecycle order is
+    // open → accepted → funded → claimed, with terminal off-ramps to recalled /
+    // superseded / updated. When a fresh ledger scan produces a lower-ranked
+    // status than what's already in prev for the same PO, the scan probably hit
+    // a transient validator inconsistency (e.g. isMPTHeldByVendor's silent catch
+    // returning false on a partial response, account_objects against the vendor
+    // address missing the MPToken because the authorize-tx hasn't fully
+    // validated yet) and the existing status should be preserved. This fixes
+    // both terminal regressions (recall / claim flicker — what the previous
+    // terminal-only version already handled) and intermediate-state regressions
+    // (vendor-accepted PO bouncing back to open on the buyer's view, funded
+    // bouncing back to accepted, etc.). Cross-session persistence (where prev
+    // is empty after a page reload) still relies on the on-chain memos
+    // themselves — see the parent-recall-receipt refresh in recallPO's open +
+    // accepted branches.
+    setSavedPOs(prev => {
+      const statusRank: Record<SavedPO['status'], number> = {
+        open: 0,
+        accepted: 1,
+        funded: 2,
+        claimed: 3,
+        updated: 4,
+        recalled: 4,
+        superseded: 4,
+      };
+      const prevById = new Map<string, SavedPO>();
+      for (const p of prev) prevById.set(p.issuanceId, p);
+      const mergedById = new Map<string, SavedPO>();
+      for (const po of livePOs) {
+        const prevPO = prevById.get(po.issuanceId);
+        if (prevPO && statusRank[prevPO.status] > statusRank[po.status]) {
+          // Backward transition — preserve prev's status + escrowSequence
+          // (they go together; e.g. 'funded' carries a sequence, 'accepted' doesn't).
+          // Other fields use the fresher ledger-derived values.
+          mergedById.set(po.issuanceId, {
+            ...po,
+            status: prevPO.status,
+            escrowSequence: prevPO.escrowSequence,
+          });
+        } else {
+          mergedById.set(po.issuanceId, po);
+        }
+      }
+      // Re-include any prev PO that fell out of the new ledger scan, filtered
+      // by current-mode ownership. This covers three cases:
+      //   1. Terminal POs (rank ≥ 3) — recall destroyed the MPT issuance, but
+      //      the local 'recalled' / 'claimed' / 'superseded' record should
+      //      persist as a historical entry.
+      //   2. Just-created POs (typically rank 0) whose MPTokenIssuanceCreate
+      //      hasn't ledger-validated yet at the moment of this scan. Without
+      //      re-include, the PO briefly disappears from active tables until
+      //      the next poll lands a validated scan, then reappears — the
+      //      visible "flicker right after handleCreatePO" the user observes.
+      //   3. Mid-transition POs (rank 1-2) that are transiently missing from
+      //      the scan because a vendor-side account_objects query timed out or
+      //      returned partial data — same logic as the rank-based regression
+      //      block above, just covering the case where the PO is fully absent
+      //      rather than present at a lower rank.
+      // Trade-off: a PO truly removed off-chain by something OUTSIDE the app
+      // (raw MPTokenIssuanceDestroy from another client, etc.) will persist as
+      // a stale local entry until page refresh. Acceptable — externally-
+      // destroyed POs are far rarer than not-yet-validated creates. The
+      // cross-mode filter still prevents buyer-mode entries from leaking into
+      // vendor views.
+      prevById.forEach((prevPO, id) => {
+        if (mergedById.has(id)) return;
+        const belongsToCurrentMode = currentMode === 'customer'
+          ? prevPO.buyerAddress === customerProfile.classicAddress
+          : prevPO.vendorAddress === vendorProfile.classicAddress;
+        if (belongsToCurrentMode) {
+          mergedById.set(id, prevPO);
+        }
+      });
+      return Array.from(mergedById.values())
+        .sort((a, b) => new Date(b.dateIssued).getTime() - new Date(a.dateIssued).getTime());
+    });
     console.log(`✅ [loadPOsFromLedger] COMMITTING ${livePOs.length} POs. Version: ${thisVersion}/${loadPOsVersion.current}. Mode: ${currentMode}`);
     diffPOsForNotifications(livePOs);    
     diffPOsForNotifications(livePOs);
@@ -3638,9 +3800,6 @@ useEffect(() => {
       alert('Cannot recall a funded or claimed PO.');
       return;
     }
-    if (po.status === 'accepted') {
-      if (!window.confirm('This PO has been accepted. Recalling will cancel it and require the vendor to re-accept if you edit. Continue?')) return;
-    } else if (!window.confirm('Recall this PO on-chain?')) return;
     try {
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(customerProfile.seed);
@@ -3680,8 +3839,44 @@ useEffect(() => {
             console.log('Recall receipt memo sent on-chain (fallback)');
           } catch (e2) { console.error('Recall receipt also failed:', e2); }
         }
-        updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
-        alert('PO recalled on-chain.');
+        // Also recall parent PO if this is an updated version. The Update handler
+        // sent a RECALL_PO memo for the parent at the time of update, but that memo
+        // may have aged out of getRecalledPOIds' 400-tx scan window. Re-send a fresh
+        // memo so loadPOsFromLedger's reconciliation continues to filter the parent
+        // out of active lists even after this child is destroyed.
+        if (po.parentIssuanceId) {
+          try {
+            const parentRecallDest = po.vendorAddress || process.env.REACT_APP_COMPANY_WALLET || wallet.classicAddress;
+            const parentRecallReceipt: Payment = {
+              TransactionType: 'Payment',
+              Account: wallet.classicAddress,
+              Destination: parentRecallDest,
+              Amount: '1',
+              Memos: [buildMemo(SCPO_ACTIONS.RECALL_PO, po.parentIssuanceId ?? '', {})]
+            };
+            const preparedParentRecall = await client.autofill(parentRecallReceipt);
+            preparedParentRecall.LastLedgerSequence = currentLedger + 20;
+            const signedParentRecall = wallet.sign(preparedParentRecall);
+            await submitBlobQueued(signedParentRecall.tx_blob);
+            console.log('Parent PO recall receipt sent (open branch):', po.parentIssuanceId);
+          } catch (e) {
+            console.error('Failed to send parent recall receipt (open branch):', e);
+          }
+        }
+        // Flip both parent (if any) and self to 'recalled' in a single state update,
+        // so the next render filters both out of active lists immediately. Done as one
+        // functional setSavedPOs to avoid the lost-update race when chaining two
+        // updatePO calls (each captures a stale savedPOs closure).
+        setSavedPOs(prev => prev.map(p => {
+          if (po.parentIssuanceId && p.issuanceId === po.parentIssuanceId) {
+            return { ...p, status: 'recalled' as const, escrowSequence: undefined };
+          }
+          if (p.id === po.id) {
+            return { ...po, status: 'recalled' as const, escrowSequence: undefined };
+          }
+          return p;
+        }));
+        setRecallJustCelebrated(po.issuanceId);
         setTimeout(() => loadPOsFromLedger(), 5000);
         return;
       }
@@ -3748,12 +3943,22 @@ useEffect(() => {
         } catch (e) {
           console.error('Failed to send parent recall receipt:', e);
         }
-      
-        updatePO({ ...po, status: 'recalled', escrowSequence: undefined });
-        alert('PO recalled on-chain.');
-        setTimeout(() => loadPOsFromLedger(), 5000);
-        return;
       }
+      // Flip both parent (if any) and self to 'recalled' in a single state update —
+      // same rationale as the open branch above (avoid lost-update race from two
+      // sequential updatePO calls reading from a stale savedPOs closure).
+      setSavedPOs(prev => prev.map(p => {
+        if (po.parentIssuanceId && p.issuanceId === po.parentIssuanceId) {
+          return { ...p, status: 'recalled' as const, escrowSequence: undefined };
+        }
+        if (p.id === po.id) {
+          return { ...po, status: 'recalled' as const, escrowSequence: undefined };
+        }
+        return p;
+      }));
+      setRecallJustCelebrated(po.issuanceId);
+      setTimeout(() => loadPOsFromLedger(), 5000);
+      return;
     } catch (err: any) { alert('Recall failed: ' + err.message); }
   };
   const viewPOFromUri = async (uri: string, po: SavedPO | null, setViewedPO: React.Dispatch<React.SetStateAction<POData | null>>, setPoLoadError: React.Dispatch<React.SetStateAction<string | null>>) => {
@@ -4093,7 +4298,7 @@ useEffect(() => {
       const signed = wallet.sign(prepared);
       const acceptResultTx = await submitBlobQueued(signed.tx_blob);
       if (typeof acceptResultTx.result.meta === 'object' && acceptResultTx.result.meta.TransactionResult === 'tesSUCCESS') {
-        alert(`PO ${po.poName} Accepted & Authorized!`);
+        setAcceptJustCelebrated(po.issuanceId);
         // Optimistically update local state immediately so UI shows correct table
         // without waiting for ledger scan to confirm the MPT hold
         setSavedPOs(prev => prev.map(p =>
@@ -4303,8 +4508,7 @@ useEffect(() => {
         }
       }
 
-      const currencyLabel = currency === 'RLUSD' ? `$${totalNum} RLUSD` : `${xrpl.dropsToXrp(escrowAmount)} XRP`;
-      alert(`Escrow funded (${currencyLabel}) & PO delivered! Sequence: ${escrowSequence}`);
+      setFundJustCelebrated(po.issuanceId);
     } catch (err: any) { alert('Failed to fund escrow: ' + err.message); }
   };
 
@@ -4368,8 +4572,8 @@ useEffect(() => {
   };
   // ── Task 2.4: Claim Escrow (supports both XRP and RLUSD) ──
   // ── Phase 6.0c: Pre-claim routing check added ──────────────────────────────
-  const claimEscrowForPO = async (po: SavedPO) => {
-    if (po.status === 'superseded') return alert('This PO version is superseded. Use the latest version.');
+  const claimEscrowForPO = async (po: SavedPO): Promise<boolean> => {
+    if (po.status === 'superseded') { alert('This PO version is superseded. Use the latest version.'); return false; }
 
     // ── Phase 6.0c: Check for active yield position before claiming ───────────
     let preClaimConditions: Awaited<ReturnType<typeof checkPreClaimConditions>> | null = null;
@@ -4456,11 +4660,19 @@ useEffect(() => {
     }
 
     // ── Existing claim logic (unchanged) ──────────────────────────────────────
-    if (!vendorProfile.seed) return alert('Claim seed required');
-    if (!po.escrowSequence) return alert('No escrow sequence');
+    if (!vendorProfile.seed) { alert('Claim seed required'); return false; }
+    if (!po.escrowSequence) { alert('No escrow sequence'); return false; }
     try {
       const claimable = await fetchEscrowInfo(po.buyerAddress, po.escrowSequence);
-      if (!claimable) { alert('Not yet claimable'); return; }
+      if (!claimable) {
+        await openConfirm({
+          kind: 'info',
+          title: 'Not Yet Claimable',
+          message: 'This escrow has not yet reached its release window. Please wait until the buyer\'s release time before claiming.',
+          confirmLabel: 'OK',
+        });
+        return false;
+      }
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
       const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
@@ -4502,7 +4714,6 @@ useEffect(() => {
       } catch (e) {
         console.error('Failed to send claim receipt memo (escrow was still claimed):', e);
       }
-      alert(`Escrow claimed! Tx: ${result.result.hash}`);
       updatePO({ ...po, status: 'claimed' });
 
       // ── Phase 6B Session 3: Execute three-way repayment split ─────────────
@@ -4655,8 +4866,8 @@ useEffect(() => {
           console.error('[AutoBurn] Failed to auto-burn inventory:', burnErr.message);
         }
       }
-
-    } catch (err: any) { alert('Claim failed: ' + err.message); }
+      return true;
+    } catch (err: any) { alert('Claim failed: ' + err.message); return false; }
   };
 
   const fetchEscrowInfo = async (owner: string, sequence: number): Promise<boolean> => {
@@ -8634,7 +8845,7 @@ const addLinkedVendorByDID = async () => {
                         <IconCheck size={14}/>
                       </div>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600 }}>PO issued</div>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>PO Issued</div>
                         <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2, lineHeight: 1.4 }}>
                           Counter-party notified. Escrow funding pending — ${totalEscrowAmount} {escrowCurrency}.
                         </div>
@@ -9413,7 +9624,82 @@ const addLinkedVendorByDID = async () => {
                     </div>
                   </Card>
                 ) : (
-                  <Card strong layered>
+                  <Card strong layered style={
+                    recallJustCelebrated && selectedOpenPO && recallJustCelebrated === selectedOpenPO.issuanceId ? {
+                      boxShadow: [
+                        '0 0 0 1px oklch(0.55 0.16 28 / 0.5)',
+                        '0 0 48px -4px oklch(0.72 0.18 28 / 0.55)',
+                        '0 0 160px -28px oklch(0.75 0.2 28 / 0.7)',
+                        'inset 0 1px 0 rgba(255,255,255,0.7)',
+                      ].join(', '),
+                      transition: 'box-shadow 0.6s ease',
+                    } : fundJustCelebrated && selectedOpenPO && fundJustCelebrated === selectedOpenPO.issuanceId ? {
+                      boxShadow: [
+                        '0 0 0 1px oklch(0.55 0.16 148 / 0.5)',
+                        '0 0 48px -4px oklch(0.72 0.18 148 / 0.55)',
+                        '0 0 160px -28px oklch(0.75 0.2 148 / 0.7)',
+                        'inset 0 1px 0 rgba(255,255,255,0.7)',
+                      ].join(', '),
+                      transition: 'box-shadow 0.6s ease',
+                    } : { transition: 'box-shadow 0.6s ease' }
+                  }>
+                    {/* Celebration banner — Recall success */}
+                    {recallJustCelebrated && selectedOpenPO && recallJustCelebrated === selectedOpenPO.issuanceId && (
+                      <div className="rise" style={{
+                        display: 'flex', alignItems: 'center', gap: 14,
+                        padding: '14px 18px', marginBottom: 18, borderRadius: 14,
+                        background: 'linear-gradient(180deg, oklch(0.94 0.12 28 / 0.7), oklch(0.88 0.16 28 / 0.55))',
+                        border: '1px solid oklch(0.55 0.16 28 / 0.35)',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 14px -4px oklch(0.6 0.18 28 / 0.4)',
+                      }}>
+                        <div style={{
+                          width: 44, height: 44, borderRadius: 12,
+                          background: 'linear-gradient(180deg, oklch(0.88 0.18 28), oklch(0.62 0.16 28))',
+                          color: '#2a1008',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          boxShadow: '0 0 0 4px rgba(180, 100, 80, 0.25)',
+                        }}>
+                          <IconCheck size={22}/>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>
+                            PO Recalled · Withdrawn from Supplier
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                            On-chain recall receipt sent. Clearing in a moment…
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {/* Celebration banner — Fund success */}
+                    {fundJustCelebrated && selectedOpenPO && fundJustCelebrated === selectedOpenPO.issuanceId && (
+                      <div className="rise" style={{
+                        display: 'flex', alignItems: 'center', gap: 14,
+                        padding: '14px 18px', marginBottom: 18, borderRadius: 14,
+                        background: 'linear-gradient(180deg, oklch(0.94 0.12 148 / 0.7), oklch(0.88 0.16 148 / 0.55))',
+                        border: '1px solid oklch(0.55 0.16 148 / 0.35)',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 14px -4px oklch(0.6 0.18 148 / 0.4)',
+                      }}>
+                        <div style={{
+                          width: 44, height: 44, borderRadius: 12,
+                          background: 'linear-gradient(180deg, oklch(0.88 0.18 148), oklch(0.62 0.16 148))',
+                          color: '#0e2010',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          boxShadow: '0 0 0 4px rgba(100, 200, 120, 0.25)',
+                        }}>
+                          <IconCheck size={22}/>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>
+                            Escrow Funded · ${selectedOpenPO.total} {selectedOpenPO.escrowCurrency || 'XRP'} Locked
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                            PO delivered to supplier. Clearing in a moment…
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Header */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, marginBottom: 16 }}>
                       <div style={{ minWidth: 0 }}>
@@ -9474,25 +9760,69 @@ const addLinkedVendorByDID = async () => {
                           <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Edit PO details & line items</span>
                         </button>
 
-                        <button type="button" className="action-btn"
-                          onClick={async () => {
-                            if (!selectedOpenPO) return;
-                            await recallPO(selectedOpenPO);
-                            setSelectedOpenPO(null);
-                            setCustomerScpoActionViewedPO(null);
-                          }}
-                          style={{
-                            display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
-                            padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(180, 80, 80, 0.25)',
-                            background: 'linear-gradient(180deg, oklch(0.94 0.05 28), oklch(0.88 0.1 28))',
-                            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                          }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <IconX size={14} style={{ color: '#6a2a10' }}/>
-                            <span style={{ fontSize: 13, fontWeight: 600 }}>Recall</span>
-                          </div>
-                          <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>Withdraw from supplier</span>
-                        </button>
+                        {(() => {
+                          const isRecalling = recallSubmitting === selectedOpenPO.issuanceId;
+                          return (
+                            <button type="button" className={isRecalling ? '' : 'action-btn'} disabled={isRecalling}
+                              onClick={async () => {
+                                if (!selectedOpenPO) return;
+                                const ok = await openConfirm(
+                                  selectedOpenPO.status === 'accepted'
+                                    ? {
+                                        title: 'Recall Accepted PO?',
+                                        message: 'This PO has already been accepted by the vendor. Recalling will cancel it and require the vendor to re-accept if you edit and resubmit it.',
+                                        confirmLabel: 'Recall PO',
+                                        cancelLabel: 'Keep',
+                                        tone: 'danger',
+                                      }
+                                    : {
+                                        title: 'Recall this PO on-chain?',
+                                        message: 'This sends an on-chain recall receipt to the supplier and removes the PO from your active list.',
+                                        confirmLabel: 'Recall PO',
+                                        cancelLabel: 'Keep',
+                                        tone: 'danger',
+                                      }
+                                );
+                                if (!ok) return;
+                                setRecallSubmitting(selectedOpenPO.issuanceId);
+                                try {
+                                  await recallPO(selectedOpenPO);
+                                } finally {
+                                  setRecallSubmitting(null);
+                                }
+                              }}
+                              style={{
+                                position: 'relative',
+                                display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                                padding: '14px 16px', borderRadius: 12, border: '1px solid rgba(180, 80, 80, 0.25)',
+                                background: 'linear-gradient(180deg, oklch(0.94 0.05 28), oklch(0.88 0.1 28))',
+                                cursor: isRecalling ? 'default' : 'pointer',
+                                fontFamily: 'inherit', textAlign: 'left',
+                                overflow: 'hidden',
+                                boxShadow: isRecalling
+                                  ? 'inset 0 1px 0 rgba(255,255,255,0.7), 0 0 0 4px rgba(180, 100, 80, 0.25), 0 0 24px 4px rgba(180, 100, 80, 0.4)'
+                                  : 'inset 0 1px 0 rgba(255,255,255,0.7)',
+                                transition: 'all 0.5s cubic-bezier(0.2, 0.9, 0.3, 1)',
+                              }}>
+                              {isRecalling && (
+                                <span style={{
+                                  position: 'absolute', inset: 0,
+                                  background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)',
+                                  backgroundSize: '200% 100%',
+                                  animation: 'shimmer 1.2s linear infinite',
+                                  pointerEvents: 'none',
+                                }}/>
+                              )}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+                                {isRecalling ? <IconSpark size={14}/> : <IconX size={14} style={{ color: '#6a2a10' }}/>}
+                                <span style={{ fontSize: 13, fontWeight: 600 }}>{isRecalling ? 'Recalling…' : 'Recall'}</span>
+                              </div>
+                              <span style={{ fontSize: 11, color: 'var(--ink-3)', position: 'relative' }}>
+                                {isRecalling ? 'Sending on-chain recall receipt' : 'Withdraw from supplier'}
+                              </span>
+                            </button>
+                          );
+                        })()}
 
                         {canFund && (
                           (() => {
@@ -9504,8 +9834,6 @@ const addLinkedVendorByDID = async () => {
                                   setFundSubmitting(selectedOpenPO.issuanceId);
                                   try {
                                     await fundEscrow(selectedOpenPO);
-                                    setSelectedOpenPO(null);
-                                    setCustomerScpoActionViewedPO(null);
                                   } finally {
                                     setFundSubmitting(null);
                                   }
@@ -9870,7 +10198,7 @@ const addLinkedVendorByDID = async () => {
               subtitle="Open POs are awaiting your acceptance. Funded POs can be claimed on delivery."
               actions={
                 <Btn variant="ghost" icon={IconRefresh} onClick={refreshFinancingStatus}>
-                  Refresh financing
+                  Refresh Financing
                 </Btn>
               }>
 
@@ -9991,7 +10319,8 @@ const addLinkedVendorByDID = async () => {
                   </Card>
                 ) : (
                   <Card strong layered style={
-                    claimJustCelebrated && activePO && claimJustCelebrated === activePO.issuanceId ? {
+                    (claimJustCelebrated && activePO && claimJustCelebrated === activePO.issuanceId) ||
+                    (acceptJustCelebrated && activePO && acceptJustCelebrated === activePO.issuanceId) ? {
                       boxShadow: [
                         '0 0 0 1px oklch(0.72 0.17 148 / 0.5)',
                         '0 0 48px -4px oklch(0.72 0.18 148 / 0.55)',
@@ -10001,7 +10330,7 @@ const addLinkedVendorByDID = async () => {
                       transition: 'box-shadow 0.6s ease',
                     } : { transition: 'box-shadow 0.6s ease' }
                   }>
-                    {/* Celebration banner */}
+                    {/* Celebration banner — Claim success */}
                     {claimJustCelebrated && activePO && claimJustCelebrated === activePO.issuanceId && (
                       <div className="rise" style={{
                         display: 'flex', alignItems: 'center', gap: 14,
@@ -10021,10 +10350,38 @@ const addLinkedVendorByDID = async () => {
                         </div>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>
-                            Escrow claimed · ${activePO.total} released
+                            Escrow Claimed · ${activePO.total} Released
                           </div>
                           <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
                             Funds are on their way to your wallet. Clearing in a moment…
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {/* Celebration banner — Accept success */}
+                    {acceptJustCelebrated && activePO && acceptJustCelebrated === activePO.issuanceId && (
+                      <div className="rise" style={{
+                        display: 'flex', alignItems: 'center', gap: 14,
+                        padding: '14px 18px', marginBottom: 18, borderRadius: 14,
+                        background: 'linear-gradient(180deg, oklch(0.94 0.12 148 / 0.7), oklch(0.88 0.16 148 / 0.55))',
+                        border: '1px solid oklch(0.55 0.16 148 / 0.35)',
+                        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 4px 14px -4px oklch(0.6 0.18 148 / 0.4)',
+                      }}>
+                        <div style={{
+                          width: 44, height: 44, borderRadius: 12,
+                          background: 'linear-gradient(180deg, oklch(0.88 0.18 148), oklch(0.62 0.16 148))',
+                          color: '#0e2010',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          boxShadow: '0 0 0 4px rgba(100, 200, 120, 0.25)',
+                        }}>
+                          <IconCheck size={22}/>
+                        </div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em' }}>
+                            PO Accepted · Authorization On-Chain
+                          </div>
+                          <div style={{ fontSize: 12, color: 'var(--ink-3)', marginTop: 2 }}>
+                            Awaiting buyer to fund escrow. Clearing in a moment…
                           </div>
                         </div>
                       </div>
@@ -10084,7 +10441,6 @@ const addLinkedVendorByDID = async () => {
                                 setAcceptSubmitting(activePO.issuanceId);
                                 try {
                                   await acceptMPTOfferForPO(activePO);
-                                  clearSelection();
                                 } finally {
                                   setAcceptSubmitting(null);
                                 }
@@ -10151,8 +10507,8 @@ const addLinkedVendorByDID = async () => {
                                 const poIssuance = activePO.issuanceId;
                                 setClaimSubmitting(poIssuance);
                                 try {
-                                  await claimEscrowForPO(activePO);
-                                  setClaimJustCelebrated(poIssuance);
+                                  const ok = await claimEscrowForPO(activePO);
+                                  if (ok) setClaimJustCelebrated(poIssuance);
                                 } finally {
                                   setClaimSubmitting(null);
                                 }
@@ -10190,7 +10546,7 @@ const addLinkedVendorByDID = async () => {
                               <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
                                 {isClaimed ? <IconCheck size={14}/> : isClaiming ? <IconSpark size={14}/> : <IconWallet size={14} style={{ color: '#1d4d2d' }}/>}
                                 <span style={{ fontSize: 13, fontWeight: 600 }}>
-                                  {isClaimed ? 'Escrow claimed' : isClaiming ? 'Claiming…' : 'Claim Escrow'}
+                                  {isClaimed ? 'Escrow Claimed' : isClaiming ? 'Claiming…' : 'Claim Escrow'}
                                 </span>
                               </div>
                               <span style={{ fontSize: 11, color: isClaimed ? 'rgba(14, 32, 16, 0.65)' : 'var(--ink-3)', position: 'relative' }}>
@@ -20461,6 +20817,80 @@ const addLinkedVendorByDID = async () => {
           </main>
         </div>
       </div>
+      {confirmDialog && (
+        <div
+          onClick={() => closeConfirm(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1100,
+            background: 'rgba(40, 25, 8, 0.45)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 20,
+          }}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="glass-strong"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="confirm-dialog-title"
+            style={{
+              borderRadius: 18, padding: 24,
+              maxWidth: 420, width: '100%',
+              boxShadow: '0 20px 60px -10px rgba(60,40,15,0.35)',
+            }}>
+            <div
+              id="confirm-dialog-title"
+              style={{
+                fontSize: 17, fontWeight: 600, color: 'var(--ink)',
+                marginBottom: 8, letterSpacing: '-0.01em',
+              }}>
+              {confirmDialog.title}
+            </div>
+            <div style={{
+              fontSize: 13, color: 'var(--ink-2)', lineHeight: 1.55,
+              marginBottom: 22,
+            }}>
+              {confirmDialog.message}
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              {confirmDialog.kind !== 'info' && (
+                <button
+                  type="button"
+                  onClick={() => closeConfirm(false)}
+                  style={{
+                    padding: '9px 18px', borderRadius: 10,
+                    background: 'transparent',
+                    border: '1px solid rgba(180, 140, 60, 0.28)',
+                    color: 'var(--ink-2)',
+                    fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
+                    cursor: 'pointer',
+                  }}>
+                  {confirmDialog.cancelLabel || 'Cancel'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => closeConfirm(true)}
+                autoFocus
+                style={{
+                  padding: '9px 18px', borderRadius: 10,
+                  border: confirmDialog.tone === 'danger'
+                    ? '1px solid rgba(180, 80, 80, 0.4)'
+                    : '1px solid rgba(180, 140, 60, 0.35)',
+                  background: confirmDialog.tone === 'danger'
+                    ? 'linear-gradient(180deg, oklch(0.88 0.12 28), oklch(0.78 0.15 28))'
+                    : 'linear-gradient(180deg, oklch(0.88 0.14 82), oklch(0.78 0.16 70))',
+                  color: confirmDialog.tone === 'danger' ? '#2a1008' : '#2a1f08',
+                  fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
+                  cursor: 'pointer',
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                }}>
+                {confirmDialog.confirmLabel || 'Continue'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
