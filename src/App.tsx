@@ -86,7 +86,7 @@ import {
   StackedAreaChart, LegendSwatch, Table,
   SummaryTiles, FilterBar, Empty,
 } from './components/primitives';
-import { IconPlus, IconX, IconCheck, IconSend, IconSpark, IconFile, IconLayer, IconSearch, IconWallet, IconUser, IconBox, IconCalendar, IconRefresh, IconArrowRight } from './components/icons';
+import { IconPlus, IconX, IconCheck, IconSend, IconSpark, IconFile, IconLayer, IconSearch, IconWallet, IconUser, IconBox, IconCalendar, IconRefresh, IconArrowRight, IconArrowDown } from './components/icons';
 const getOrGenerateUUID = (key: string): string => {
   let uuid = localStorage.getItem(key);
   if (!uuid) {
@@ -991,7 +991,9 @@ export default function App() {
   const [financingLenderAddress, setFinancingLenderAddress] = useState('');
   const [financingLenderAPR, setFinancingLenderAPR] = useState<number>(0.12);
   const [financingSubmitting, setFinancingSubmitting] = useState(false);
+  const [requestAdvanceJustCelebrated, setRequestAdvanceJustCelebrated] = useState<string | null>(null);
   const [financingStatusMap, setFinancingStatusMap] = useState<Record<string, FinancingRequest>>({});
+  const [financingStatusLoading, setFinancingStatusLoading] = useState(false);
 
   // ── Financing tab sub-tab state (Sell mode only — Buy mode is a single page) ─
   const [financingSubTab, setFinancingSubTab] = useState<'po' | 'inventory'>('po');
@@ -2229,6 +2231,13 @@ export default function App() {
   const linkedVendors = customerLinkedVendorUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
   const linkedCustomers = vendorLinkedCustomerUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
 
+  // Auto-clear request-advance celebration banner after 3 seconds.
+  useEffect(() => {
+    if (!requestAdvanceJustCelebrated) return;
+    const t = setTimeout(() => setRequestAdvanceJustCelebrated(null), 3000);
+    return () => clearTimeout(t);
+  }, [requestAdvanceJustCelebrated]);
+
   // ── Phase 6B: Request Financing ────────────────────────────────────────────
   const requestFinancing = async () => {
     if (!financingModalPO || !vendorProfile.seed) return;
@@ -2314,9 +2323,13 @@ export default function App() {
         status:           'pending_lender',
       };
       setFinancingRequests(prev => [newRequest, ...prev]);
+      // Optimistically update the keyed map so `selectedReq` reflects the new
+      // pending request immediately — otherwise the right-pane form stayed
+      // "eligible" until the next ledger reload and accepted duplicate clicks.
+      setFinancingStatusMap(prev => ({ ...prev, [po.issuanceId]: newRequest }));
 
       console.log(`[requestFinancing] ✅ FINANCE_REQUEST written. RequestId: ${requestId}, Tx: ${txHash}`);
-      alert(`✅ Financing request submitted!\n\nRequest ID: ${requestId}\nAmount: $${requestedAmount} RLUSD\nTx: ${txHash}\n\nThe lender will review and respond on-chain.`);
+      setRequestAdvanceJustCelebrated(po.issuanceId);
       setShowFinancingModal(false);
       setFinancingModalPO(null);
       setFinancingPackage(null);
@@ -2354,7 +2367,7 @@ export default function App() {
             <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 4 }}>
               Request advance · working capital
             </div>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>Borrow against funded escrow</div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>Borrow Against Funded Escrow</div>
             <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>
               {financingModalPO.poName} · escrow ${po.total} RLUSD
             </div>
@@ -2436,23 +2449,37 @@ export default function App() {
               await requestFinancing();
               setFinancingDrawerForPO(null);
             }}
-            disabled={!financingLenderAddress || financingEscrowLoading || unsafeWindow}
+            disabled={!financingLenderAddress || financingEscrowLoading || unsafeWindow || financingSubmitting}
             style={{
+              position: 'relative', overflow: 'hidden',
               padding: '12px 20px', borderRadius: 12, fontSize: 14, fontWeight: 600,
               background: (!financingLenderAddress || unsafeWindow)
                 ? 'linear-gradient(180deg, oklch(0.88 0.04 240), oklch(0.82 0.06 240))'
                 : 'linear-gradient(180deg, oklch(0.72 0.14 240), oklch(0.5 0.16 240))',
               color: '#f9efd2',
               border: 0,
-              cursor: (!financingLenderAddress || unsafeWindow) ? 'not-allowed' : 'pointer',
+              cursor: (!financingLenderAddress || unsafeWindow || financingSubmitting) ? 'not-allowed' : 'pointer',
               opacity: (!financingLenderAddress || unsafeWindow) ? 0.6 : 1,
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 14px -4px oklch(0.5 0.16 240 / 0.4)',
+              boxShadow: financingSubmitting
+                ? 'inset 0 1px 0 rgba(255,255,255,0.2), 0 0 0 4px oklch(0.7 0.14 240 / 0.25), 0 0 24px 4px oklch(0.5 0.16 240 / 0.45)'
+                : 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 14px -4px oklch(0.5 0.16 240 / 0.4)',
               transition: 'all 0.3s ease',
               display: 'flex', alignItems: 'center', gap: 8,
               fontFamily: 'inherit',
             }}>
-            <IconArrowRight size={14}/>
-            Request ${amount.toFixed(0)} advance
+            {financingSubmitting && (
+              <span style={{
+                position: 'absolute', inset: 0,
+                background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent)',
+                backgroundSize: '200% 100%',
+                animation: 'shimmer 1.2s linear infinite',
+                pointerEvents: 'none',
+              }}/>
+            )}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+              {financingSubmitting ? <IconSpark size={14}/> : <IconArrowRight size={14}/>}
+              {financingSubmitting ? 'Requesting…' : `Request $${amount.toFixed(0)} advance`}
+            </span>
           </button>
         </div>
       </div>
@@ -2811,6 +2838,7 @@ export default function App() {
     }
   };
   // ── Phase 6C: Draw down against an active credit line ──────────────────────
+  const CREDIT_LINE_SCPO_FEE = 0.0075; // 0.75% SC.PO platform fee on draws
   const drawFromCreditLine = async (line: CreditLine) => {
     if (creditLineActionLoading) return;
     const drawAmt = parseFloat(drawAmount);
@@ -2858,14 +2886,14 @@ export default function App() {
       }
 
       console.log(`[drawFromCreditLine] ✅ COLLATERAL_DRAW written. DrawId: ${drawId}, Amount: $${drawAmt}, Tx: ${result.result.hash}`);
-      const estFeeUsd = drawAmt * 0.0075;
+      const estFeeUsd = drawAmt * CREDIT_LINE_SCPO_FEE;
       const estNetUsd = drawAmt - estFeeUsd;
       alert(
         `✅ Draw request submitted!\n\n` +
         `Draw amount: $${drawAmt.toFixed(2)} RLUSD\n` +
         `New balance owed to lender: $${newBalance} RLUSD\n` +
         `Tx Hash: ${result.result.hash}\n\n` +
-        `The lender has been notified on-chain. Once they approve, your draw will be disbursed to your wallet less a 0.75% Vhay platform fee.\n\n` +
+        `The lender has been notified on-chain. Once they approve, your draw will be disbursed to your wallet less a ${(CREDIT_LINE_SCPO_FEE * 100).toFixed(2)}% Vhay platform fee.\n\n` +
         `Estimated platform fee:  $${estFeeUsd.toFixed(2)} RLUSD\n` +
         `Estimated net received:  $${estNetUsd.toFixed(2)} RLUSD\n` +
         `Amount owed back to lender: $${drawAmt.toFixed(2)} RLUSD (+ interest)`
@@ -3129,6 +3157,7 @@ export default function App() {
   const refreshFinancingStatus = async () => {
     console.log('[refreshFinancingStatus] triggered. vendorAddress:', vendorProfile.classicAddress);
     if (!vendorProfile.classicAddress) return;
+    setFinancingStatusLoading(true);
     try {
       const requests = await scanFinancingRequests(vendorProfile.classicAddress);
       console.log('[refreshFinancingStatus] found', requests.length, 'requests:', JSON.stringify(requests.map(r => ({ id: r.requestId.slice(0,8), status: r.status, po: r.poIssuanceId.slice(0,8), poFull: r.poIssuanceId }))));
@@ -3154,6 +3183,8 @@ export default function App() {
       }
     } catch (err) {
       console.error('[refreshFinancingStatus] scan failed:', err);
+    } finally {
+      setFinancingStatusLoading(false);
     }
   };
 
@@ -4095,7 +4126,7 @@ useEffect(() => {
       const ledgerResponse = await client.request({ command: 'ledger_current' });
       const currentLedger = ledgerResponse.result.ledger_current_index;
       setResult(`Sending $1.00 PO creation fee...`);
-      const feePayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: process.env.REACT_APP_COMPANY_WALLET || '', Amount: feeAmount, Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, { poName, feeType: 'CREATE', amount: feeLabel })] };
+      const feePayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: process.env.REACT_APP_COMPANY_WALLET || '', Amount: feeAmount, Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, { poName, feeType: 'CREATE', amount: feeLabel, v: vendor })] };
       const preparedFee = await client.autofill(feePayment); preparedFee.LastLedgerSequence = currentLedger + 20;
       const signedFee = wallet.sign(preparedFee);
       const feeResult = await submitBlobQueued(signedFee.tx_blob);
@@ -4414,6 +4445,7 @@ useEffect(() => {
             poName: po.poName,
             feeType: 'ESCROW_LOCK',
             amount: `$${escrowLockFeeUsd.toFixed(4)} (0.05% of $${totalNum})`,
+            v: po.vendorAddress,
           } as any)],
         };
         const preparedLockFee = await client.autofill(lockFeeTx);
@@ -4904,6 +4936,17 @@ useEffect(() => {
   }, [claimableAfter, isClaimable]);
 
   const copyToClipboard = (text: string, label: string) => { navigator.clipboard.writeText(text); alert(`${label} copied!`); };
+
+  // Tx hash copy + truncation — used by all "Tx Hash" pill buttons across Accounting / Fees / Yield / Journal.
+  // Sets `acctCopiedHash` to flash ✓ Copied for 1.5s; clears only if still showing this hash (race-safe).
+  const copyHash = (hash: string) => {
+    if (!hash) return;
+    navigator.clipboard?.writeText(hash).then(() => {
+      setAcctCopiedHash(hash);
+      setTimeout(() => setAcctCopiedHash(prev => prev === hash ? null : prev), 1500);
+    }).catch(() => {});
+  };
+  const truncHash = (h: string) => h ? `${h.slice(0, 6)}…${h.slice(-4)}` : '—';
   const handleMouseEnter = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.transform = 'scale(1.05)'; e.currentTarget.style.boxShadow = '0 8px 20px rgba(0,0,0,0.2)'; };
   const handleMouseLeave = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.transform = 'scale(1)'; e.currentTarget.style.boxShadow = e.currentTarget.dataset.originalShadow || '0 4px 10px rgba(0,0,0,0.1)'; };
   const handleMouseDown = (e: React.MouseEvent<HTMLButtonElement>) => { e.currentTarget.style.transform = 'scale(0.98)'; };
@@ -8365,24 +8408,27 @@ const addLinkedVendorByDID = async () => {
                       <div>
                         <div style={fieldLabel}>Seller</div>
                         <div className="etched" style={{ padding: 12, borderRadius: 12, marginTop: 6 }}>
-                          <select value={vendor || ''}
-                            onChange={(e) => {
-                              const selectedOption = e.target.options[e.target.selectedIndex];
-                              setVendor(selectedOption.value);
-                              setSelectedVendorUUID(selectedOption.dataset.uuid || '');
-                            }}
-                            style={{
-                              width: '100%', border: 0, background: 'transparent', outline: 'none',
-                              appearance: 'none', fontSize: 13, fontWeight: 600,
-                              color: 'var(--ink)', cursor: 'pointer', fontFamily: 'inherit',
-                            }}>
-                            <option value="">Select Linked Vendor</option>
-                            {linkedVendors.map(v => (
-                              <option key={v.profileUUID} value={v.classicAddress} data-uuid={v.profileUUID}>
-                                {v.company || v.name}
-                              </option>
-                            ))}
-                          </select>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <select value={vendor || ''}
+                              onChange={(e) => {
+                                const selectedOption = e.target.options[e.target.selectedIndex];
+                                setVendor(selectedOption.value);
+                                setSelectedVendorUUID(selectedOption.dataset.uuid || '');
+                              }}
+                              style={{
+                                flex: 1, border: 0, background: 'transparent', outline: 'none',
+                                appearance: 'none', fontSize: 13, fontWeight: 600,
+                                color: 'var(--ink)', cursor: 'pointer', fontFamily: 'inherit',
+                              }}>
+                              <option value="">Select Linked Vendor</option>
+                              {linkedVendors.map(v => (
+                                <option key={v.profileUUID} value={v.classicAddress} data-uuid={v.profileUUID}>
+                                  {v.company || v.name}
+                                </option>
+                              ))}
+                            </select>
+                            <IconArrowDown size={12} style={{ color: 'var(--ink-3)' }}/>
+                          </div>
                           <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
                             {(() => {
                               const selected = linkedVendors.find(v => v.profileUUID === selectedVendorUUID);
@@ -8497,7 +8543,7 @@ const addLinkedVendorByDID = async () => {
                               </div>
                             )}
                             <div style={{ marginTop: 6, color: '#92400E' }}>
-                              ⚠ Yield involves risk. Returns are not guaranteed. Principal always returns to complete the PO — only yield carries risk. SC.PO earns a fee on yield.
+                              ⚠ Yield involves risk. Returns are not guaranteed. Principal always returns to complete the PO — only yield carries risk. Vhay earns a fee on yield.
                             </div>
                           </div>
                         )}
@@ -9707,10 +9753,10 @@ const addLinkedVendorByDID = async () => {
                           {selectedOpenPO.status} {canFund ? '· awaiting funding' : selectedOpenPO.status === 'open' ? '· awaiting acceptance' : ''}
                         </Chip>
                         <h2 style={{ margin: 0, fontSize: 24, fontWeight: 500, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {supplierName(selectedOpenPO)}
+                          {selectedOpenPO.poName}
                         </h2>
                         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>
-                          {selectedOpenPO.poName} · {selectedOpenPO.dateIssued} · {(customerScpoActionViewedPO?.items?.length ?? 0)} line{(customerScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {selectedOpenPO.paymentTerms || '—'}
+                          {supplierName(selectedOpenPO)} · {selectedOpenPO.dateIssued} · {(customerScpoActionViewedPO?.items?.length ?? 0)} line{(customerScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {selectedOpenPO.paymentTerms || '—'}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right', flexShrink: 0 }}>
@@ -10195,12 +10241,7 @@ const addLinkedVendorByDID = async () => {
             <Page
               tag="Sell · Action queue"
               title={`${totalInFlight} PO${totalInFlight === 1 ? '' : 's'} in Flight`}
-              subtitle="Open POs are awaiting your acceptance. Funded POs can be claimed on delivery."
-              actions={
-                <Btn variant="ghost" icon={IconRefresh} onClick={refreshFinancingStatus}>
-                  Refresh Financing
-                </Btn>
-              }>
+              subtitle="Open POs are awaiting your acceptance. Funded POs can be claimed on delivery.">
 
               <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 20, alignItems: 'flex-start' }}>
 
@@ -10414,10 +10455,10 @@ const addLinkedVendorByDID = async () => {
                           })()}
                         </div>
                         <h2 style={{ margin: 0, fontSize: 24, fontWeight: 500, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {buyerName(activePO)}
+                          {activePO.poName}
                         </h2>
                         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>
-                          {activePO.poName} · {activePO.dateIssued} · {(vendorScpoActionViewedPO?.items?.length ?? 0)} line{(vendorScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {activePO.paymentTerms || '—'}
+                          {buyerName(activePO)} · {activePO.dateIssued} · {(vendorScpoActionViewedPO?.items?.length ?? 0)} line{(vendorScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {activePO.paymentTerms || '—'}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right', flexShrink: 0 }}>
@@ -15053,8 +15094,8 @@ const addLinkedVendorByDID = async () => {
           // ───────── Sell · Financing — sub-tabbed (PO Financing / Inventory Financing) ─────────
           if (mode === 'vendor') {
             const sellTitle = financingSubTab === 'po'
-              ? 'Working capital advances'
-              : 'Inventory-backed credit';
+              ? 'Working Capital Advances'
+              : 'Inventory-Backed Credit';
             const sellSubtitle = financingSubTab === 'po'
               ? 'Request advances against funded POs from licensed lenders. Repayment routes through escrow on claim.'
               : 'Pledge SKU NFTs as collateral, draw down to working capital, repay to release.';
@@ -15198,6 +15239,20 @@ const addLinkedVendorByDID = async () => {
                       </div>
                     </Card>
 
+                    {/* Action bar (Refresh financing status — mirrors Inventory Financing pattern) */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                      <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                        {allRequests.length === 0
+                          ? 'No financing requests yet. Pick an eligible PO and submit a request below.'
+                          : `${activeRequests.length} active request${activeRequests.length === 1 ? '' : 's'} · ${allRequests.length} total`}
+                      </div>
+                      <Btn variant="ghost" icon={IconRefresh}
+                        onClick={refreshFinancingStatus}
+                        disabled={financingStatusLoading}>
+                        {financingStatusLoading ? 'Loading…' : 'Refresh'}
+                      </Btn>
+                    </div>
+
                     {/* ── 3 KPI cards (Funded · eligible / Max advanceable / Avg APR) ── */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
                       <Card>
@@ -15248,7 +15303,6 @@ const addLinkedVendorByDID = async () => {
 
                       // What state is the selected PO in?
                       const selectedIsEligible = selectedPO && (!selectedReq || selectedReq.status === 'denied');
-
                       // Helper for rail row chip
                       const railChipFor = (po: SavedPO) => {
                         const fr = financingStatusMap[po.issuanceId];
@@ -15376,6 +15430,28 @@ const addLinkedVendorByDID = async () => {
                                 }>
 
                                 {/* (PO metric strip removed — detail tabs Overview tab covers this and more) */}
+
+                                {/* Celebration banner — shows for 3s after request submission */}
+                                {requestAdvanceJustCelebrated === selectedPO.issuanceId && (
+                                  <div className="rise" style={{
+                                    padding: 14, borderRadius: 12, marginBottom: 14,
+                                    background: 'rgba(78, 155, 110, 0.12)',
+                                    border: '1px solid oklch(0.78 0.10 148 / 0.45)',
+                                    display: 'flex', alignItems: 'center', gap: 12,
+                                  }}>
+                                    <div style={{
+                                      width: 44, height: 44, borderRadius: 10, flexShrink: 0,
+                                      background: 'oklch(0.78 0.14 148)',
+                                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    }}>
+                                      <IconCheck size={20} style={{ color: '#f9efd2' }}/>
+                                    </div>
+                                    <div>
+                                      <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>Advance requested · Lender notified</div>
+                                      <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 2 }}>Clearing in a moment…</div>
+                                    </div>
+                                  </div>
+                                )}
 
                                 {/* State-driven body */}
                                 {selectedReq?.status === 'denied' && (
@@ -16716,7 +16792,7 @@ const addLinkedVendorByDID = async () => {
                     <Card layered
                       label={<>
                         <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Activity</div>
-                        <div style={{ fontSize: 15, fontWeight: 600 }}>Yield positions · all states</div>
+                        <div style={{ fontSize: 15, fontWeight: 600 }}>Yield Positions · All States</div>
                       </>}
                       actions={yieldPositions.length > 0 && <Chip tone="neutral">{yieldPositions.length} total</Chip>}>
 
@@ -17708,11 +17784,7 @@ const addLinkedVendorByDID = async () => {
                             render: (e: CashFlowEvent) => e.txHash ? (
                               <button
                                 type="button"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(e.txHash);
-                                  setAcctCopiedHash(e.txHash);
-                                  setTimeout(() => setAcctCopiedHash(null), 1500);
-                                }}
+                                onClick={() => copyHash(e.txHash)}
                                 title="Click to copy full hash"
                                 style={{
                                   fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
@@ -17724,7 +17796,7 @@ const addLinkedVendorByDID = async () => {
                                   cursor: 'pointer', transition: 'all 0.15s ease',
                                   fontVariantNumeric: 'tabular-nums',
                                 }}>
-                                {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…${e.txHash.slice(-6)}`}
+                                {acctCopiedHash === e.txHash ? '✓ Copied' : truncHash(e.txHash)}
                               </button>
                             ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
                           { k: 'amt',   label: 'Amount',       w: '130px', align: 'right',
@@ -17952,17 +18024,7 @@ const addLinkedVendorByDID = async () => {
                       e.credit.toLowerCase().includes(q)
                     )
                     .sort((a, b) => b.timestamp - a.timestamp);
-
-                  // ── Tx hash copy handler ──
-                  const copyHash = (hash: string) => {
-                    if (!hash) return;
-                    navigator.clipboard?.writeText(hash).then(() => {
-                      setAcctCopiedHash(hash);
-                      setTimeout(() => setAcctCopiedHash(prev => prev === hash ? null : prev), 1500);
-                    }).catch(() => {});
-                  };
-                  const truncHash = (h: string) => h ? `${h.slice(0, 6)}…${h.slice(-4)}` : '—';
-
+                  
                   return (
                     <>
                       <SummaryTiles tiles={[
@@ -18328,16 +18390,7 @@ const addLinkedVendorByDID = async () => {
                     setTimeout(() => setAcctOnchainSelectedPO(effectiveSelectedId), 0);
                   }
                   const selectedRail = railPOs.find(r => r.po.issuanceId === effectiveSelectedId) || null;
-
-                  // ── Tx hash copy handler ──
-                  const copyHash = (hash: string) => {
-                    if (!hash) return;
-                    navigator.clipboard?.writeText(hash).then(() => {
-                      setAcctCopiedHash(hash);
-                      setTimeout(() => setAcctCopiedHash(prev => prev === hash ? null : prev), 1500);
-                    }).catch(() => {});
-                  };
-                  const truncHash = (h: string) => h ? `${h.slice(0, 6)}…${h.slice(-4)}` : '—';
+                  
                   const relativeTime = (ms: number): string => {
                     const diff = Date.now() - ms;
                     if (diff < 0) return 'just now';
@@ -18823,11 +18876,7 @@ const addLinkedVendorByDID = async () => {
                           { k: 'tx',    label: 'Tx Hash',  w: '120px', render: (r: FeeRow) => r.txHash ? (
                             <button
                               type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(r.txHash);
-                                setAcctCopiedHash(r.txHash);
-                                setTimeout(() => setAcctCopiedHash(null), 1500);
-                              }}
+                              onClick={() => copyHash(r.txHash)}
                               title="Click to copy full hash"
                               style={{
                                 fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
@@ -18839,7 +18888,7 @@ const addLinkedVendorByDID = async () => {
                                 cursor: 'pointer', transition: 'all 0.15s ease',
                                 fontVariantNumeric: 'tabular-nums',
                               }}>
-                              {acctCopiedHash === r.txHash ? '✓ Copied' : `${r.txHash.slice(0, 8)}…`}
+                              {acctCopiedHash === r.txHash ? '✓ Copied' : truncHash(r.txHash)}
                             </button>
                           ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
                         ]} rows={filteredRows}/>
@@ -18971,11 +19020,7 @@ const addLinkedVendorByDID = async () => {
                           { k: 'tx',        label: 'Tx Hash',      w: '110px', render: (r: YieldRow) => r.txHash ? (
                             <button
                               type="button"
-                              onClick={() => {
-                                navigator.clipboard.writeText(r.txHash);
-                                setAcctCopiedHash(r.txHash);
-                                setTimeout(() => setAcctCopiedHash(null), 1500);
-                              }}
+                              onClick={() => copyHash(r.txHash)}
                               title="Click to copy full hash"
                               style={{
                                 fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
@@ -18987,7 +19032,7 @@ const addLinkedVendorByDID = async () => {
                                 cursor: 'pointer', transition: 'all 0.15s ease',
                                 fontVariantNumeric: 'tabular-nums',
                               }}>
-                              {acctCopiedHash === r.txHash ? '✓ Copied' : `${r.txHash.slice(0, 8)}…`}
+                              {acctCopiedHash === r.txHash ? '✓ Copied' : truncHash(r.txHash)}
                             </button>
                           ) : <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span> },
                         ]} rows={filteredRows}/>
@@ -19301,7 +19346,10 @@ const addLinkedVendorByDID = async () => {
                           Unique Sellers
                         </div>
                         <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
-                          {new Set(feeEntries.filter(e => ['NFT_MINT', 'UNIT_MINT', 'PO_FINANCING', 'INVENTORY_FINANCING'].includes(e.feeType)).map(e => e.account)).size}
+                          {new Set([
+                            ...feeEntries.filter(e => ['NFT_MINT', 'UNIT_MINT', 'PO_FINANCING', 'INVENTORY_FINANCING'].includes(e.feeType)).map(e => e.account),
+                            ...feeEntries.map(e => e.v).filter((v): v is string => Boolean(v))
+                          ]).size}
                         </div>
                       </Card>
                       <Card>
@@ -19439,11 +19487,7 @@ const addLinkedVendorByDID = async () => {
                                       {e.txHash ? (
                                         <button
                                           type="button"
-                                          onClick={() => {
-                                            navigator.clipboard.writeText(e.txHash);
-                                            setAcctCopiedHash(e.txHash);
-                                            setTimeout(() => setAcctCopiedHash(null), 1500);
-                                          }}
+                                          onClick={() => copyHash(e.txHash)}
                                           title="Click to copy full hash"
                                           style={{
                                             fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
@@ -19455,7 +19499,7 @@ const addLinkedVendorByDID = async () => {
                                             cursor: 'pointer', transition: 'all 0.15s ease',
                                             fontVariantNumeric: 'tabular-nums',
                                           }}>
-                                          {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…`}
+                                          {acctCopiedHash === e.txHash ? '✓ Copied' : truncHash(e.txHash)}
                                         </button>
                                       ) : (
                                         <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>
@@ -19558,11 +19602,7 @@ const addLinkedVendorByDID = async () => {
                             render: (e: any) => e.txHash ? (
                               <button
                                 type="button"
-                                onClick={() => {
-                                  navigator.clipboard.writeText(e.txHash);
-                                  setAcctCopiedHash(e.txHash);
-                                  setTimeout(() => setAcctCopiedHash(null), 1500);
-                                }}
+                                onClick={() => copyHash(e.txHash)}
                                 title="Click to copy full hash"
                                 style={{
                                   fontFamily: 'inherit', fontSize: 11.5, padding: '4px 8px',
@@ -19574,7 +19614,7 @@ const addLinkedVendorByDID = async () => {
                                   cursor: 'pointer', transition: 'all 0.15s ease',
                                   fontVariantNumeric: 'tabular-nums',
                                 }}>
-                                {acctCopiedHash === e.txHash ? '✓ Copied' : `${e.txHash.slice(0, 8)}…`}
+                                {acctCopiedHash === e.txHash ? '✓ Copied' : truncHash(e.txHash)}
                               </button>
                             ) : (
                               <span style={{ fontSize: 11, color: 'var(--ink-3)' }}>—</span>

@@ -823,7 +823,7 @@ export const canUseRLUSDEscrow = async (
 // Replaces localStorage.getItem('feeEntries') as the source of truth
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface FeeEntry { date: string; poName: string; amount: string; txHash: string; feeType: string; account: string; }
+export interface FeeEntry { date: string; poName: string; amount: string; txHash: string; feeType: string; account: string; v?: string; }
 
 export const scanFeeEntries = async (companyWallet: string): Promise<FeeEntry[]> => {
   if (!companyWallet) return [];
@@ -868,6 +868,7 @@ export const scanFeeEntries = async (companyWallet: string): Promise<FeeEntry[]>
               txHash: hash,
               feeType: p.feeType || 'UNKNOWN',
               account: txObj.Account || '',
+              v: p.v || undefined,
             });
           } catch { continue; }
         }

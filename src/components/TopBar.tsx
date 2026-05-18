@@ -27,7 +27,6 @@ type Props = {
   notifications: TopBarNotification[];
   unreadCount: number;
   profileName?: string;
-  logoSrc?: string;
 };
 
 export const TopBar: React.FC<Props> = ({
@@ -41,7 +40,6 @@ export const TopBar: React.FC<Props> = ({
   notifications,
   unreadCount,
   profileName,
-  logoSrc = '/logo.png',
 }) => {
   const isBuy = mode === 'customer';
 
