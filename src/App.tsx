@@ -3030,10 +3030,14 @@ export default function App() {
       return alert(`Cannot release — outstanding balance is $${balance.toFixed(2)} RLUSD. Repay in full first.`);
     }
     if (!vendorProfile.seed) return alert('Vendor wallet required.');
-    if (!window.confirm(
-      `Release collateral for Credit Line ${formatCreditLineId(line.pledgeId)}?\n\n` +
-      `This will unlock ${line.pledgedNftIds.length} inventory item(s).`
-    )) return;
+    const ok = await openConfirm({
+      tone: 'danger',
+      title: 'Release Collateral?',
+      message: `Release collateral for Credit Line ${formatCreditLineId(line.pledgeId)}? This will unlock ${line.pledgedNftIds.length} inventory item${line.pledgedNftIds.length === 1 ? '' : 's'}.`,
+      confirmLabel: 'Release',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
 
     setCreditLineActionLoading(true);
     try {
@@ -3255,7 +3259,14 @@ export default function App() {
   };
 
   const unlinkProfile = async (profileUUID: string) => {
-    if (!window.confirm('Remove this link? You can re-link at any time by entering their wallet address again.')) return;
+    const ok = await openConfirm({
+      tone: 'danger',
+      title: 'Remove Link?',
+      message: 'Remove this link? You can re-link at any time by entering their wallet address again.',
+      confirmLabel: 'Unlink',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
     const profile = publicProfiles[profileUUID];
     if (!profile) return alert('Profile not found');
     const seed = mode === 'customer' ? customerProfile.seed : vendorProfile.seed;
@@ -3319,7 +3330,7 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem('mode', mode); }, [mode]);
 
-  const addItem = () => {
+  const addItem = async () => {
     if (newItemNum && newQty) {
       let invNFTId: string | undefined = undefined;
       let selectedV2Item: InventoryItemV2 | undefined = undefined;
@@ -3337,10 +3348,13 @@ export default function App() {
 
       // Task 3.10 — discontinued confirmation
       if (selectedV2Item?.status === 'discontinued') {
-        const confirmed = window.confirm(
-          `⛔ "${selectedV2Item.name}" has been marked as discontinued by the vendor.\n\nThis item may no longer be available for fulfillment. Contact the vendor before submitting.\n\nAdd it to the PO anyway?`
-        );
-        if (!confirmed) return;
+        const ok = await openConfirm({
+          title: 'Discontinued Item',
+          message: `"${selectedV2Item.name}" has been marked as discontinued by the vendor. This item may no longer be available for fulfillment. Contact the vendor before submitting. Add it to the PO anyway?`,
+          confirmLabel: 'Add Anyway',
+          cancelLabel: 'Cancel',
+        });
+        if (!ok) return;
       }
 
       const qty = parseFloat(newQty);
@@ -3820,15 +3834,26 @@ useEffect(() => {
     const updated = savedPOs.map(p => p.id === id ? { ...p, status } : p);
     setSavedPOs(updated);
   };
-  const deleteOpenPO = (id: string) => {
-    if (window.confirm('Delete this Open SC.PO from dashboard? (Local only)')) {
-      const updated = savedPOs.filter(p => p.id !== id);
-      setSavedPOs(updated);
-    }
+  const deleteOpenPO = async (id: string) => {
+    const ok = await openConfirm({
+      tone: 'danger',
+      title: 'Delete PO?',
+      message: 'Delete this Open SC.PO from your dashboard? This only removes the local record — on-chain state is unaffected.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    const updated = savedPOs.filter(p => p.id !== id);
+    setSavedPOs(updated);
   };
   const recallPO = async (po: SavedPO) => {
     if (po.status === 'funded' || po.status === 'claimed') {
-      alert('Cannot recall a funded or claimed PO.');
+      await openConfirm({
+        kind: 'info',
+        title: 'Cannot Recall PO',
+        message: 'This PO cannot be recalled because it has already been funded or claimed.',
+        confirmLabel: 'OK',
+      });
       return;
     }
     try {
@@ -3990,7 +4015,14 @@ useEffect(() => {
       setRecallJustCelebrated(po.issuanceId);
       setTimeout(() => loadPOsFromLedger(), 5000);
       return;
-    } catch (err: any) { alert('Recall failed: ' + err.message); }
+    } catch (err: any) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Recall Failed',
+        message: 'Recall failed: ' + err.message,
+        confirmLabel: 'OK',
+      });
+    }
   };
   const viewPOFromUri = async (uri: string, po: SavedPO | null, setViewedPO: React.Dispatch<React.SetStateAction<POData | null>>, setPoLoadError: React.Dispatch<React.SetStateAction<string | null>>) => {
     setIpfsUri(uri);
@@ -4084,7 +4116,15 @@ useEffect(() => {
     if (!vendor) return alert('Vendor address required');
     if (!selectedVendorUUID || !getPOEncryptionKey(selectedVendorUUID)) return alert('Link vendor first');
     if (items.length === 0) return alert('Add at least one item');
-    if (parseFloat(totalEscrowAmount) <= 0) return alert('Total > 0');
+    if (parseFloat(totalEscrowAmount) <= 0) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Invalid Escrow Amount',
+        message: 'The escrow total must be greater than zero. Check the PO line items before funding.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     if (!paymentTerms) return alert('Select Payment Terms');
     if (!customerProfile.shippingAddress.trim()) return alert('Shipping address is required. Please add one to your Profile before creating a PO.');
 
@@ -4309,7 +4349,15 @@ useEffect(() => {
   };
 
   const acceptMPTOfferForPO = async (po: SavedPO) => {
-    if (po.status === 'superseded') return alert('This PO version is superseded. Use the latest version.');
+    if (po.status === 'superseded') {
+      await openConfirm({
+        kind: 'info',
+        title: 'Superseded PO',
+        message: 'This PO version has been superseded by a newer version. Please use the latest version.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     if (!po.issuanceId || po.issuanceId.length !== 48) {
       return alert('Invalid or missing MPTokenIssuanceID on this PO.');
     }
@@ -4336,8 +4384,22 @@ useEffect(() => {
           p.id === po.id ? { ...p, status: 'accepted' as const } : p
         ));
         setTimeout(() => loadPOsFromLedger(), 4000);
-      } else { alert('Accept failed'); }
-    } catch (err: any) { alert('Accept failed: ' + err.message); }
+      } else {
+        await openConfirm({
+          kind: 'info',
+          title: 'Accept Failed',
+          message: 'The Accept transaction did not complete successfully.',
+          confirmLabel: 'OK',
+        });
+      }
+    } catch (err: any) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Accept Failed',
+        message: 'Accept failed: ' + err.message,
+        confirmLabel: 'OK',
+      });
+    }
   };
 
   const isMPTHeldByVendor = async (issuanceId: string, vendorAddress: string): Promise<boolean> => {
@@ -4350,9 +4412,25 @@ useEffect(() => {
 
 // ── Task 2.3: Fund Escrow with RLUSD or XRP ──────────────────
   const fundEscrow = async (po: SavedPO) => {
-    if (po.status === 'superseded') return alert('This PO version is superseded. Use the latest version.');
+    if (po.status === 'superseded') {
+      await openConfirm({
+        kind: 'info',
+        title: 'Superseded PO',
+        message: 'This PO version has been superseded by a newer version. Please use the latest version.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     const isHeld = await isMPTHeldByVendor(po.issuanceId, po.vendorAddress);
-    if (!isHeld) return alert('Vendor has not accepted the MPT yet');
+    if (!isHeld) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Vendor Has Not Accepted',
+        message: 'The vendor has not accepted the MPT for this PO yet. Wait for vendor acceptance before funding the escrow.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     if (!seed) return alert('Wallet seed required');
     const totalNum = parseFloat(po.total || '0');
     if (totalNum <= 0) return alert('PO total must be greater than 0. Current value: ' + po.total);
@@ -4371,8 +4449,13 @@ useEffect(() => {
 
       if (!readiness.ready) {
         // Offer to set up trust lines
-        const setupMsg = readiness.reason + '\n\nWould you like to set up the missing trust line now?';
-        if (!window.confirm(setupMsg)) return;
+        const ok = await openConfirm({
+          title: 'Set Up Trust Line?',
+          message: `${readiness.reason} Would you like to set up the missing trust line now?`,
+          confirmLabel: 'Set Up',
+          cancelLabel: 'Cancel',
+        });
+        if (!ok) return;
 
         // Set up missing trust lines
         const client = await getXRPLClient();
@@ -4385,7 +4468,12 @@ useEffect(() => {
         }
 
         if (!readiness.vendorTrustLine) {
-          alert('The vendor also needs a RLUSD trust line before receiving payment. They will need to set this up from their profile. Falling back to XRP escrow.');
+          await openConfirm({
+            kind: 'info',
+            title: 'Falling Back to XRP Escrow',
+            message: 'The vendor needs a RLUSD trust line before receiving payment. They can set this up from their profile. Falling back to XRP escrow for this PO.',
+            confirmLabel: 'OK',
+          });
           // Fall back to XRP
           setEscrowCurrency('XRP');
           return;
@@ -4477,7 +4565,12 @@ useEffect(() => {
       if (typeof paymentResult.result.meta === 'object' && paymentResult.result.meta.TransactionResult !== 'tesSUCCESS') {
         // Escrow created but MPT delivery failed — store recovery state
         setPendingEscrowRecovery({ po, escrowSequence, escrowTxHash: escrowResult.result.hash });
-        alert(`⚠️ Escrow was funded successfully but MPT delivery to vendor failed.\n\nYour funds are safe — the escrow is on-chain.\n\nUse the "Resume Delivery" button to retry MPT delivery without re-funding.`);
+        await openConfirm({
+          kind: 'info',
+          title: 'Escrow Funded · MPT Pending',
+          message: 'The escrow was funded successfully but MPT delivery to the vendor failed. Your funds are safe — the escrow remains on-chain. Use the "Resume Delivery" button to retry MPT delivery without re-funding.',
+          confirmLabel: 'OK',
+        });
         return;
       }
       updatePO({ ...po, escrowSequence, status: 'funded' });
@@ -4536,12 +4629,24 @@ useEffect(() => {
           }
         } catch (yieldErr: any) {
           console.error('[fundEscrow] Yield opt-in failed (escrow still funded):', yieldErr);
-          alert(`⚠️ Escrow funded successfully but yield opt-in failed: ${yieldErr.message}\n\nYour escrow is safe.`);
+          await openConfirm({
+            kind: 'info',
+            title: 'Escrow Funded · Yield Opt-In Skipped',
+            message: `Escrow funded successfully but yield opt-in failed: ${yieldErr.message}. Your escrow is safe.`,
+            confirmLabel: 'OK',
+          });
         }
       }
 
       setFundJustCelebrated(po.issuanceId);
-    } catch (err: any) { alert('Failed to fund escrow: ' + err.message); }
+    } catch (err: any) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Failed to Fund Escrow',
+        message: 'Failed to fund escrow: ' + err.message,
+        confirmLabel: 'OK',
+      });
+    }
   };
 
   // ── Task 4.9: Event Notifications ──
@@ -4605,7 +4710,15 @@ useEffect(() => {
   // ── Task 2.4: Claim Escrow (supports both XRP and RLUSD) ──
   // ── Phase 6.0c: Pre-claim routing check added ──────────────────────────────
   const claimEscrowForPO = async (po: SavedPO): Promise<boolean> => {
-    if (po.status === 'superseded') { alert('This PO version is superseded. Use the latest version.'); return false; }
+    if (po.status === 'superseded') {
+      await openConfirm({
+        kind: 'info',
+        title: 'Superseded PO',
+        message: 'This PO version has been superseded by a newer version. Please use the latest version.',
+        confirmLabel: 'OK',
+      });
+      return false;
+    }
 
     // ── Phase 6.0c: Check for active yield position before claiming ───────────
     let preClaimConditions: Awaited<ReturnType<typeof checkPreClaimConditions>> | null = null;
@@ -4672,7 +4785,12 @@ useEffect(() => {
             ));
           } else {
             console.error('[claimEscrowForPO] Yield withdrawal failed:', withdrawResult.error);
-            alert(`⚠️ Yield withdrawal encountered an issue: ${withdrawResult.error}\n\nThe escrow claim will proceed. Please contact support to resolve the yield position.`);
+            await openConfirm({
+              kind: 'info',
+              title: 'Yield Withdrawal Issue',
+              message: `Yield withdrawal encountered an issue: ${withdrawResult.error}. The escrow claim will proceed. Please contact support to resolve the yield position.`,
+              confirmLabel: 'OK',
+            });
           }
         } catch (yieldErr: any) {
           console.error('[claimEscrowForPO] Yield withdrawal exception:', yieldErr);
@@ -4692,8 +4810,24 @@ useEffect(() => {
     }
 
     // ── Existing claim logic (unchanged) ──────────────────────────────────────
-    if (!vendorProfile.seed) { alert('Claim seed required'); return false; }
-    if (!po.escrowSequence) { alert('No escrow sequence'); return false; }
+    if (!vendorProfile.seed) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Vendor Seed Required',
+        message: 'Your vendor wallet seed is needed to claim this escrow. Save your profile first to restore the seed.',
+        confirmLabel: 'OK',
+      });
+      return false;
+    }
+    if (!po.escrowSequence) {
+      await openConfirm({
+        kind: 'info',
+        title: 'No Escrow Sequence',
+        message: 'This PO does not have an on-chain escrow sequence yet. The escrow may not have been funded.',
+        confirmLabel: 'OK',
+      });
+      return false;
+    }
     try {
       const claimable = await fetchEscrowInfo(po.buyerAddress, po.escrowSequence);
       if (!claimable) {
@@ -4820,7 +4954,12 @@ useEffect(() => {
           alert(`✅ Financing repaid!\n\nLender repayment: $${split.lenderRepayment} RLUSD\nSC.PO fee: $${split.scpoFee} RLUSD\nYour remainder: $${split.vendorRemainder} RLUSD\nInterest accrued: $${split.interestAccrued} RLUSD`);
         } catch (repayErr: any) {
           console.error('[claimEscrowForPO] Repayment failed:', repayErr.message);
-          alert(`⚠️ Escrow claimed but financing repayment failed: ${repayErr.message}\n\nPlease contact support.\nRequest ID: ${activeFinancing.requestId}`);
+          await openConfirm({
+            kind: 'info',
+            title: 'Escrow Claimed · Repayment Failed',
+            message: `Escrow claimed but financing repayment failed: ${repayErr.message}. Please contact support. Request ID: ${activeFinancing.requestId}`,
+            confirmLabel: 'OK',
+          });
         }
       }
 
@@ -4899,7 +5038,15 @@ useEffect(() => {
         }
       }
       return true;
-    } catch (err: any) { alert('Claim failed: ' + err.message); return false; }
+    } catch (err: any) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Claim Failed',
+        message: 'Claim failed: ' + err.message,
+        confirmLabel: 'OK',
+      });
+      return false;
+    }
   };
 
   const fetchEscrowInfo = async (owner: string, sequence: number): Promise<boolean> => {
@@ -6193,7 +6340,13 @@ const getUpdatablePOs = () => {
           }
           const prevPrice = parseFloat(filledTiers[i - 1].price);
           if (price >= prevPrice) {
-            if (!window.confirm(`Warning: Tier ${i + 1} price ($${price}) is not lower than the previous tier ($${prevPrice}). Volume pricing usually decreases with quantity. Continue anyway?`)) return;
+            const ok = await openConfirm({
+              title: 'Tier Price Warning',
+              message: `Tier ${i + 1} price ($${price}) is not lower than the previous tier ($${prevPrice}). Volume pricing usually decreases with quantity. Continue anyway?`,
+              confirmLabel: 'Continue',
+              cancelLabel: 'Cancel',
+            });
+            if (!ok) return;
           }
         }
       }
@@ -6641,10 +6794,14 @@ const getUpdatablePOs = () => {
   // ── burnInventoryItemV2 (Task 3.1 cleanup) ────────────────────────────────
   const burnInventoryItemV2 = async (item: InventoryItemV2) => {
     if (!vendorProfile.seed) return alert('Vendor wallet seed required');
-    const confirmed = window.confirm(
-      `Are you sure you want to permanently delete "${item.name}" (${item.partNumber})?\n\nThis will burn the NFT and remove it from your catalog permanently. This cannot be undone.`
-    );
-    if (!confirmed) return;
+    const ok = await openConfirm({
+      tone: 'danger',
+      title: 'Delete Inventory Item?',
+      message: `Are you sure you want to permanently delete "${item.name}" (${item.partNumber})? This will burn the NFT and remove it from your catalog permanently. This cannot be undone.`,
+      confirmLabel: 'Delete & Burn',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
 
     try {
       const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
@@ -6904,7 +7061,13 @@ const getUpdatablePOs = () => {
       if (filled.length < 2) return alert('Volume pricing requires at least 2 tiers.');
       if (parseInt(filled[0].minQty) !== 1) return alert('First tier must start at Min Qty = 1.');
     }
-    if (!window.confirm('This will mint a new NFT version on-chain with all changes. The old NFT remains as version history. Continue?')) return;
+    const ok = await openConfirm({
+      title: 'Mint New NFT Version?',
+      message: 'This will mint a new NFT version on-chain with all changes. The old NFT remains as version history. Continue?',
+      confirmLabel: 'Mint Version',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
     setEditPricingSaving(true);
     try {
       const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
@@ -12325,9 +12488,15 @@ const addLinkedVendorByDID = async () => {
                                             </div>
                                           </div>
                                           <button type="button" disabled={!canImport}
-                                            onClick={() => {
+                                            onClick={async () => {
                                               if (!canImport) return;
-                                              if (!window.confirm(`Import ${csvRows.length} part${csvRows.length === 1 ? '' : 's'} to chain? Each row mints a parent NFT + MPT and will incur ledger fees.`)) return;
+                                              const ok = await openConfirm({
+                                                title: 'Import to Chain?',
+                                                message: `Import ${csvRows.length} part${csvRows.length === 1 ? '' : 's'} to chain? Each row mints a parent NFT + MPT and will incur ledger fees.`,
+                                                confirmLabel: 'Import',
+                                                cancelLabel: 'Cancel',
+                                              });
+                                              if (!ok) return;
                                               runCSVImport();
                                             }}
                                             style={{
@@ -19998,7 +20167,14 @@ const addLinkedVendorByDID = async () => {
                           <button
                             onClick={async () => {
                               if (!revokeAddress) return alert('Enter a wallet address');
-                              if (!window.confirm(`Revoke credential for ${revokeAddress}? This will block them from creating or receiving POs.`)) return;
+                              const ok = await openConfirm({
+                                tone: 'danger',
+                                title: 'Revoke Credential?',
+                                message: `Revoke credential for ${revokeAddress}? This will block them from creating or receiving POs.`,
+                                confirmLabel: 'Revoke',
+                                cancelLabel: 'Cancel',
+                              });
+                              if (!ok) return;
                               try {
                                 setRevoking(true);
                                 const client = await getXRPLClient();
@@ -20061,7 +20237,13 @@ const addLinkedVendorByDID = async () => {
                           <button
                             onClick={async () => {
                               if (!institutionalCredAddress) return alert('Enter a wallet address');
-                              if (!window.confirm(`Issue Institutional credential to ${institutionalCredAddress}?\n\nOnly proceed after verifying this entity off-platform.`)) return;
+                              const ok = await openConfirm({
+                                title: 'Issue Institutional Credential?',
+                                message: `Issue Institutional credential to ${institutionalCredAddress}? Only proceed after verifying this entity off-platform.`,
+                                confirmLabel: 'Issue Credential',
+                                cancelLabel: 'Cancel',
+                              });
+                              if (!ok) return;
                               setInstitutionalCredLoading(true);
                               setInstitutionalCredResult('');
                               try {
@@ -20467,7 +20649,13 @@ const addLinkedVendorByDID = async () => {
                         if (filled.length < 2) return alert('Volume pricing requires at least 2 tiers.');
                         if (parseInt(filled[0].minQty) !== 1) return alert('First tier must start at Min Qty = 1.');
                       }
-                      if (!window.confirm('This will mint a new NFT version on-chain with all changes. The old NFT remains as version history. Continue?')) return;
+                      const ok = await openConfirm({
+                        title: 'Mint New NFT Version?',
+                        message: 'This will mint a new NFT version on-chain with all changes. The old NFT remains as version history. Continue?',
+                        confirmLabel: 'Mint Version',
+                        cancelLabel: 'Cancel',
+                      });
+                      if (!ok) return;
                       setEditPricingSaving(true);
                       try {
                         const wallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
