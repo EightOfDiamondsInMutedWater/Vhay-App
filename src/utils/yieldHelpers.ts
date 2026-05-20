@@ -377,7 +377,7 @@ export interface YieldPartnerAdapter {
  */
 export class StubYieldPartner implements YieldPartnerAdapter {
   readonly partnerId = 'stub_v1';
-  readonly partnerName = 'SC.PO Yield (Devnet)';
+  readonly partnerName = 'Vhay (Devnet)';
   readonly partnerDescription = 'Simulated yield pool for development and testing. Not connected to any real yield source.';
 
   // On devnet, the "pool wallet" is the SC.PO company wallet itself.

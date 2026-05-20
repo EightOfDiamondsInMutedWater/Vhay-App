@@ -86,6 +86,7 @@ import {
   StackedAreaChart, LegendSwatch, Table,
   SummaryTiles, FilterBar, Empty,
 } from './components/primitives';
+import { createPortal } from 'react-dom';
 import { IconPlus, IconX, IconCheck, IconSend, IconSpark, IconFile, IconLayer, IconSearch, IconWallet, IconUser, IconBox, IconCalendar, IconRefresh, IconArrowRight, IconArrowDown } from './components/icons';
 const getOrGenerateUUID = (key: string): string => {
   let uuid = localStorage.getItem(key);
@@ -4111,11 +4112,51 @@ useEffect(() => {
   };
 
   const createSCPO = async () => {
-    if (!poName) return alert('PO Name is required');
-    if (!seed) return alert('Wallet seed required');
-    if (!vendor) return alert('Vendor address required');
-    if (!selectedVendorUUID || !getPOEncryptionKey(selectedVendorUUID)) return alert('Link vendor first');
-    if (items.length === 0) return alert('Add at least one item');
+    if (!poName) {
+      await openConfirm({
+        kind: 'info',
+        title: 'PO Name Required',
+        message: 'Please enter a PO Name before creating.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    if (!seed) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Wallet Seed Required',
+        message: 'Your wallet seed is needed to sign the PO transaction. Save your profile first.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    if (!vendor) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Vendor Required',
+        message: 'Select a vendor before creating the PO.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    if (!selectedVendorUUID || !getPOEncryptionKey(selectedVendorUUID)) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Link Vendor First',
+        message: 'You need to link this vendor to your account before creating a PO. Use the Link button in the Profile tab.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    if (items.length === 0) {
+      await openConfirm({
+        kind: 'info',
+        title: 'No Items Added',
+        message: 'Add at least one line item before submitting the PO.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     if (parseFloat(totalEscrowAmount) <= 0) {
       await openConfirm({
         kind: 'info',
@@ -4125,14 +4166,36 @@ useEffect(() => {
       });
       return;
     }
-    if (!paymentTerms) return alert('Select Payment Terms');
-    if (!customerProfile.shippingAddress.trim()) return alert('Shipping address is required. Please add one to your Profile before creating a PO.');
+    if (!paymentTerms) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Payment Terms Required',
+        message: 'Select Payment Terms before creating the PO.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    if (!customerProfile.shippingAddress.trim()) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Shipping Address Required',
+        message: 'A shipping address is required. Add one to your Profile before creating a PO.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
 
     // Phase 1B: Verify both buyer and vendor hold valid credentials
     const wallet = xrpl.Wallet.fromSeed(seed);
     const credCheck = await canCreatePO(wallet.classicAddress, vendor);
     if (!credCheck.allowed) {
-      return alert(`Cannot create PO: ${credCheck.reason}\n\nBoth parties must have a valid credential in the SC.PO domain. Save your profile to get one.`);
+      await openConfirm({
+        kind: 'info',
+        title: 'Credential Required',
+        message: `Cannot create PO: ${credCheck.reason}. Both parties must have a valid credential in the SC.PO domain. Save your profile to get one.`,
+        confirmLabel: 'OK',
+      });
+      return;
     }
 
     const feeUsd = 1.00; // $1.00 flat per PO created
@@ -4153,7 +4216,18 @@ useEffect(() => {
       setResult('Uploading attachments...');
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
-        try { const uri = await uploadFileToIPFS(file); attachments.push({ name: file.name, uri }); } catch (err: any) { alert('Failed to upload attachment: ' + err.message); return; }
+        try {
+          const uri = await uploadFileToIPFS(file);
+          attachments.push({ name: file.name, uri });
+        } catch (err: any) {
+          await openConfirm({
+            kind: 'info',
+            title: 'Upload Failed',
+            message: 'Failed to upload attachment: ' + err.message,
+            confirmLabel: 'OK',
+          });
+          return;
+        }
       }
     }
     const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
@@ -4242,20 +4316,71 @@ useEffect(() => {
       setScpoSuccess(true); setTimeout(() => setScpoSuccess(false), 3000);
       setItems([]); localStorage.removeItem('createItems');
       setYieldOptIn(false); setYieldOptInAPR(null); setYieldEstimatedReturn(null);
-    } catch (err: any) { alert('Operation failed: ' + err.message); setResult('Error: ' + err.message); }
+    } catch (err: any) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Operation Failed',
+        message: 'Operation failed: ' + err.message,
+        confirmLabel: 'OK',
+      });
+      setResult('Error: ' + err.message);
+    }
   };
 
   const updateSCPO = async () => {
-    if (!selectedUpdatePO) return alert('Select a PO to update');
-    if (!poName) return alert('PO Name is required');
-    if (items.length === 0) return alert('Add at least one item');
+    if (!selectedUpdatePO) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Select a PO',
+        message: 'Select a PO to update before continuing.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    if (!poName) {
+      await openConfirm({
+        kind: 'info',
+        title: 'PO Name Required',
+        message: 'Please enter a PO Name before updating.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
+    if (items.length === 0) {
+      await openConfirm({
+        kind: 'info',
+        title: 'No Items Added',
+        message: 'Add at least one line item before updating the PO.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     const password = getPOEncryptionKey(selectedUpdatePO.vendorUUID || '') || '';
-    if (!password) return alert('Vendor password missing');
+    if (!password) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Vendor Password Missing',
+        message: 'The vendor encryption key is missing. Re-link this vendor from the Profile tab to restore it.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     let attachments: Attachment[] = [...existingAttachments];
     if (selectedFiles && selectedFiles.length > 0) {
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
-        try { const uri = await uploadFileToIPFS(file); attachments.push({ name: file.name, uri }); } catch (err: any) { alert('Failed to upload attachment: ' + err.message); return; }
+        try {
+          const uri = await uploadFileToIPFS(file);
+          attachments.push({ name: file.name, uri });
+        } catch (err: any) {
+          await openConfirm({
+            kind: 'info',
+            title: 'Upload Failed',
+            message: 'Failed to upload attachment: ' + err.message,
+            confirmLabel: 'OK',
+          });
+          return;
+        }
       }
     }
     const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
@@ -20905,91 +21030,252 @@ const addLinkedVendorByDID = async () => {
           </div>
         </div>
       )}
-      {/* ===== HISTORY MODAL ===== */}
-        {showHistoryModal && historyModalVersions.length > 0 && (
-          <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={() => setShowHistoryModal(false)}>
-            <div style={{ background: '#FFF9E6', borderRadius: '20px', padding: '30px', width: '90%', maxWidth: '800px', maxHeight: '85vh', overflowY: 'auto', position: 'relative', boxShadow: '0 10px 40px rgba(0,0,0,0.3)' }} onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => setShowHistoryModal(false)} style={{ position: 'absolute', top: '15px', right: '15px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '50%', width: '35px', height: '35px', fontSize: '18px', cursor: 'pointer', fontWeight: 'bold' }}>✕</button>
-              <h2 style={{ color: '#F2B04A', textAlign: 'center', marginBottom: '5px' }}>PO Version History</h2>
-              <p style={{ textAlign: 'center', color: '#888', marginBottom: '20px' }}>Version {historyModalIndex + 1} of {historyModalVersions.length}</p>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-                <button onClick={() => setHistoryModalIndex(Math.max(0, historyModalIndex - 1))} disabled={historyModalIndex === 0} style={{ background: historyModalIndex === 0 ? '#ccc' : 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', cursor: historyModalIndex === 0 ? 'not-allowed' : 'pointer', fontWeight: 'bold', flexShrink: 0 }}>◀</button>
-                <div style={{ flex: 1, margin: '0 20px' }}>
-                  {(() => {
-                    const version = historyModalVersions[historyModalIndex];
-                    if (!version) return null;
-                    const isLatest = historyModalIndex === historyModalVersions.length - 1;
-                    return (
-                      <div style={{ border: '2px solid #D88F2E', borderRadius: '15px', padding: '20px', background: isLatest ? '#f0fff0' : '#f9f9f9' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                          <h3 style={{ color: '#F2B04A', margin: 0 }}>{version.po.poName}</h3>
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            {isLatest && <span style={{ background: '#4CAF50', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>Current</span>}
-                            <span style={{ background: version.po.status === 'superseded' ? '#ff9800' : '#2196F3', color: 'white', padding: '4px 12px', borderRadius: '12px', fontSize: '12px' }}>{version.po.status}</span>
+      {/* ===== HISTORY MODAL — Claude Design ===== */}
+      {showHistoryModal && historyModalVersions.length > 0 && (() => {
+        const version = historyModalVersions[historyModalIndex];
+        const isLatest = historyModalIndex === historyModalVersions.length - 1;
+        const atFirst = historyModalIndex === 0;
+        const atLast  = historyModalIndex === historyModalVersions.length - 1;
+        return createPortal(
+          <div
+            onClick={() => setShowHistoryModal(false)}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 1100,
+              background: 'rgba(40, 25, 8, 0.45)',
+              backdropFilter: 'blur(4px)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: 20,
+            }}>
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="glass-strong"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="history-modal-title"
+              style={{
+                borderRadius: 18, padding: 24,
+                maxWidth: 720, width: '100%', maxHeight: '85vh', overflowY: 'auto',
+                boxShadow: '0 20px 60px -10px rgba(60,40,15,0.35)',
+                position: 'relative',
+              }}>
+
+              {/* Close button */}
+              <button
+                type="button"
+                onClick={() => setShowHistoryModal(false)}
+                aria-label="Close"
+                style={{
+                  position: 'absolute', top: 16, right: 16,
+                  width: 28, height: 28, borderRadius: 8,
+                  background: 'transparent',
+                  border: '1px solid rgba(180, 140, 60, 0.25)',
+                  color: 'var(--ink-2)',
+                  cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontFamily: 'inherit',
+                }}>
+                <IconX size={12}/>
+              </button>
+
+              {/* Header */}
+              <div
+                id="history-modal-title"
+                style={{
+                  fontSize: 17, fontWeight: 600, color: 'var(--ink)',
+                  marginBottom: 4, letterSpacing: '-0.01em',
+                }}>
+                PO Version History
+              </div>
+              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 22, letterSpacing: '0.05em' }}>
+                Version {historyModalIndex + 1} of {historyModalVersions.length}
+              </div>
+
+              {/* Body row: prev nav · version card · next nav */}
+              <div style={{ display: 'flex', alignItems: 'stretch', gap: 12 }}>
+
+                {/* Prev */}
+                <button
+                  type="button"
+                  onClick={() => setHistoryModalIndex(Math.max(0, historyModalIndex - 1))}
+                  disabled={atFirst}
+                  aria-label="Previous version"
+                  style={{
+                    flexShrink: 0, width: 36, height: 36, alignSelf: 'center', borderRadius: 10,
+                    background: atFirst
+                      ? 'rgba(180, 140, 60, 0.06)'
+                      : 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                    border: '1px solid rgba(180, 140, 60, 0.25)',
+                    color: atFirst ? 'var(--ink-3)' : '#2a1f08',
+                    cursor: atFirst ? 'not-allowed' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: 'inherit',
+                    boxShadow: atFirst ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                  }}>
+                  <IconArrowRight size={14} style={{ transform: 'rotate(180deg)' }}/>
+                </button>
+
+                {/* Version card */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {version && (
+                    <div className="etched" style={{
+                      padding: 18, borderRadius: 12,
+                      background: isLatest ? 'rgba(255, 248, 222, 0.55)' : 'rgba(255, 252, 240, 0.4)',
+                    }}>
+                      {/* Card header */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 14 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {version.po.poName}
+                          </div>
+                          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 4 }}>
+                            {version.po.issuanceId ? `${version.po.issuanceId.slice(0, 14)}…` : '—'}
                           </div>
                         </div>
-                        <p style={{ color: '#666', fontSize: '13px', margin: '0 0 10px' }}>Issuance: {version.po.issuanceId?.substring(0, 16)}...</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Total:</strong> ${version.po.total}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Payment Terms:</strong> {version.po.paymentTerms || 'N/A'}</p>
-                        <p><strong style={{ color: '#F2B04A' }}>Escrow Currency:</strong> {(version.po.escrowCurrency || version.poData?.escrowCurrency) === 'RLUSD' ? '💵 RLUSD (1:1 USD)' : '⚡ XRP'}</p>
-                        {version.loading ? (
-                          <p style={{ color: '#F2B04A', fontStyle: 'italic', textAlign: 'center', padding: '20px' }}>Loading PO details from IPFS...</p>
-                        ) : version.poData ? (
-                          <>
-                            <p><strong style={{ color: '#F2B04A' }}>Description:</strong> {version.poData.description || 'N/A'}</p>
-                            <p><strong style={{ color: '#F2B04A' }}>Department:</strong> {version.poData.department}</p>
-                            <p><strong style={{ color: '#F2B04A' }}>Delivery Terms:</strong> {version.poData.deliveryTerms}</p>
-                            <h4 style={{ color: '#F2B04A', marginTop: '15px' }}>Items</h4>
-                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                              <thead>
-                                <tr style={{ background: '#e0e0e0' }}>
-                                  <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Item #</th>
-                                  <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Qty</th>
-                                  <th style={{ padding: '8px', border: '1px solid #D88F2E' }}>Total $</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {version.poData.items.map((item, i) => (
-                                  <tr key={i}>
-                                    <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.num}</td>
-                                    <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>{item.qty}</td>
-                                    <td style={{ padding: '8px', border: '1px solid #D88F2E' }}>${item.total}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                            {version.poData.attachments && version.poData.attachments.length > 0 && (
-                              <>
-                                <h4 style={{ marginTop: '15px', color: '#F2B04A' }}>Attachments</h4>
-                                <ul>
-                                  {version.poData.attachments.map((att, i) => (
-                                    <li key={i}>
-                                      <a href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A' }}>
-                                        {att.name}
-                                      </a>
-                                    </li>
-                                  ))}
-                                </ul>
-                              </>
-                            )}
-                          </>
-                        ) : (
-                          <p style={{ color: '#999', fontStyle: 'italic' }}>PO details unavailable</p>
-                        )}
+                        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                          {isLatest && <Chip tone="green">Current</Chip>}
+                          <Chip tone={version.po.status === 'superseded' ? 'gold' : 'blue'}>{version.po.status}</Chip>
+                        </div>
                       </div>
-                    );
-                  })()}
+
+                      {/* Metadata grid */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 14 }}>
+                        <div>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Total</div>
+                          <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>${version.po.total}</div>
+                        </div>
+                        <div>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Payment Terms</div>
+                          <div style={{ fontSize: 12 }}>{version.po.paymentTerms || '—'}</div>
+                        </div>
+                        <div>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Escrow</div>
+                          <div style={{ fontSize: 12 }}>{(version.po.escrowCurrency || version.poData?.escrowCurrency) === 'RLUSD' ? 'RLUSD' : 'XRP'}</div>
+                        </div>
+                        <div>
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Date Issued</div>
+                          <div className="mono" style={{ fontSize: 12 }}>{version.po.dateIssued}</div>
+                        </div>
+                      </div>
+
+                      {/* Body */}
+                      {version.loading ? (
+                        <div style={{ padding: '24px 12px', textAlign: 'center', fontSize: 12, color: 'var(--ink-3)', fontStyle: 'italic' }}>
+                          Loading PO details from IPFS…
+                        </div>
+                      ) : version.poData ? (
+                        <>
+                          {version.poData.description && (
+                            <div style={{ marginBottom: 10, fontSize: 12, color: 'var(--ink-2)', lineHeight: 1.5 }}>
+                              {version.poData.description}
+                            </div>
+                          )}
+                          {(version.poData.department || version.poData.deliveryTerms) && (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12, marginBottom: 14 }}>
+                              {version.poData.department && (
+                                <div>
+                                  <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Department</div>
+                                  <div style={{ fontSize: 12 }}>{version.poData.department}</div>
+                                </div>
+                              )}
+                              {version.poData.deliveryTerms && (
+                                <div>
+                                  <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 2 }}>Delivery Terms</div>
+                                  <div style={{ fontSize: 12 }}>{version.poData.deliveryTerms}</div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>
+                            Line Items · {version.poData.items.length}
+                          </div>
+                          <div style={{
+                            borderRadius: 8,
+                            border: '1px solid rgba(180, 140, 60, 0.15)',
+                            overflow: 'hidden',
+                          }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 0.4fr 0.6fr', fontSize: 10.5, padding: '8px 12px', background: 'rgba(180, 140, 60, 0.08)', color: 'var(--ink-3)', letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600 }}>
+                              <span>Item</span>
+                              <span style={{ textAlign: 'right' }}>Qty</span>
+                              <span style={{ textAlign: 'right' }}>Total</span>
+                            </div>
+                            {version.poData.items.map((item, i) => (
+                              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1.6fr 0.4fr 0.6fr', fontSize: 12, padding: '8px 12px', borderTop: '1px solid rgba(180, 140, 60, 0.08)' }}>
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.num}</span>
+                                <span className="mono" style={{ textAlign: 'right' }}>{item.qty}</span>
+                                <span className="mono" style={{ textAlign: 'right', fontWeight: 500 }}>${item.total}</span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {version.poData.attachments && version.poData.attachments.length > 0 && (
+                            <>
+                              <div className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginTop: 14, marginBottom: 6 }}>
+                                Attachments · {version.poData.attachments.length}
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                {version.poData.attachments.map((att, i) => (
+                                  <a key={i}
+                                    href={`https://gateway.pinata.cloud/ipfs/${att.uri.replace('ipfs://', '')}`}
+                                    target="_blank" rel="noopener noreferrer"
+                                    style={{ fontSize: 12, color: 'oklch(0.5 0.14 240)', textDecoration: 'none' }}>
+                                    {att.name}
+                                  </a>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <div style={{ padding: 16, textAlign: 'center', fontSize: 12, color: 'var(--ink-3)', fontStyle: 'italic' }}>
+                          PO details unavailable
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <button onClick={() => setHistoryModalIndex(Math.min(historyModalVersions.length - 1, historyModalIndex + 1))} disabled={historyModalIndex === historyModalVersions.length - 1} style={{ background: historyModalIndex === historyModalVersions.length - 1 ? '#ccc' : 'linear-gradient(90deg, #F2B04A 0%, #FFD98F 100%)', color: 'white', border: 'none', borderRadius: '50%', width: '50px', height: '50px', fontSize: '24px', cursor: historyModalIndex === historyModalVersions.length - 1 ? 'not-allowed' : 'pointer', fontWeight: 'bold', flexShrink: 0 }}>▶</button>
+
+                {/* Next */}
+                <button
+                  type="button"
+                  onClick={() => setHistoryModalIndex(Math.min(historyModalVersions.length - 1, historyModalIndex + 1))}
+                  disabled={atLast}
+                  aria-label="Next version"
+                  style={{
+                    flexShrink: 0, width: 36, height: 36, alignSelf: 'center', borderRadius: 10,
+                    background: atLast
+                      ? 'rgba(180, 140, 60, 0.06)'
+                      : 'linear-gradient(180deg, oklch(0.92 0.1 86), oklch(0.82 0.14 78))',
+                    border: '1px solid rgba(180, 140, 60, 0.25)',
+                    color: atLast ? 'var(--ink-3)' : '#2a1f08',
+                    cursor: atLast ? 'not-allowed' : 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: 'inherit',
+                    boxShadow: atLast ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.6)',
+                  }}>
+                  <IconArrowRight size={14}/>
+                </button>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '10px' }}>
+
+              {/* Dot indicators */}
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 18 }}>
                 {historyModalVersions.map((_, i) => (
-                  <button key={i} onClick={() => setHistoryModalIndex(i)} style={{ width: i === historyModalIndex ? '24px' : '10px', height: '10px', borderRadius: '5px', border: 'none', background: i === historyModalIndex ? '#F2B04A' : '#ddd', cursor: 'pointer', transition: 'all 0.2s', padding: 0 }} />
+                  <button key={i} type="button" onClick={() => setHistoryModalIndex(i)}
+                    aria-label={`Go to version ${i + 1}`}
+                    style={{
+                      width: i === historyModalIndex ? 22 : 8, height: 8, borderRadius: 4,
+                      border: 0, padding: 0, cursor: 'pointer',
+                      background: i === historyModalIndex
+                        ? 'linear-gradient(90deg, oklch(0.82 0.14 78), oklch(0.72 0.15 62))'
+                        : 'rgba(180, 140, 60, 0.25)',
+                      transition: 'all 0.2s ease',
+                    }}/>
                 ))}
               </div>
             </div>
           </div>
-        )}
+        , document.body);
+      })()}
         {/* ===== PROFILES MODAL (Arrow Navigation) ===== */}
         {showProfilesModal && profilesModalPO && (() => {
           const profiles = [
