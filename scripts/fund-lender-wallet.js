@@ -2,8 +2,9 @@
 
 const xrpl = require('xrpl');
 
-const LENDER_SEED    = 'sEd7RQCjDp7PvcPqWmpDttn2DT7U5U8';
-const ISSUER_SEED    = 'sEdTkm6TdxbdDNaYFdjCxJwf7wPWE45';
+const LENDER_SEED = process.env.LENDER_SEED;
+const ISSUER_SEED = process.env.ISSUER_SEED;
+if (!LENDER_SEED || !ISSUER_SEED) { console.error('Set LENDER_SEED and ISSUER_SEED env vars'); process.exit(1); }
 const RLUSD_AMOUNT   = '10000';
 const TRUST_LIMIT    = '1000000';
 const CURRENCY_CODE  = 'USD';

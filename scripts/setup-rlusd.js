@@ -24,8 +24,9 @@ const xrpl = require('xrpl');
 // ============================================================
 // CONFIGURATION — Update these with your existing wallet seeds
 // ============================================================
-const BUYER_SEED = process.env.REACT_APP_BUYER_SEED ||'sEdSjPzCe4LGkGuJ7xVEt1EsAvHUCmd';
-const VENDOR_SEED = process.env.REACT_APP_VENDOR_SEED ||'sEdTNzxUVqnj7mEVeigwA3iz21pHEgw';
+const BUYER_SEED = process.env.REACT_APP_BUYER_SEED;
+const VENDOR_SEED = process.env.REACT_APP_VENDOR_SEED;
+if (!BUYER_SEED || !VENDOR_SEED) { console.error('Set REACT_APP_BUYER_SEED and REACT_APP_VENDOR_SEED env vars'); process.exit(1); }
 
 // How much test RLUSD to send to each wallet
 const RLUSD_AMOUNT_PER_WALLET = '10000';

@@ -23,8 +23,9 @@ const xrpl = require('xrpl');
 // ============================================================
 // CONFIGURATION — Your existing wallet seeds
 // ============================================================
-const BUYER_SEED = 'sEdVXKFQEFvzK18y531VRYRf6ft4JFV';
-const VENDOR_SEED = 'sEdSAFqhJ89ngGxACafTddxyqYULzpM';
+const BUYER_SEED = process.env.BUYER_SEED;
+const VENDOR_SEED = process.env.VENDOR_SEED;
+if (!BUYER_SEED || !VENDOR_SEED) { console.error('Set BUYER_SEED and VENDOR_SEED env vars'); process.exit(1); }
 
 const RLUSD_AMOUNT_PER_WALLET = '10000';
 const TRUST_LINE_LIMIT = '1000000';

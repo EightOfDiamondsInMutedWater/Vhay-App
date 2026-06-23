@@ -22,7 +22,8 @@ const xrpl = require('xrpl');
 // ============================================================
 // CONFIGURATION — Paste your RLUSD issuer seed here
 // ============================================================
-const RLUSD_ISSUER_SEED = 'sEdV7Zs9Ma7JSjr6JomDhTLU1JQztKy';
+const RLUSD_ISSUER_SEED = process.env.RLUSD_ISSUER_SEED;
+if (!RLUSD_ISSUER_SEED) { console.error('Set RLUSD_ISSUER_SEED env var'); process.exit(1); }
 
 const DEVNET_URL = 'wss://s.devnet.rippletest.net:51233';
 
