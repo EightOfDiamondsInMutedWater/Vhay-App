@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { FEATURES, COMING_SOON_LABEL } from './featureFlags';
+import { ComingSoonOverlay } from './ComingSoonOverlay';
 import * as xrpl from 'xrpl';
 import type { EscrowCreate, EscrowFinish, Payment, AccountSet, Transaction, Memo, AccountTxResponse, AccountInfoResponse, AccountNFTsResponse, AccountNFToken } from 'xrpl';
 import CryptoJS from 'crypto-js';
@@ -6197,7 +6199,7 @@ const getUpdatablePOs = () => {
   useEffect(() => {
     if (mode !== 'vendor') return;
     const onInventoryTab     = activeTab === 'inventoryCatalog';
-    const onInventoryFinTab  = activeTab === 'financing' && financingSubTab === 'inventory';
+    const onInventoryFinTab  = FEATURES.inventoryFinancing && activeTab === 'financing' && financingSubTab === 'inventory';
     if (!onInventoryTab && !onInventoryFinTab) return;
     if (!vendorProfile.classicAddress || !vendorProfile.seed) return;
     if (editPricingSaving) return; // block reload while a save is in progress
@@ -6259,7 +6261,7 @@ const getUpdatablePOs = () => {
   // Auto-select first eligible PO when entering PO Financing or when eligible list refreshes.
   // Only runs when there's NO current selection (preserves user clicks).
   useEffect(() => {
-    if (mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
+    if (!FEATURES.poFinancing || mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
     if (selectedFinancingPO) return; // user already picked something
     const fundedRLUSD = savedPOs.filter(p => p.status === 'funded' && p.escrowCurrency === 'RLUSD');
     const firstEligible = fundedRLUSD.find(p => {
@@ -6274,7 +6276,7 @@ const getUpdatablePOs = () => {
   // Sync the always-on financing drawer to the selected PO when on PO Financing.
   // Only runs for eligible POs (where the request form should be active).
   useEffect(() => {
-    if (mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
+    if (!FEATURES.poFinancing || mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
     if (!selectedFinancingPO) return;
     const po = savedPOs.find(p => p.issuanceId === selectedFinancingPO);
     if (!po) return;
@@ -6311,7 +6313,7 @@ const getUpdatablePOs = () => {
   // Load PO IPFS details for the Financing right-pane detail tabs whenever selection changes.
   // Independent of Sell · Action's state — selecting a PO here doesn't affect Action and vice versa.
   useEffect(() => {
-    if (mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
+    if (!FEATURES.poFinancing || mode !== 'vendor' || activeTab !== 'financing' || financingSubTab !== 'po') return;
     if (!selectedFinancingPO) {
       setFinancingViewedPO(null);
       setFinancingPoLoadError(null);
@@ -8782,6 +8784,7 @@ const addLinkedVendorByDID = async () => {
                             </div>
                           </div>
                           <Toggle on={yieldOptIn} onChange={async (checked) => {
+                            if (!FEATURES.escrowYield) { await openConfirm({ kind: 'info', title: COMING_SOON_LABEL, message: 'Yield opt-in is an advanced feature coming soon.', confirmLabel: 'OK' }); return; }
                             setYieldOptIn(checked);
                             if (checked) {
                               setYieldOptInLoading(true);
@@ -10888,6 +10891,7 @@ const addLinkedVendorByDID = async () => {
                         {canGetAdvance && (
                           <button type="button" className="action-btn"
                             onClick={async () => {
+                              if (!FEATURES.poFinancing) { await openConfirm({ kind: 'info', title: COMING_SOON_LABEL, message: 'PO financing advances are an advanced feature coming soon.', confirmLabel: 'OK' }); return; }
                               if (!activePO) return;
                               if ((financingDrawerForPO?.tab === "action" && financingDrawerForPO.poId === activePO?.issuanceId)) {
                                 setFinancingDrawerForPO(null);
@@ -15361,7 +15365,9 @@ const addLinkedVendorByDID = async () => {
             </div>
           </Page>
         )}
-        {activeTab === 'financing' && (() => {
+        {activeTab === 'financing' && (
+          <ComingSoonOverlay active={!FEATURES.poFinancing && !FEATURES.inventoryFinancing}>
+          {(() => {
           const credStatus = mode === 'vendor' ? vendorCredStatus : customerCredStatus;
           const hasFinancingAccess = !!credStatus?.valid && credStatus.tier !== 'basic';
 
@@ -17170,6 +17176,8 @@ const addLinkedVendorByDID = async () => {
             </Page>
           );
         })()}
+          </ComingSoonOverlay>
+        )}
         {activeTab === 'accounting' && (() => {
           const now = new Date();
           const currentYear = now.getFullYear();
