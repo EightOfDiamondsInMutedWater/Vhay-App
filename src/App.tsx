@@ -4255,7 +4255,7 @@ useEffect(() => {
         MaximumAmount: '1',
         AssetScale: 0,
         TransferFee: 0,
-        Flags: xrpl.MPTokenIssuanceCreateFlags.tfMPTCanClawback
+        Flags: xrpl.MPTokenIssuanceCreateFlags.tfMPTCanClawback | xrpl.MPTokenIssuanceCreateFlags.tfMPTCanEscrow
       };
       const preparedCreate = await client.autofill(mptCreate); preparedCreate.LastLedgerSequence = currentLedger + 20;
       const signedCreate = wallet.sign(preparedCreate);
@@ -4435,7 +4435,7 @@ useEffect(() => {
         MaximumAmount: '1',
         AssetScale: 0,
         TransferFee: 0,
-        Flags: xrpl.MPTokenIssuanceCreateFlags.tfMPTCanClawback
+        Flags: xrpl.MPTokenIssuanceCreateFlags.tfMPTCanClawback | xrpl.MPTokenIssuanceCreateFlags.tfMPTCanEscrow
       };
       const preparedCreate = await client.autofill(mptCreate); preparedCreate.LastLedgerSequence = currentLedger + 20;
       const signedCreate = wallet.sign(preparedCreate);
@@ -5714,7 +5714,7 @@ const getUpdatablePOs = () => {
       Account: wallet.classicAddress,
       MaximumAmount: BULK_MPT_MAX,
       MPTokenMetadata: xrpl.convertStringToHex(JSON.stringify(mptLedgerMeta)),
-      Flags: 96,
+      Flags: 104, // 96 (clawback+transfer) + 8 (tfMPTCanEscrow)
     };
     const preparedMPT = await client.autofill(mptCreateTx);
     const signedMPT = wallet.sign(preparedMPT);
@@ -6691,7 +6691,7 @@ const getUpdatablePOs = () => {
          Account: wallet.classicAddress,
          MaximumAmount: BULK_MPT_MAX,
          MPTokenMetadata: xrpl.convertStringToHex(JSON.stringify(mptLedgerMeta)),
-         Flags: 96,
+         Flags: 104, // 96 (clawback+transfer) + 8 (tfMPTCanEscrow)
       };
       const preparedMPT = await client.autofill(mptCreateTx);
       const signedMPT = wallet.sign(preparedMPT);
