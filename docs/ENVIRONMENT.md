@@ -14,7 +14,7 @@ All `REACT_APP_*` vars are compiled into the public JS bundle at build time — 
 | `REACT_APP_ADMIN_PASSWORD` | Admin-panel login (NOT the seed) | your local value | your value | a distinct production value |
 | `REACT_APP_PINATA_API_KEY` | Pinata IPFS pinning | set | set | same (or prod key) |
 | `REACT_APP_FILEBASE_RPC_TOKEN` | Filebase IPFS auth | set | set | same (or prod token) |
-| `REACT_APP_FILEBASE_BUCKET` | Filebase bucket (IPFS) | set | set | same |
+| `REACT_APP_FILEBASE_BUCKET` | Filebase bucket — **defined in .env but not read in code (unused)** | optional | optional | omit |e |
 
 ## Mainnet flip checklist (Task 3.5 → hosted flip)
 In **Vercel → Project → Settings → Environment Variables (Production)**, set the mainnet column above, then redeploy. Critical points:
