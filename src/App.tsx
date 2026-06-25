@@ -90,6 +90,15 @@ import {
 } from './components/primitives';
 import { createPortal } from 'react-dom';
 import { IconPlus, IconX, IconCheck, IconSend, IconSpark, IconFile, IconLayer, IconSearch, IconWallet, IconUser, IconBox, IconCalendar, IconRefresh, IconArrowRight, IconArrowDown } from './components/icons';
+
+// Network-aware XRPL explorer base. Mainnet → livenet.xrpl.org; otherwise devnet.
+// Reads the same REACT_APP_XRPL_NODES env var as the client, so it auto-flips at the mainnet switch.
+const explorerBase = (): string => {
+  const nodes = process.env.REACT_APP_XRPL_NODES || '';
+  if (!nodes || nodes.includes('devnet')) return 'https://devnet.xrpl.org';
+  if (nodes.includes('testnet') || nodes.includes('altnet')) return 'https://testnet.xrpl.org';
+  return 'https://livenet.xrpl.org';
+};
 const getOrGenerateUUID = (key: string): string => {
   let uuid = localStorage.getItem(key);
   if (!uuid) {
@@ -15066,7 +15075,7 @@ const addLinkedVendorByDID = async () => {
                         {selectedLinkedVendor.linkTxHash && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, paddingTop: 8, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
                             <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>On-chain link</span>
-                            <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedVendor.linkTxHash}`} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 12, color: 'oklch(0.55 0.16 240)', textDecoration: 'none' }}>
+                            <a href={`${explorerBase()}/transactions/${selectedLinkedVendor.linkTxHash}`} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 12, color: 'oklch(0.55 0.16 240)', textDecoration: 'none' }}>
                               {selectedLinkedVendor.linkTxHash.substring(0, 10)}…
                             </a>
                           </div>
@@ -15351,7 +15360,7 @@ const addLinkedVendorByDID = async () => {
                         {selectedLinkedCustomer.linkTxHash && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13, paddingTop: 8, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
                             <span style={{ color: 'var(--ink-3)', flexShrink: 0 }}>On-chain link</span>
-                            <a href={`https://devnet.xrpl.org/transactions/${selectedLinkedCustomer.linkTxHash}`} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 12, color: 'oklch(0.55 0.16 240)', textDecoration: 'none' }}>
+                            <a href={`${explorerBase()}/transactions/${selectedLinkedCustomer.linkTxHash}`} target="_blank" rel="noopener noreferrer" className="mono" style={{ fontSize: 12, color: 'oklch(0.55 0.16 240)', textDecoration: 'none' }}>
                               {selectedLinkedCustomer.linkTxHash.substring(0, 10)}…
                             </a>
                           </div>
@@ -15799,7 +15808,7 @@ const addLinkedVendorByDID = async () => {
                                       {(selectedReq.requestTxHash || selectedReq.disbursementTxHash) && (
                                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 11 }}>
                                           {selectedReq.requestTxHash && (
-                                            <a href={`https://devnet.xrpl.org/transactions/${selectedReq.requestTxHash}`}
+                                            <a href={`${explorerBase()}/transactions/${selectedReq.requestTxHash}`}
                                               target="_blank" rel="noopener noreferrer"
                                               className="mono"
                                               style={{ color: 'oklch(0.5 0.14 240)', textDecoration: 'none' }}>
@@ -15807,7 +15816,7 @@ const addLinkedVendorByDID = async () => {
                                             </a>
                                           )}
                                           {selectedReq.disbursementTxHash && (
-                                            <a href={`https://devnet.xrpl.org/transactions/${selectedReq.disbursementTxHash}`}
+                                            <a href={`${explorerBase()}/transactions/${selectedReq.disbursementTxHash}`}
                                               target="_blank" rel="noopener noreferrer"
                                               className="mono"
                                               style={{ color: 'oklch(0.5 0.14 240)', textDecoration: 'none' }}>
@@ -20513,7 +20522,7 @@ const addLinkedVendorByDID = async () => {
                       )}
                       <div style={{ borderTop: '1px solid #D88F2E', paddingTop: '10px', marginTop: '5px' }}>
                         <p style={{ margin: '4px 0', fontSize: '12px', color: '#888' }}><strong style={{ color: '#F2B04A' }}>Superseded by:</strong> next version (see current)</p>
-                        <a href={`https://devnet.xrpl.org/nft/${item.nftId}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A', fontSize: '12px' }}>View NFT on XRPL Explorer ↗</a>
+                        <a href={`${explorerBase()}/nft/${item.nftId}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A', fontSize: '12px' }}>View NFT on XRPL Explorer ↗</a>
                       </div>
                     </>
                   );
@@ -20943,7 +20952,7 @@ const addLinkedVendorByDID = async () => {
               </div>
             )}
             <div style={{ textAlign: 'center', marginTop: '10px' }}>
-              <a href={`https://devnet.xrpl.org/nft/${inventoryDetailItem?.nftId}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A', fontSize: '13px' }}>View NFT on XRPL Explorer ↗</a>
+              <a href={`${explorerBase()}/nft/${inventoryDetailItem?.nftId}`} target="_blank" rel="noopener noreferrer" style={{ color: '#F2B04A', fontSize: '13px' }}>View NFT on XRPL Explorer ↗</a>
             </div>
           </div>
         </div>
