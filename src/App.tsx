@@ -8059,7 +8059,7 @@ const fetchSharedInventoryDoc = async (
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
 
         // Phase 1B: Issue, renew, or skip credential
-        if (process.env.REACT_APP_DOMAIN_ID) {
+        if (process.env.REACT_APP_DOMAIN_ID && process.env.REACT_APP_COMPANY_SEED) {
           try {
             const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
             const credResult = await checkAndRenewCredential(client, platformWallet, wallet);
@@ -8123,7 +8123,7 @@ const fetchSharedInventoryDoc = async (
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
 
         // Phase 1B: Issue, renew, or skip credential
-        if (process.env.REACT_APP_DOMAIN_ID) {
+        if (process.env.REACT_APP_DOMAIN_ID && process.env.REACT_APP_COMPANY_SEED) {
           try {
             const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
             const credResult = await checkAndRenewCredential(client, platformWallet, wallet);
@@ -19500,17 +19500,17 @@ const addLinkedVendorByDID = async () => {
               /* Locked Card — admin seed gate */
               <Card strong layered style={{ maxWidth: 460, margin: '24px auto 0', padding: 32, textAlign: 'center', width: '100%' }}>
                 <div style={{ fontSize: 28, marginBottom: 14, opacity: 0.7 }}>🔒</div>
-                <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em' }}>Admin access</h3>
+                <h3 style={{ margin: '0 0 8px', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em' }}>Admin Access</h3>
                 <p style={{ margin: '0 0 20px', color: 'var(--ink-2)', fontSize: 13 }}>Enter your company seed to continue.</p>
                 <input
                   type="password"
-                  placeholder="Company seed"
+                  placeholder="Admin password"
                   value={adminPassword}
                   onChange={(e) => setAdminPassword(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key !== 'Enter') return;
-                    if (adminPassword === process.env.REACT_APP_COMPANY_SEED) { setAdminLoggedIn(true); }
-                    else { alert('Incorrect seed'); }
+                    if (process.env.REACT_APP_ADMIN_PASSWORD && adminPassword === process.env.REACT_APP_ADMIN_PASSWORD) { setAdminLoggedIn(true); }
+                    else { alert('Incorrect password'); }
                   }}
                   style={{
                     width: '100%',
@@ -19530,8 +19530,8 @@ const addLinkedVendorByDID = async () => {
                   variant="primary"
                   style={{ width: '100%', justifyContent: 'center' }}
                   onClick={() => {
-                    if (adminPassword === process.env.REACT_APP_COMPANY_SEED) { setAdminLoggedIn(true); }
-                    else { alert('Incorrect seed'); }
+                    if (process.env.REACT_APP_ADMIN_PASSWORD && adminPassword === process.env.REACT_APP_ADMIN_PASSWORD) { setAdminLoggedIn(true); }
+                    else { alert('Incorrect password'); }
                   }}
                 >
                   Unlock
@@ -20241,6 +20241,7 @@ const addLinkedVendorByDID = async () => {
                             variant="gold"
                             disabled={deploying}
                             onClick={async () => {
+                              if (!process.env.REACT_APP_COMPANY_SEED) { alert('Admin actions run locally via scripts in production (no signing key is deployed). Use scripts/create-domain.cjs.'); return; }
                               try {
                                 setDeploying(true);
                                 const client = await getXRPLClient();
@@ -20300,6 +20301,7 @@ const addLinkedVendorByDID = async () => {
                           <button
                             onClick={async () => {
                               if (!revokeAddress) return alert('Enter a wallet address');
+                              if (!process.env.REACT_APP_COMPANY_SEED) { alert('Admin actions run locally via scripts in production (no signing key is deployed).'); return; }
                               const ok = await openConfirm({
                                 tone: 'danger',
                                 title: 'Revoke Credential?',
@@ -20370,6 +20372,7 @@ const addLinkedVendorByDID = async () => {
                           <button
                             onClick={async () => {
                               if (!institutionalCredAddress) return alert('Enter a wallet address');
+                              if (!process.env.REACT_APP_COMPANY_SEED) { alert('Admin actions run locally via scripts in production (no signing key is deployed).'); return; }
                               const ok = await openConfirm({
                                 title: 'Issue Institutional Credential?',
                                 message: `Issue Institutional credential to ${institutionalCredAddress}? Only proceed after verifying this entity off-platform.`,
