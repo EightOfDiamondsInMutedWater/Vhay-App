@@ -16,7 +16,7 @@
 
 import * as xrpl from 'xrpl';
 import type { AccountTxResponse } from 'xrpl';
-import { getXRPLClient, submitBlobQueued } from './xrplHelpers';
+import { getXRPLClient, submitBlobQueued, autofillTagged } from './xrplHelpers';
 import { buildMemo, parseMemo, SCPO_ACTIONS } from './memoHelpers';
 import type {
   PayloadYieldOptIn,
@@ -425,7 +425,7 @@ export class StubYieldPartner implements YieldPartnerAdapter {
           txRef: 'stub_deposit',
         } as any)]
       };
-      const prepared = await client.autofill(payment);
+      const prepared = await autofillTagged(client, payment);
       prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
       const result = await submitBlobQueued(signed.tx_blob);

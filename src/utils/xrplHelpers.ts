@@ -1,5 +1,15 @@
 import * as xrpl from 'xrpl';
 
+// ── Source Tag (Make Waves Challenge attribution, T&Cs §5/§7) ──────────────
+// Read from env so hosted can set REACT_APP_SOURCE_TAG (Task 4.3); falls back
+// to the registered tag. Tagged at the autofill chokepoint (pre-sign), so the
+// SourceTag is included in the signed tx. Covers ALL submit paths.
+export const SOURCE_TAG = Number(process.env.REACT_APP_SOURCE_TAG ?? 2606160012) || 0;
+export const withSourceTag = <T extends Record<string, any>>(tx: T): T =>
+  SOURCE_TAG ? ({ ...tx, SourceTag: SOURCE_TAG } as T) : tx;
+// Inject SourceTag then autofill. Replaces every `client.autofill(tx)` call.
+export const autofillTagged = (client: any, tx: any) => client.autofill(withSourceTag(tx));
+
 // Constants — Credential tier hex values
 export const SCPO_BASIC_HEX = '5343504F5F4241534943'; // hex("SCPO_BASIC")
 export const SCPO_VERIFIED_HEX = '5343504F5F564552494649'; // hex("SCPO_VERIFIED")

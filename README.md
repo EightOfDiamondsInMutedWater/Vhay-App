@@ -26,6 +26,12 @@ Vhay turns the procure-to-pay cycle into native ledger instruments. A buyer issu
 | Permissioned domains | XLS-80 |
 | Token escrow (issued-token settlement) | XLS-85 |
 
+## Make Waves Challenge — Source Tag
+
+On-chain activity is attributed via **XRPL Source Tag `2606160012`**, assigned by XRPL Commons for the Make Waves Challenge (T&Cs sections 5 and 7).
+
+Every transaction the app submits carries this Source Tag. It is injected at the transaction-building chokepoint (`autofillTagged` in `src/utils/xrplHelpers.ts`) before signing, so it attaches to 100% of on-chain activity — PO creation, recall, and update; escrow create/finish; inventory minting and burns; MPT authorize/destroy; DID and credential operations; and platform fee payments. The value is configurable via the `REACT_APP_SOURCE_TAG` environment variable (default `2606160012`).
+
 ## Tech stack
 
 - **Frontend:** React + TypeScript single-page app

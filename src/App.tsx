@@ -41,7 +41,7 @@ import {
   formatAPR,
   daysElapsed as yieldDaysElapsed,
 } from './utils/yieldHelpers';
-import { issueInstitutionalCredential } from './utils/xrplHelpers';
+import { issueInstitutionalCredential, autofillTagged, SOURCE_TAG } from './utils/xrplHelpers';
 import {
   FinancingRequest,
   FinancingPackage,
@@ -2298,7 +2298,7 @@ export default function App() {
           termsCID: ipfsCID,
         } as any)]
       };
-      const prepared = await client.autofill(requestPayment);
+      const prepared = await autofillTagged(client, requestPayment);
       prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
       const result = await submitBlobQueued(signed.tx_blob);
@@ -2796,7 +2796,7 @@ export default function App() {
         } as any)],
       };
 
-      const prepared = await client.autofill(pledgeTx);
+      const prepared = await autofillTagged(client, pledgeTx);
       prepared.LastLedgerSequence =
         (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
@@ -2869,7 +2869,7 @@ export default function App() {
         } as any)],
       };
 
-      const prepared = await client.autofill(drawTx);
+      const prepared = await autofillTagged(client, drawTx);
       prepared.LastLedgerSequence =
         (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
@@ -2957,7 +2957,7 @@ export default function App() {
         } as any)],
       };
 
-      const prepared = await client.autofill(repayTx);
+      const prepared = await autofillTagged(client, repayTx);
       prepared.LastLedgerSequence =
         (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
@@ -2989,7 +2989,7 @@ export default function App() {
         } as any)],
       };
 
-      const preparedFwd = await client.autofill(forwardTx);
+      const preparedFwd = await autofillTagged(client, forwardTx);
       preparedFwd.LastLedgerSequence =
         (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signedFwd = companyWallet.sign(preparedFwd);
@@ -3050,7 +3050,7 @@ export default function App() {
         } as any)],
       };
 
-      const prepared = await client.autofill(releaseTx);
+      const prepared = await autofillTagged(client, releaseTx);
       prepared.LastLedgerSequence =
         (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
@@ -3135,7 +3135,7 @@ export default function App() {
               } as any)],
             };
 
-            const prepared = await client.autofill(noticeTx);
+            const prepared = await autofillTagged(client, noticeTx);
             prepared.LastLedgerSequence =
               (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
             const signed = wallet.sign(prepared);
@@ -3218,7 +3218,7 @@ export default function App() {
           amt:    req.approvedAmount,
         } as any)],
       };
-      const preparedAdvance = await client.autofill(advancePayment);
+      const preparedAdvance = await autofillTagged(client, advancePayment);
       preparedAdvance.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signedAdvance = companyWallet.sign(preparedAdvance);
       const advanceResult = await submitBlobQueued(signedAdvance.tx_blob);
@@ -3236,7 +3236,7 @@ export default function App() {
           amt:   req.approvedAmount,
         } as any)],
       };
-      const preparedAudit = await client.autofill(auditMemo);
+      const preparedAudit = await autofillTagged(client, auditMemo);
       preparedAudit.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signedAudit = companyWallet.sign(preparedAudit);
       await submitBlobQueued(signedAudit.tx_blob);
@@ -3280,7 +3280,7 @@ export default function App() {
           role:        mode as 'vendor' | 'customer',
         })]
       };
-      const prepared = await client.autofill(unlinkPayment);
+      const prepared = await autofillTagged(client, unlinkPayment);
       prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
       await submitBlobQueued(signed.tx_blob);
@@ -3866,7 +3866,7 @@ useEffect(() => {
             Account: wallet.classicAddress,
             MPTokenIssuanceID: po.issuanceId
           };
-          const preparedDestroy = await client.autofill(destroyTx);
+          const preparedDestroy = await autofillTagged(client, destroyTx);
           preparedDestroy.LastLedgerSequence = currentLedger + 20;
           const signedDestroy = wallet.sign(preparedDestroy);
           await submitBlobQueued(signedDestroy.tx_blob);
@@ -3883,7 +3883,7 @@ useEffect(() => {
               Amount: '1',
               Memos: [buildMemo(SCPO_ACTIONS.RECALL_PO, po.issuanceId, {})]
             };
-            const preparedRecall = await client.autofill(recallReceipt);
+            const preparedRecall = await autofillTagged(client, recallReceipt);
             preparedRecall.LastLedgerSequence = currentLedger + 20;
             const signedRecall = wallet.sign(preparedRecall);
             await submitBlobQueued(signedRecall.tx_blob);
@@ -3905,7 +3905,7 @@ useEffect(() => {
               Amount: '1',
               Memos: [buildMemo(SCPO_ACTIONS.RECALL_PO, po.parentIssuanceId ?? '', {})]
             };
-            const preparedParentRecall = await client.autofill(parentRecallReceipt);
+            const preparedParentRecall = await autofillTagged(client, parentRecallReceipt);
             preparedParentRecall.LastLedgerSequence = currentLedger + 20;
             const signedParentRecall = wallet.sign(preparedParentRecall);
             await submitBlobQueued(signedParentRecall.tx_blob);
@@ -3943,7 +3943,7 @@ useEffect(() => {
           },
           Holder: po.vendorAddress
         };
-        const preparedClaw = await client.autofill(clawbackTx);
+        const preparedClaw = await autofillTagged(client, clawbackTx);
         preparedClaw.LastLedgerSequence = currentLedger + 20;
         const signedClaw = wallet.sign(preparedClaw);
         await submitBlobQueued(signedClaw.tx_blob);
@@ -3967,7 +3967,7 @@ useEffect(() => {
           Amount: '1',
           Memos: [buildMemo(SCPO_ACTIONS.RECALL_PO, po.issuanceId, {})]
         };
-        const preparedRecall = await client.autofill(recallReceipt);
+        const preparedRecall = await autofillTagged(client, recallReceipt);
         preparedRecall.LastLedgerSequence = currentLedger + 20;
         const signedRecall = wallet.sign(preparedRecall);
         await submitBlobQueued(signedRecall.tx_blob);
@@ -3986,7 +3986,7 @@ useEffect(() => {
             Amount: '1',
             Memos: [buildMemo(SCPO_ACTIONS.RECALL_PO, po.parentIssuanceId ?? '', {})]
           };
-          const preparedParentRecall = await client.autofill(parentRecallReceipt);
+          const preparedParentRecall = await autofillTagged(client, parentRecallReceipt);
           preparedParentRecall.LastLedgerSequence = currentLedger + 20;
           const signedParentRecall = wallet.sign(preparedParentRecall);
           await submitBlobQueued(signedParentRecall.tx_blob);
@@ -4235,7 +4235,7 @@ useEffect(() => {
       const currentLedger = ledgerResponse.result.ledger_current_index;
       setResult(`Sending $1.00 PO creation fee...`);
       const feePayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: process.env.REACT_APP_COMPANY_WALLET || '', Amount: feeAmount, Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, { poName, feeType: 'CREATE', amount: feeLabel, v: vendor })] };
-      const preparedFee = await client.autofill(feePayment); preparedFee.LastLedgerSequence = currentLedger + 20;
+      const preparedFee = await autofillTagged(client, feePayment); preparedFee.LastLedgerSequence = currentLedger + 20;
       const signedFee = wallet.sign(preparedFee);
       const feeResult = await submitBlobQueued(signedFee.tx_blob);
       if (typeof feeResult.result.meta === 'object' && feeResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fee failed');
@@ -4251,7 +4251,7 @@ useEffect(() => {
         TransferFee: 0,
         Flags: xrpl.MPTokenIssuanceCreateFlags.tfMPTCanClawback | xrpl.MPTokenIssuanceCreateFlags.tfMPTCanEscrow
       };
-      const preparedCreate = await client.autofill(mptCreate); preparedCreate.LastLedgerSequence = currentLedger + 20;
+      const preparedCreate = await autofillTagged(client, mptCreate); preparedCreate.LastLedgerSequence = currentLedger + 20;
       const signedCreate = wallet.sign(preparedCreate);
       const createResult = await submitBlobQueued(signedCreate.tx_blob);
       if (typeof createResult.result.meta === 'object' && createResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('IssuanceCreate failed');
@@ -4296,7 +4296,7 @@ useEffect(() => {
               amt:   items.reduce((sum, item) => sum + parseFloat(item.total || '0'), 0).toFixed(2),
             } as any)]
           };
-          const preparedIntent = await client.autofill(yieldIntentPayment);
+          const preparedIntent = await autofillTagged(client, yieldIntentPayment);
           preparedIntent.LastLedgerSequence = currentLedger + 20;
           const signedIntent = wallet.sign(preparedIntent);
           await submitBlobQueued(signedIntent.tx_blob);
@@ -4397,7 +4397,7 @@ useEffect(() => {
             Amount: { mpt_issuance_id: selectedUpdatePO.issuanceId, value: '1' },
             Holder: selectedUpdatePO.vendorAddress
           };
-          const preparedClaw = await client.autofill(clawbackTx);
+          const preparedClaw = await autofillTagged(client, clawbackTx);
           preparedClaw.LastLedgerSequence = currentLedger + 20;
           const signedClaw = wallet.sign(preparedClaw);
           await submitBlobQueued(signedClaw.tx_blob);
@@ -4413,7 +4413,7 @@ useEffect(() => {
             Amount: '1',
             Memos: [buildMemo(SCPO_ACTIONS.RECALL_PO, selectedUpdatePO.issuanceId, {})]
           };
-          const preparedRecall = await client.autofill(recallReceipt);
+          const preparedRecall = await autofillTagged(client, recallReceipt);
           preparedRecall.LastLedgerSequence = currentLedger + 20;
           const signedRecall = wallet.sign(preparedRecall);
           await submitBlobQueued(signedRecall.tx_blob);
@@ -4431,7 +4431,7 @@ useEffect(() => {
         TransferFee: 0,
         Flags: xrpl.MPTokenIssuanceCreateFlags.tfMPTCanClawback | xrpl.MPTokenIssuanceCreateFlags.tfMPTCanEscrow
       };
-      const preparedCreate = await client.autofill(mptCreate); preparedCreate.LastLedgerSequence = currentLedger + 20;
+      const preparedCreate = await autofillTagged(client, mptCreate); preparedCreate.LastLedgerSequence = currentLedger + 20;
       const signedCreate = wallet.sign(preparedCreate);
       const createResult = await submitBlobQueued(signedCreate.tx_blob);
       if (typeof createResult.result.meta === 'object' && createResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('IssuanceCreate failed');
@@ -4457,7 +4457,7 @@ useEffect(() => {
       const newPO: SavedPO = { id: Date.now().toString(), poName, dateIssued: new Date().toLocaleDateString(), total: totalEscrowAmount, ipfsUri, status: 'open', issuanceId, txHash, buyerAddress: wallet.classicAddress, vendorAddress: selectedUpdatePO.vendorAddress, paymentTerms, escrowCurrency, vendorUUID: selectedUpdatePO.vendorUUID, clawbackEnabled: true, parentIssuanceId: selectedUpdatePO.issuanceId, metadata: fullMetadata };
       saveNewPO(newPO);
       const memoPayment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: selectedUpdatePO.vendorAddress, Amount: '1', Memos: [buildMemo(SCPO_ACTIONS.UPDATE_PO, issuanceId, { oldRef: selectedUpdatePO.issuanceId, poName })] };
-      const preparedMemo = await client.autofill(memoPayment); preparedMemo.LastLedgerSequence = currentLedger + 20;
+      const preparedMemo = await autofillTagged(client, memoPayment); preparedMemo.LastLedgerSequence = currentLedger + 20;
       const signedMemo = wallet.sign(preparedMemo);
       await submitBlobQueued(signedMemo.tx_blob);
       setUpdateResult(`PO Updated and Sent Successfully! New Issuance: ${issuanceId}\nTx Hash: ${txHash}\n\nVendor notified to re-accept. Old version hidden.`);
@@ -4491,7 +4491,7 @@ useEffect(() => {
         Memos: [buildMemo(SCPO_ACTIONS.ACCEPT_PO, po.issuanceId, { poName: po.poName, buyerAddress: po.buyerAddress })]
       };
       console.log('Vendor Authorize Tx payload:', JSON.stringify(authorizeTx, null, 2));
-      const prepared = await client.autofill(authorizeTx);
+      const prepared = await autofillTagged(client, authorizeTx);
       prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
       const acceptResultTx = await submitBlobQueued(signed.tx_blob);
@@ -4655,7 +4655,7 @@ useEffect(() => {
             v: po.vendorAddress,
           } as any)],
         };
-        const preparedLockFee = await client.autofill(lockFeeTx);
+        const preparedLockFee = await autofillTagged(client, lockFeeTx);
         preparedLockFee.LastLedgerSequence = currentLedger + 20;
         const signedLockFee = wallet.sign(preparedLockFee);
         await submitBlobQueued(signedLockFee.tx_blob);
@@ -4663,7 +4663,7 @@ useEffect(() => {
       }
 
       const escrow: any = { TransactionType: 'EscrowCreate', Account: wallet.classicAddress, Destination: po.vendorAddress, Amount: escrowAmount, FinishAfter: finishRipple, CancelAfter: cancelRipple, Condition: condition, Memos: [buildMemo(SCPO_ACTIONS.FUND_ESCROW, po.issuanceId, { poName: po.poName, amount: po.total, currency, terms: po.paymentTerms, ipfs: po.ipfsUri, itemCount: po.metadata?.items?.length || 0 })] };
-      const preparedEscrow = await client.autofill(escrow); preparedEscrow.LastLedgerSequence = currentLedger + 20;
+      const preparedEscrow = await autofillTagged(client, escrow); preparedEscrow.LastLedgerSequence = currentLedger + 20;
       const signedEscrow = wallet.sign(preparedEscrow);
       const escrowResult = await submitBlobQueued(signedEscrow.tx_blob);
       if (typeof escrowResult.result.meta === 'object' && escrowResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Escrow creation failed: ' + (escrowResult.result.meta as any).TransactionResult);
@@ -4678,7 +4678,7 @@ useEffect(() => {
           value: '1'
         }
       };
-      const preparedPayment = await client.autofill(paymentTx); preparedPayment.LastLedgerSequence = currentLedger + 20;
+      const preparedPayment = await autofillTagged(client, paymentTx); preparedPayment.LastLedgerSequence = currentLedger + 20;
       const signedPayment = wallet.sign(preparedPayment);
       const paymentResult = await submitBlobQueued(signedPayment.tx_blob);
       if (typeof paymentResult.result.meta === 'object' && paymentResult.result.meta.TransactionResult !== 'tesSUCCESS') {
@@ -4810,7 +4810,7 @@ useEffect(() => {
         Destination: po.vendorAddress,
         Amount: { mpt_issuance_id: po.issuanceId, value: '1' }
       };
-      const preparedPayment = await client.autofill(paymentTx);
+      const preparedPayment = await autofillTagged(client, paymentTx);
       preparedPayment.LastLedgerSequence = currentLedger + 20;
       const signedPayment = wallet.sign(preparedPayment);
       const paymentResult = await submitBlobQueued(signedPayment.tx_blob);
@@ -4887,7 +4887,7 @@ useEffect(() => {
                   net:       netToBuyer,
                 } as any)]
               };
-              const preparedReturn = await yieldReturnClient.autofill(yieldReturnPayment);
+              const preparedReturn = await autofillTagged(yieldReturnClient, yieldReturnPayment);
               preparedReturn.LastLedgerSequence = (await yieldReturnClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
               const signedReturn = yieldReturnWallet.sign(preparedReturn);
               const returnResult = await submitBlobQueued(signedReturn.tx_blob);
@@ -4978,7 +4978,7 @@ useEffect(() => {
       } catch (e) { console.log('Debug lookup failed:', e); }
       // Use 'any' type because EscrowFinish type doesn't include token escrow fields yet
       const escrowFinish: any = { TransactionType: 'EscrowFinish', Account: wallet.classicAddress, Owner: po.buyerAddress, OfferSequence: po.escrowSequence, Condition: condition, Fulfillment: fulfillment };      
-      const prepared = await client.autofill(escrowFinish);
+      const prepared = await autofillTagged(client, escrowFinish);
       prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
       const signed = wallet.sign(prepared);
       const result = await client.submitAndWait(signed.tx_blob);
@@ -4991,7 +4991,7 @@ useEffect(() => {
           Amount: '1',
           Memos: [buildMemo(SCPO_ACTIONS.CLAIM_PO, po.issuanceId, { escrowTx: result.result.hash })]
         };
-        const preparedReceipt = await client.autofill(claimReceipt);
+        const preparedReceipt = await autofillTagged(client, claimReceipt);
         preparedReceipt.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
         const signedReceipt = wallet.sign(preparedReceipt);
         await client.submitAndWait(signedReceipt.tx_blob);
@@ -5030,7 +5030,7 @@ useEffect(() => {
               reqId: activeFinancing.requestId, lenderTx: '', scTx: '', netTx: '',
             } as any)]
           };
-          const preparedLender = await repayClient.autofill(lenderRepayTx);
+          const preparedLender = await autofillTagged(repayClient, lenderRepayTx);
           preparedLender.LastLedgerSequence = (await repayClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
           const lenderRepayResult = await submitBlobQueued(vendorWallet.sign(preparedLender).tx_blob);
           const lenderTxHash = lenderRepayResult.result.hash;
@@ -5048,7 +5048,7 @@ useEffect(() => {
               amount: `$${split.scpoFee} RLUSD (PO financing platform fee)`,
             } as any)]
           };
-          const preparedSCPO = await repayClient.autofill(scpoFeeTx);
+          const preparedSCPO = await autofillTagged(repayClient, scpoFeeTx);
           preparedSCPO.LastLedgerSequence = (await repayClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
           const scpoFeeResult = await submitBlobQueued(vendorWallet.sign(preparedSCPO).tx_blob);
           const scpoTxHash = scpoFeeResult.result.hash;
@@ -5064,7 +5064,7 @@ useEffect(() => {
               reqId: activeFinancing.requestId, lenderTx: lenderTxHash, scTx: scpoTxHash, netTx: result.result.hash,
             } as any)]
           };
-          const preparedMemo = await repayClient.autofill(repaidMemoTx);
+          const preparedMemo = await autofillTagged(repayClient, repaidMemoTx);
           preparedMemo.LastLedgerSequence = (await repayClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
           await submitBlobQueued(vendorWallet.sign(preparedMemo).tx_blob);
 
@@ -5129,7 +5129,7 @@ useEffect(() => {
                         mptId: invItem.mptIssuanceId,
                       })]
                     };
-                    const preparedBurn = await burnClient.autofill(burnTx);
+                    const preparedBurn = await autofillTagged(burnClient, burnTx);
                     preparedBurn.LastLedgerSequence = (await burnClient.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
                     const signedBurn = warehouseWallet.sign(preparedBurn);
                     const burnResult = await submitBlobQueued(signedBurn.tx_blob);
@@ -5666,7 +5666,7 @@ const getUpdatablePOs = () => {
         MemoData: xrpl.convertStringToHex(JSON.stringify(nftMeta)),
       }}],
     };
-    const preparedNFT = await client.autofill(nftTx);
+    const preparedNFT = await autofillTagged(client, nftTx);
     const signedNFT = wallet.sign(preparedNFT);
     const nftResult = await submitBlobQueued(signedNFT.tx_blob);
     if (typeof nftResult.result.meta === 'object' &&
@@ -5691,7 +5691,7 @@ const getUpdatablePOs = () => {
             amount: '$1.00 RLUSD',
           } as any)],
         };
-        const preparedNftFee = await client.autofill(nftFeeTx);
+        const preparedNftFee = await autofillTagged(client, nftFeeTx);
         preparedNftFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
         const signedNftFee = wallet.sign(preparedNftFee);
         await submitBlobQueued(signedNftFee.tx_blob);
@@ -5715,7 +5715,7 @@ const getUpdatablePOs = () => {
       MPTokenMetadata: xrpl.convertStringToHex(JSON.stringify(mptLedgerMeta)),
       Flags: 104, // 96 (clawback+transfer) + 8 (tfMPTCanEscrow)
     };
-    const preparedMPT = await client.autofill(mptCreateTx);
+    const preparedMPT = await autofillTagged(client, mptCreateTx);
     const signedMPT = wallet.sign(preparedMPT);
     const mptResult = await submitBlobQueued(signedMPT.tx_blob);
     if (typeof mptResult.result.meta === 'object' &&
@@ -5763,7 +5763,7 @@ const getUpdatablePOs = () => {
             }))
           }}]
         };
-        const preparedInit = await client.autofill(initPayTx);
+        const preparedInit = await autofillTagged(client, initPayTx);
         if (!preparedInit.Fee || parseInt(preparedInit.Fee) < 12) preparedInit.Fee = '12';
         const signedInit = wallet.sign(preparedInit);
         await submitBlobQueued(signedInit.tx_blob);
@@ -6626,7 +6626,7 @@ const getUpdatablePOs = () => {
           }
         }],
       };
-      const preparedNFT = await client.autofill(nftTx);
+      const preparedNFT = await autofillTagged(client, nftTx);
       const signedNFT = wallet.sign(preparedNFT);
       const nftResult = await submitBlobQueued(signedNFT.tx_blob);
 
@@ -6654,7 +6654,7 @@ const getUpdatablePOs = () => {
               amount: '$1.00 RLUSD',
             } as any)],
           };
-          const preparedNftFee = await client.autofill(nftFeeTx);
+          const preparedNftFee = await autofillTagged(client, nftFeeTx);
           preparedNftFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
           const signedNftFee = wallet.sign(preparedNftFee);
           await submitBlobQueued(signedNftFee.tx_blob);
@@ -6692,7 +6692,7 @@ const getUpdatablePOs = () => {
          MPTokenMetadata: xrpl.convertStringToHex(JSON.stringify(mptLedgerMeta)),
          Flags: 104, // 96 (clawback+transfer) + 8 (tfMPTCanEscrow)
       };
-      const preparedMPT = await client.autofill(mptCreateTx);
+      const preparedMPT = await autofillTagged(client, mptCreateTx);
       const signedMPT = wallet.sign(preparedMPT);
       const mptResult = await submitBlobQueued(signedMPT.tx_blob);
 
@@ -6750,7 +6750,7 @@ const getUpdatablePOs = () => {
               }))
             }}]
           };
-          const preparedInit = await client.autofill(initPayTx);
+          const preparedInit = await autofillTagged(client, initPayTx);
           if (!preparedInit.Fee || parseInt(preparedInit.Fee) < 12) preparedInit.Fee = '12';
           const signedInit = wallet.sign(preparedInit);
           await submitBlobQueued(signedInit.tx_blob);
@@ -6773,7 +6773,7 @@ const getUpdatablePOs = () => {
                   amount: `$${unitFeeTotal} RLUSD (${initialQty} units @ $0.01)`,
                 } as any)],
               };
-              const preparedUnitFee = await client.autofill(unitFeeTx);
+              const preparedUnitFee = await autofillTagged(client, unitFeeTx);
               preparedUnitFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
               const signedUnitFee = wallet.sign(preparedUnitFee);
               await submitBlobQueued(signedUnitFee.tx_blob);
@@ -6938,7 +6938,7 @@ const getUpdatablePOs = () => {
         Account: wallet.classicAddress,
         NFTokenID: item.nftId,
       };
-      const preparedBurn = await client.autofill(burnTx);
+      const preparedBurn = await autofillTagged(client, burnTx);
       const signedBurn = wallet.sign(preparedBurn);
       const burnResult = await submitBlobQueued(signedBurn.tx_blob);
 
@@ -6957,7 +6957,7 @@ const getUpdatablePOs = () => {
             Account: wallet.classicAddress,
             MPTokenIssuanceID: item.mptIssuanceId,
           };
-          const preparedDestroy = await client.autofill(mptDestroyTx);
+          const preparedDestroy = await autofillTagged(client, mptDestroyTx);
           const signedDestroy = wallet.sign(preparedDestroy);
           const destroyResult = await submitBlobQueued(signedDestroy.tx_blob);
           if (typeof destroyResult.result.meta === 'object' &&
@@ -7033,7 +7033,7 @@ const getUpdatablePOs = () => {
         Account: warehouseWallet.classicAddress,
         MPTokenIssuanceID: issuanceId,
       };
-      const prepared = await client.autofill(authTx);
+      const prepared = await autofillTagged(client, authTx);
       if (!prepared.Fee || parseInt(prepared.Fee) < 12) prepared.Fee = '12';
       const signed = warehouseWallet.sign(prepared);
       const result = await submitBlobQueued(signed.tx_blob);
@@ -7110,7 +7110,7 @@ const getUpdatablePOs = () => {
           lot:   receiveLotRef || '',
         })]
       };
-      const prepared = await client.autofill(mintPayment);
+      const prepared = await autofillTagged(client, mintPayment);
       if (!prepared.Fee || parseInt(prepared.Fee) < 12) prepared.Fee = '12';
       const signed = wallet.sign(prepared);
       const result = await submitBlobQueued(signed.tx_blob);
@@ -7140,7 +7140,7 @@ const getUpdatablePOs = () => {
               amount: `$${unitFeeTotal} RLUSD (${qty} units @ $0.01)`,
             } as any)],
           };
-          const preparedUnitFee = await client.autofill(unitFeeTx);
+          const preparedUnitFee = await autofillTagged(client, unitFeeTx);
           preparedUnitFee.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
           const signedUnitFee = wallet.sign(preparedUnitFee);
           await submitBlobQueued(signedUnitFee.tx_blob);
@@ -7283,7 +7283,7 @@ const getUpdatablePOs = () => {
         NFTokenTaxon: INV_NFT_TAXON,
         Memos: [{ Memo: { MemoType: xrpl.convertStringToHex(INV_MEMO_TYPE), MemoData: xrpl.convertStringToHex(JSON.stringify(newNFTMeta)) } }],
       };
-      const prepared = await client.autofill(mintTx);
+      const prepared = await autofillTagged(client, mintTx);
       const signed = wallet.sign(prepared);
       const mintResult = await submitBlobQueued(signed.tx_blob);
       if (typeof mintResult.result.meta === 'object' && mintResult.result.meta.TransactionResult !== 'tesSUCCESS') {
@@ -7432,7 +7432,7 @@ const getUpdatablePOs = () => {
         ...(currentDataStr ? { Data: xrpl.convertStringToHex(currentDataStr) } : {})
       };
       console.log('[DID 3.5] didSet before autofill:', JSON.stringify(didSet, null, 2));
-      const prepared = await client.autofill(didSet);
+      const prepared = await autofillTagged(client, didSet);
       // Ensure fee is at least 12 drops — autofill sometimes returns "1" on devnet
       if (!prepared.Fee || parseInt(prepared.Fee) < 12) {
         prepared.Fee = '12';
@@ -8048,14 +8048,14 @@ const fetchSharedInventoryDoc = async (
           DIDDocument: xrpl.convertStringToHex(didDocStr),
           Data: xrpl.convertStringToHex(didDataStr)
         };
-        const preparedSet = await client.autofill(didSet);
+        const preparedSet = await autofillTagged(client, didSet);
         const signedSet = wallet.sign(preparedSet);
         await submitBlobQueued(signedSet.tx_blob);
         
         // Also set Domain for backward compatibility during transition
         try {
           const accountSet: AccountSet = { TransactionType: 'AccountSet', Account: wallet.classicAddress, Domain: xrpl.convertStringToHex(newIpfsUri) };
-          const preparedAccSet = await client.autofill(accountSet);
+          const preparedAccSet = await autofillTagged(client, accountSet);
           const signedAccSet = wallet.sign(preparedAccSet);
           await submitBlobQueued(signedAccSet.tx_blob);
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
@@ -8112,14 +8112,14 @@ const fetchSharedInventoryDoc = async (
           Data: xrpl.convertStringToHex(didDataStr)
         };
         const client = await getXRPLClient();
-        const preparedSet = await client.autofill(didSet);
+        const preparedSet = await autofillTagged(client, didSet);
         const signedSet = wallet.sign(preparedSet);
         await submitBlobQueued(signedSet.tx_blob);
         
         // Also set Domain for backward compatibility during transition
         try {
           const accountSet: AccountSet = { TransactionType: 'AccountSet', Account: wallet.classicAddress, Domain: xrpl.convertStringToHex(newIpfsUri) };
-          const preparedAccSet = await client.autofill(accountSet);
+          const preparedAccSet = await autofillTagged(client, accountSet);
           const signedAccSet = wallet.sign(preparedAccSet);
           await submitBlobQueued(signedAccSet.tx_blob);
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
@@ -8264,7 +8264,7 @@ const addLinkedVendorByDID = async () => {
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(linker.seed);
       const payment: Payment = { TransactionType: 'Payment', Account: wallet.classicAddress, Destination: linkee.classicAddress, Amount: '1', Memos: [buildMemo(SCPO_ACTIONS.LINK_PROFILE, linkee.classicAddress, { linkedAddr: linkee.classicAddress, role: linker.classicAddress === customerProfile.classicAddress ? 'customer' : 'vendor', profileUUID: linkee.profileUUID, ipfsUri: linkee.ipfsUri || '' })] };
-      const prepared = await client.autofill(payment);
+      const prepared = await autofillTagged(client, payment);
       const signed = wallet.sign(prepared);
       const result = await submitBlobQueued(signed.tx_blob);
       if (typeof result.result.meta === 'object' && result.result.meta.TransactionResult === 'tesSUCCESS') {
@@ -20131,7 +20131,7 @@ const addLinkedVendorByDID = async () => {
                                       repayBy: repayBy,
                                     } as any)],
                                   };
-                                  const prepared = await client.autofill(approveTx);
+                                  const prepared = await autofillTagged(client, approveTx);
                                   prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
                                   const signed = lenderWallet.sign(prepared);
                                   const result = await submitBlobQueued(signed.tx_blob);
@@ -20157,7 +20157,7 @@ const addLinkedVendorByDID = async () => {
                                       amt:    simAdvanceAmount,
                                     } as any)],
                                   };
-                                  const preparedFund = await client.autofill(fundTx);
+                                  const preparedFund = await autofillTagged(client, fundTx);
                                   preparedFund.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
                                   const signedFund = lenderWallet.sign(preparedFund);
                                   const fundResult = await submitBlobQueued(signedFund.tx_blob);
@@ -20193,7 +20193,7 @@ const addLinkedVendorByDID = async () => {
                                       reason: simDenyReason,
                                     } as any)],
                                   };
-                                  const prepared = await client.autofill(denyTx);
+                                  const prepared = await autofillTagged(client, denyTx);
                                   prepared.LastLedgerSequence = (await client.request({ command: 'ledger_current' })).result.ledger_current_index + 20;
                                   const lenderWallet2 = xrpl.Wallet.fromSeed(simLenderSeed);
                                   const signed = lenderWallet2.sign(prepared);
@@ -20901,7 +20901,7 @@ const addLinkedVendorByDID = async () => {
                           NFTokenTaxon: INV_NFT_TAXON,
                           Memos: [{ Memo: { MemoType: xrpl.convertStringToHex(INV_MEMO_TYPE), MemoData: xrpl.convertStringToHex(JSON.stringify(newNFTMeta)) } }],
                         };
-                        const prepared = await client.autofill(mintTx);
+                        const prepared = await autofillTagged(client, mintTx);
                         const signed = wallet.sign(prepared);
                         const mintResult = await submitBlobQueued(signed.tx_blob);
                         if (typeof mintResult.result.meta === 'object' && mintResult.result.meta.TransactionResult !== 'tesSUCCESS') {
