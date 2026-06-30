@@ -9,6 +9,7 @@ import { edwardsToMontgomeryPub, edwardsToMontgomeryPriv } from '@noble/curves/e
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/curves/abstract/utils';
 import { v4 as uuidv4 } from 'uuid';
+import * as cc from 'five-bells-condition';
 import { 
   getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO,
   deployPermissionedDomain, issueCredential, acceptCredential,
@@ -617,36 +618,16 @@ const getRecalledPOIds = async (address: string): Promise<Set<string>> => {
   return recalledIds;
 };
 
-// PREIMAGE-SHA-256 crypto-condition using MPTokenIssuanceID as preimage  
+// PREIMAGE-SHA-256 crypto-condition using MPTokenIssuanceID as preimage.
+// Uses five-bells-condition for spec-compliant encoding (rippled validates strictly).
+// Preimage = the issuance ID's raw bytes (hex-decoded), NOT its ASCII characters.
 const generateEscrowCondition = async (issuanceId: string): Promise<{ condition: string; fulfillment: string }> => {
-  const preimage = new Uint8Array(issuanceId.length);
-  for (let i = 0; i < issuanceId.length; i++) {
-    preimage[i] = issuanceId.charCodeAt(i);
-  }
-  // Build fulfillment: type prefix (A0) + length + preimage
-  const fulfillmentBytes = new Uint8Array(preimage.length + 2);
-  fulfillmentBytes[0] = 0xA0;
-  fulfillmentBytes[1] = preimage.length;
-  fulfillmentBytes.set(preimage, 2);
-  
-  // Condition = type prefix + compound length + fingerprint tag + hash length + SHA256(fulfillment) + cost tag + cost length + preimage length
-  const hash = await crypto.subtle.digest('SHA-256', fulfillmentBytes);
-  const hashArray = new Uint8Array(hash);
-  
-  // Build condition per PREIMAGE-SHA-256 spec
-  // A0 25 80 20 [32-byte-hash] 81 01 [preimage-length]
-  const conditionBytes = new Uint8Array(39);
-  conditionBytes[0] = 0xA0;  // type: PREIMAGE-SHA-256
-  conditionBytes[1] = 0x25;  // total inner length: 32 + 2 + 1 + 2 = 37
-  conditionBytes[2] = 0x80;  // fingerprint tag
-  conditionBytes[3] = 0x20;  // fingerprint length (32)
-  conditionBytes.set(hashArray, 4);  // 32-byte SHA-256 hash
-  conditionBytes[36] = 0x81; // cost tag
-  conditionBytes[37] = 0x01; // cost length
-  conditionBytes[38] = preimage.length; // max fulfillment length
-  
-  const toHex = (bytes: Uint8Array) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-  return { condition: toHex(conditionBytes).toUpperCase(), fulfillment: toHex(fulfillmentBytes).toUpperCase() };
+  const preimage = Buffer.from(issuanceId, 'hex');
+  const f = new (cc as any).PreimageSha256();
+  f.setPreimage(preimage);
+  const condition = f.getConditionBinary().toString('hex').toUpperCase();
+  const fulfillment = f.serializeBinary().toString('hex').toUpperCase();
+  return { condition, fulfillment };
 };
 
 // ── Task 5.10 — XRP Gain/Loss Component ──
@@ -5116,13 +5097,18 @@ useEffect(() => {
                 const warehouseWallet = xrpl.Wallet.fromSeed(warehouseWalletSeed);
                 const burnClient = await getXRPLClient();
 
+                // Resolve issuance IDs FRESH using the same ancestor-aware resolver as FetchV2,
+                // rather than trusting vendorInventoryV2 state (may be stale/empty at claim time).
+                const freshVendorWallet = xrpl.Wallet.fromSeed(vendorProfile.seed);
+                const burnInventory = await fetchVendorInventoryV2(vendorProfile.classicAddress, freshVendorWallet);
+
                 for (const item of poData.items) {
                   if (!item.invNFTId) continue;
                   const qty = parseInt(item.qty, 10);
                   if (!qty || qty <= 0) continue;
 
-                  // Look up mptIssuanceId from vendorInventoryV2
-                  const invItem = vendorInventoryV2.find(i => i.nftId === item.invNFTId);
+                  // Look up mptIssuanceId from freshly-resolved inventory (ancestor-matched in FetchV2)
+                  const invItem = burnInventory.find(i => i.nftId === item.invNFTId);
                   if (!invItem?.mptIssuanceId) {
                     console.warn(`[AutoBurn] No mptIssuanceId found for NFT ${item.invNFTId} — skipping`);
                     continue;
