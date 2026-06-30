@@ -823,6 +823,8 @@ export default function App() {
   const [customerPersonEditing, setCustomerPersonEditing] = useState(false);
   const [customerSeedVisible, setCustomerSeedVisible] = useState(false);
   const [customerSaving, setCustomerSaving] = useState(false);
+  const [linkingVendor, setLinkingVendor] = useState(false);
+  const [linkingCustomer, setLinkingCustomer] = useState(false);
   const [vendorPersonEditing, setVendorPersonEditing] = useState(false);
   const [vendorSeedVisible, setVendorSeedVisible] = useState(false);
   const [vendorSaving, setVendorSaving] = useState(false);
@@ -7701,6 +7703,11 @@ const getUpdatablePOs = () => {
       .finally(() => setAuditLogLoading(false));
   }, [activeTab, savedPOs, customerProfile?.classicAddress, vendorProfile?.classicAddress]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('createItems', JSON.stringify(items)); }, [items, hydrated]);
+  // Persist publicProfiles on every change so resolved counterparty data (Company, Unique ID,
+  // DID-resolved fields) survives reload. Previously only the manual-link path persisted this map;
+  // the on-chain LinkScanner (7566+) updated state only, so scanner-resolved profiles were lost on
+  // reload -> linked counterparties showed a half-state until unlink/relink. (Bug #4)
+  useEffect(() => { if (!hydrated) return; localStorage.setItem('publicProfiles', JSON.stringify(publicProfiles)); }, [publicProfiles, hydrated]);
 
   // ===== ECDH KEY EXCHANGE (Task 1.5) =====
   // Derives a shared secret between two XRPL Ed25519 wallets using X25519 ECDH.
@@ -14991,7 +14998,12 @@ const addLinkedVendorByDID = async () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input value={inputVendorWalletAddress} onChange={(e) => setInputVendorWalletAddress(e.target.value)} placeholder="Seller wallet address (r…)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
-                    <Btn variant="primary" icon={IconPlus} onClick={addLinkedVendorByDID}>Link Seller</Btn>
+                    <Btn variant="primary" icon={linkingVendor ? IconRefresh : IconPlus} onClick={async () => {
+                      if (linkingVendor) return;
+                      setLinkingVendor(true);
+                      try { await addLinkedVendorByDID(); }
+                      finally { setLinkingVendor(false); }
+                    }}>{linkingVendor ? 'Linking…' : 'Link Seller'}</Btn>
                   </div>
                   {linkedVendors.length === 0 ? (
                     <div style={{ padding: '20px', textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>No linked Sellers yet.</div>
@@ -15276,7 +15288,12 @@ const addLinkedVendorByDID = async () => {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input value={inputCustomerWalletAddress} onChange={(e) => setInputCustomerWalletAddress(e.target.value)} placeholder="Buyer wallet address (r…)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
-                    <Btn variant="primary" icon={IconPlus} onClick={addLinkedCustomerByDID}>Link Buyer</Btn>
+                    <Btn variant="primary" icon={linkingCustomer ? IconRefresh : IconPlus} onClick={async () => {
+                      if (linkingCustomer) return;
+                      setLinkingCustomer(true);
+                      try { await addLinkedCustomerByDID(); }
+                      finally { setLinkingCustomer(false); }
+                    }}>{linkingCustomer ? 'Linking…' : 'Link Buyer'}</Btn>
                   </div>
                   {linkedCustomers.length === 0 ? (
                     <div style={{ padding: '20px', textAlign: 'center', color: 'var(--ink-3)', fontSize: 13 }}>No linked Buyers yet.</div>
