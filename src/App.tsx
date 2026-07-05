@@ -42,6 +42,7 @@ import {
   daysElapsed as yieldDaysElapsed,
 } from './utils/yieldHelpers';
 import { issueInstitutionalCredential, autofillTagged, SOURCE_TAG } from './utils/xrplHelpers';
+import { computeCompetitionMetrics } from './utils/competitionMetrics'; // COMPETITION_METRICS (Task 5.1)
 import {
   FinancingRequest,
   FinancingPackage,
@@ -944,7 +945,12 @@ export default function App() {
   const [revokeAddress, setRevokeAddress] = useState('');
   const [revoking, setRevoking] = useState(false);
   const [adminSection, setAdminSection] = useState<'corporate' | 'lenderSim'>('corporate');
-  const [adminSubTab, setAdminSubTab] = useState<'fees' | 'auditLog' | 'credentials'>('fees');
+  const [adminSubTab, setAdminSubTab] = useState<'fees' | 'auditLog' | 'credentials' | 'competitionMetrics'>('fees'); // COMPETITION_METRICS: added tab value
+  // ▼▼▼ COMPETITION_METRICS (Task 5.1) — remove this block to uninstall ▼▼▼
+  const [metricsData, setMetricsData] = useState<any>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsError, setMetricsError] = useState('');
+  // ▲▲▲ COMPETITION_METRICS ▲▲▲
   const [simLenderSeed, setSimLenderSeed] = useState('');
   const [simVendorAddress, setSimVendorAddress] = useState('');
   const [simRequestId, setSimRequestId] = useState('');
@@ -1172,6 +1178,20 @@ export default function App() {
       .then(fees => { setFeeEntries(fees); setFeeEntriesLoading(false); })
       .catch(() => setFeeEntriesLoading(false));
   }, [adminLoggedIn, adminSection, adminSubTab]);
+
+  // ▼▼▼ COMPETITION_METRICS (Task 5.1) — auto-fetch on entering the tab ▼▼▼
+  useEffect(() => {
+    if (!adminLoggedIn) return;
+    if (adminSection !== 'corporate' || adminSubTab !== 'competitionMetrics') return;
+    if (metricsData || metricsLoading) return;
+    const companyWallet = process.env.REACT_APP_COMPANY_WALLET;
+    if (!companyWallet) { setMetricsError('Company wallet not configured'); return; }
+    setMetricsLoading(true); setMetricsError('');
+    computeCompetitionMetrics(companyWallet)
+      .then(m => { setMetricsData(m); setMetricsLoading(false); })
+      .catch(err => { setMetricsError(err && err.message ? err.message : 'Failed to compute metrics'); setMetricsLoading(false); });
+  }, [adminLoggedIn, adminSection, adminSubTab]);
+  // ▲▲▲ COMPETITION_METRICS ▲▲▲
   const [customerDidStatus, setCustomerDidStatus] = useState<'checking' | 'active' | 'none'>('checking');
   useEffect(() => {
     if (!customerProfile.classicAddress) { setCustomerDidStatus('checking'); return; }
@@ -19598,6 +19618,7 @@ const addLinkedVendorByDID = async () => {
                       { k: 'fees',        label: 'Fee Dashboard' },
                       { k: 'auditLog',    label: 'Audit Log' },
                       { k: 'credentials', label: 'Domain & Credentials' },
+                      { k: 'competitionMetrics', label: 'Competition Metrics' }, // COMPETITION_METRICS (Task 5.1)
                     ] as const).map(({ k, label }) => {
                       const active = adminSubTab === k;
                       return (
@@ -20233,6 +20254,80 @@ const addLinkedVendorByDID = async () => {
                   );
                 })()}
 
+                {/* ▼▼▼ COMPETITION_METRICS (Task 5.1) — remove this whole block to uninstall ▼▼▼ */}
+                {adminSection === 'corporate' && adminSubTab === 'competitionMetrics' && (
+                  <Card
+                    label="Competition Metrics — Source Tag 2606160012"
+                    actions={
+                      <button
+                        onClick={() => {
+                          const cw = process.env.REACT_APP_COMPANY_WALLET;
+                          if (!cw) { setMetricsError('Company wallet not configured'); return; }
+                          setMetricsData(null); setMetricsError(''); setMetricsLoading(true);
+                          computeCompetitionMetrics(cw)
+                            .then(mm => { setMetricsData(mm); setMetricsLoading(false); })
+                            .catch(err => { setMetricsError(err && err.message ? err.message : 'Failed'); setMetricsLoading(false); });
+                        }}
+                        disabled={metricsLoading}
+                        style={{ padding: '7px 14px', borderRadius: 999, background: 'rgba(240,200,100,0.28)', color: '#6a4a10', border: '1px solid rgba(180,140,60,0.4)', fontSize: 13, fontWeight: 600, cursor: metricsLoading ? 'default' : 'pointer' }}
+                      >
+                        {metricsLoading ? 'Computing…' : 'Refresh'}
+                      </button>
+                    }
+                  >
+                    {metricsLoading && <p style={{ color: 'var(--ink-2)', fontSize: 14 }}>Scanning the ledger for Source-Tag-attributed activity… this can take a moment.</p>}
+                    {metricsError && <p style={{ color: '#b0402f', fontSize: 14 }}>Error: {metricsError}</p>}
+                    {!metricsLoading && !metricsError && metricsData && (() => {
+                      const m = metricsData;
+                      const usd = (n: number) => '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                      const cardStyle = { background: 'rgba(255,248,222,0.5)', border: '1px solid rgba(180,140,60,0.18)', borderRadius: 12, padding: '14px 16px', minWidth: 150 };
+                      const bigNum = { fontSize: 26, fontWeight: 700, color: 'var(--ink)', margin: 0 };
+                      const capLbl = { fontSize: 12, color: 'var(--ink-2)', margin: '2px 0 0', textTransform: 'uppercase', letterSpacing: 0.4 };
+                      return (
+                        <div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+                            <div style={cardStyle}><p style={bigNum}>{m.totalTransactions}</p><p style={capLbl}>Total Transactions</p></div>
+                            <div style={cardStyle}><p style={bigNum}>{m.uniqueAccounts}</p><p style={capLbl}>Unique Accounts</p></div>
+                            <div style={cardStyle}><p style={bigNum}>{usd(m.totalVolumeUSD)}</p><p style={capLbl}>Volume (USD)</p></div>
+                            {m.totalVolumeXRP > 0 && <div style={cardStyle}><p style={bigNum}>{m.totalVolumeXRP} XRP</p><p style={capLbl}>Volume (XRP)</p></div>}
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 18 }}>
+                            <div style={cardStyle}><p style={bigNum}>{m.totalPOs}</p><p style={capLbl}>Purchase Orders</p></div>
+                            <div style={cardStyle}><p style={bigNum}>{m.settledPOs}</p><p style={capLbl}>Settled</p></div>
+                            <div style={cardStyle}><p style={bigNum}>{m.inFlightPOs}</p><p style={capLbl}>In-Flight</p></div>
+                            <div style={cardStyle}><p style={bigNum}>{m.inventoryItems}</p><p style={capLbl}>Inventory Items</p></div>
+                            <div style={cardStyle}><p style={bigNum}>{m.profileLinks}</p><p style={capLbl}>Profile Links</p></div>
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, marginBottom: 18 }}>
+                            <div>
+                              <p style={{ fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>By Transaction Type</p>
+                              {Object.entries(m.txByType || {}).map(([k, v]) => (
+                                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 13, color: 'var(--ink-2)', padding: '2px 0' }}><span>{k}</span><span style={{ fontWeight: 600 }}>{String(v)}</span></div>
+                              ))}
+                            </div>
+                            <div>
+                              <p style={{ fontWeight: 600, color: 'var(--ink)', marginBottom: 6 }}>By Action</p>
+                              {Object.entries(m.actionByType || {}).map(([k, v]) => (
+                                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 13, color: 'var(--ink-2)', padding: '2px 0' }}><span>{k}</span><span style={{ fontWeight: 600 }}>{String(v)}</span></div>
+                              ))}
+                            </div>
+                          </div>
+                          <div style={{ background: 'rgba(200,200,200,0.12)', border: '1px dashed rgba(150,150,150,0.4)', borderRadius: 10, padding: '10px 14px', marginBottom: 16 }}>
+                            <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-2)', margin: '0 0 4px' }}>Phase 6 (Coming Soon — currently inactive)</p>
+                            <p style={{ fontSize: 12, color: 'var(--ink-2)', margin: 0 }}>Yield / Financing / Collateral actions: {m.phase6ActionCount}. These features are gated off in the current demo; this counter will populate if they are enabled.</p>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--ink-2)', lineHeight: 1.6, borderTop: '1px solid rgba(180,140,60,0.14)', paddingTop: 10 }}>
+                            <p style={{ margin: '0 0 4px' }}>Computed live from public XRPL Mainnet data. Participants are discovered from the company wallet ({m.scannedWallets} wallets scanned; {m.uniqueAccounts} have Source-Tag-attributed activity), then each is scanned for transactions carrying Source Tag {m.sourceTag} with a successful (tesSUCCESS) result. Volume counts escrow funding (lock) only, not release, to avoid double-counting the same funds.</p>
+                            <p style={{ margin: '0 0 4px' }}>Activity before Source Tag integration (early development/testing) is not counted. Off-chain metadata edits are not on-chain events and are not counted.</p>
+                            <p style={{ margin: 0 }}>This is a self-computed summary; official Challenge figures are computed by XRPL Commons from the Source Tag. Generated {m.generatedAt}.</p>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    {!metricsLoading && !metricsError && !metricsData && <p style={{ color: 'var(--ink-2)', fontSize: 14 }}>Click Refresh to compute metrics.</p>}
+                  </Card>
+                )}
+                {/* ▲▲▲ COMPETITION_METRICS ▲▲▲ */}
                 {adminSection === 'corporate' && adminSubTab === 'credentials' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
                     {/* Permissioned Domain — full width */}
