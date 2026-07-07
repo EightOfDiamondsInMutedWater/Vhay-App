@@ -47,6 +47,7 @@ export interface CompetitionMetrics {
   inFlightPOs: number;     // funded/accepted, not yet claimed
   // Inventory
   inventoryItems: number;  // distinct inventory refs
+  totalUnitsTokenized: number; // COMPETITION_METRICS: cumulative units minted/received (tagged)
   inventoryMints: number;  // MINT_INV count
   inventoryReceives: number;
   inventoryBurns: number;
@@ -97,6 +98,8 @@ export const computeCompetitionMetrics = async (companyWallet: string): Promise<
   const accounts = new Set<string>();
   const refActions: Record<string, Set<string>> = {};
   let totalTransactions = 0, totalVolumeUSD = 0, totalVolumeXRP = 0;
+  let inventoryMintCount = 0; // COMPETITION_METRICS: inventory items via SCPO_INV_META memo (MINT_INV action is unused)
+  let totalUnitsTokenized = 0; // COMPETITION_METRICS: sum of qty across initial loads (SCPO_INV_RECV) + restocks (RECEIVE_INV)
 
   for (const addr of Array.from(participants)) {
     let txs: any[] = [];
@@ -118,7 +121,13 @@ export const computeCompetitionMetrics = async (companyWallet: string): Promise<
         const memo = mm.Memo || {};
         if (!memo.MemoType || !memo.MemoData) continue;
         try {
-          if (xrpl.convertHexToString(memo.MemoType) !== 'SCPO') continue;
+          const memoTypeStr = xrpl.convertHexToString(memo.MemoType);
+          if (memoTypeStr === 'SCPO_INV_META') { inventoryMintCount += 1; continue; } // COMPETITION_METRICS: one inventory SKU minted
+          if (memoTypeStr === 'SCPO_INV_RECV') { // COMPETITION_METRICS: initial unit load at mint
+            try { const ie = JSON.parse(xrpl.convertHexToString(memo.MemoData)); const q = parseInt(ie && ie.qty, 10); if (!isNaN(q)) totalUnitsTokenized += q; } catch { /* ignore */ }
+            continue;
+          }
+          if (memoTypeStr !== 'SCPO') continue;
           const e = JSON.parse(xrpl.convertHexToString(memo.MemoData));
           if (!e || !e.a) continue;
           actionByType[e.a] = (actionByType[e.a] || 0) + 1;
@@ -130,13 +139,14 @@ export const computeCompetitionMetrics = async (companyWallet: string): Promise<
               else totalVolumeUSD += amt;
             }
           }
+          if (e.a === 'RECEIVE_INV' && e.p) { const q = parseInt(e.p.qty, 10); if (!isNaN(q)) totalUnitsTokenized += q; } // COMPETITION_METRICS: restock units
         } catch { /* ignore malformed memo */ }
       }
     }
   }
 
   // ── Classify refs into POs vs inventory ──
-  let totalPOs = 0, settledPOs = 0, inFlightPOs = 0, inventoryItems = 0;
+  let totalPOs = 0, settledPOs = 0, inFlightPOs = 0;
   for (const ref in refActions) {
     const acts = refActions[ref];
     const hasPO = Array.from(acts).some(a => PO_ACTIONS.has(a));
@@ -145,9 +155,8 @@ export const computeCompetitionMetrics = async (companyWallet: string): Promise<
       totalPOs += 1;
       if (acts.has('CLAIM_PO')) settledPOs += 1;
       else if (acts.has('FUND_ESCROW') || acts.has('ACCEPT_PO')) inFlightPOs += 1;
-    } else if (hasInv) {
-      inventoryItems += 1;
     }
+    // (inventory items counted separately via SCPO_INV_META memos — see inventoryMintCount)
   }
 
   const phase6ActionCount = Object.entries(actionByType)
@@ -166,7 +175,8 @@ export const computeCompetitionMetrics = async (companyWallet: string): Promise<
     totalPOs,
     settledPOs,
     inFlightPOs,
-    inventoryItems,
+    inventoryItems: inventoryMintCount,
+    totalUnitsTokenized,
     inventoryMints: actionByType['MINT_INV'] || 0,
     inventoryReceives: actionByType['RECEIVE_INV'] || 0,
     inventoryBurns: actionByType['BURN_INV'] || 0,

@@ -20296,6 +20296,7 @@ const addLinkedVendorByDID = async () => {
                             <div style={cardStyle}><p style={bigNum}>{m.settledPOs}</p><p style={capLbl}>Settled</p></div>
                             <div style={cardStyle}><p style={bigNum}>{m.inFlightPOs}</p><p style={capLbl}>In-Flight</p></div>
                             <div style={cardStyle}><p style={bigNum}>{m.inventoryItems}</p><p style={capLbl}>Inventory Items</p></div>
+                            <div style={cardStyle}><p style={bigNum}>{m.totalUnitsTokenized}</p><p style={capLbl}>Units Tokenized</p></div>
                             <div style={cardStyle}><p style={bigNum}>{m.profileLinks}</p><p style={capLbl}>Profile Links</p></div>
                           </div>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, marginBottom: 18 }}>
