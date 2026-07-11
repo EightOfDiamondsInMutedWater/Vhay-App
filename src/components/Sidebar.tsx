@@ -127,21 +127,7 @@ export const Sidebar: React.FC<Props> = ({ mode, activeTab, setActiveTab }) => {
       })}
 
       <div style={{ flex: 1 }} />
-
-      <div className="etched" style={{ padding: 12, borderRadius: 14, marginTop: 12 }}>
-        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 4 }}>
-          Workspace balance
-        </div>
-        <div
-          className="mono"
-          style={{ fontSize: 18, fontWeight: 500, letterSpacing: '-0.02em' }}
-        >
-          —
-        </div>
-        <div style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 2 }}>
-          Connect Accounting
-        </div>
-      </div>
+      
     </nav>
 
     {/* Brand mark — below the ribbon, prominent brand statement */}

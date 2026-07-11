@@ -101,6 +101,13 @@ const explorerBase = (): string => {
   if (nodes.includes('testnet') || nodes.includes('altnet')) return 'https://testnet.xrpl.org';
   return 'https://livenet.xrpl.org';
 };
+// Task 5.2 (Tier 1): validate a user-supplied seed before any Wallet.fromSeed,
+// so an empty/malformed seed yields a friendly message, not raw invalid_input_size.
+const isValidSeedForSigning = (s?: string): boolean => {
+  if (!s || !s.trim()) return false;
+  try { xrpl.Wallet.fromSeed(s.trim()); return true; } catch { return false; }
+};
+
 const getOrGenerateUUID = (key: string): string => {
   let uuid = localStorage.getItem(key);
   if (!uuid) {
@@ -8042,6 +8049,15 @@ const fetchSharedInventoryDoc = async (
   const saveCustomerProfile = async () => {
     try {
       let updatedProfile = { ...customerProfile };
+      if (!updatedProfile.classicAddress?.trim() || !isValidSeedForSigning(updatedProfile.seed)) {
+        await openConfirm({
+          kind: 'info',
+          title: 'Wallet Details Required',
+          message: 'Please enter and save your wallet address and seed before saving profile details.',
+          confirmLabel: 'OK',
+        });
+        return;
+      }
       const contentHash = await hashProfileContent(updatedProfile);
       const customerHasNoCred = !customerCredStatus || !customerCredStatus.valid;
       if (customerProfile.lastOnChainHash && contentHash === customerProfile.lastOnChainHash && !customerHasNoCred) { console.log('No profile changes'); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile)); return; }
@@ -8108,6 +8124,15 @@ const fetchSharedInventoryDoc = async (
   const saveVendorProfile = async () => {
     try {
       let updatedProfile = { ...vendorProfile };
+      if (!updatedProfile.classicAddress?.trim() || !isValidSeedForSigning(updatedProfile.seed)) {
+        await openConfirm({
+          kind: 'info',
+          title: 'Wallet Details Required',
+          message: 'Please enter and save your wallet address and seed before saving profile details.',
+          confirmLabel: 'OK',
+        });
+        return;
+      }
       const contentHash = await hashProfileContent(updatedProfile);
       const vendorHasNoCred = !vendorCredStatus || !vendorCredStatus.valid;
       if (vendorProfile.lastOnChainHash && contentHash === vendorProfile.lastOnChainHash && !vendorHasNoCred) { console.log('No profile changes'); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile)); return; }
