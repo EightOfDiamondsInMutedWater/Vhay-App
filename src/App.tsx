@@ -8783,7 +8783,7 @@ const addLinkedVendorByDID = async () => {
                     <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
                       <Field label="Payment terms">
                         <SelectBox value={paymentTerms} onChange={setPaymentTerms}
-                          options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
+                          placeholder="—" options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
                       </Field>
                       {isRLUSDConfigured() && (
                         <Field label="Escrow currency">
@@ -9167,7 +9167,7 @@ const addLinkedVendorByDID = async () => {
                       <SumRow label="Items" v={`${items.length} line${items.length !== 1 ? 's' : ''}`}/>
                       <SumRow label="Total quantity" v={items.reduce((s, l) => s + (parseFloat(l.qty) || 0), 0)}/>
                       <SumRow label="Currency" v={escrowCurrency || 'RLUSD'}/>
-                      <SumRow label="Settlement" v={paymentTerms || '—'}/>
+                      <SumRow label="Payment Terms" v={paymentTerms || '—'}/>
                       {yieldOptIn && escrowCurrency === 'RLUSD' && yieldOptInAPR !== null && (
                         <SumRow label="Yield" v={`${formatAPR(yieldOptInAPR)} active`} highlight/>
                       )}
@@ -9527,7 +9527,7 @@ const addLinkedVendorByDID = async () => {
                       <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
                         <Field label="Payment terms">
                           <SelectBox value={paymentTerms} onChange={setPaymentTerms}
-                            options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
+                            placeholder="—" options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
                         </Field>
                         {isRLUSDConfigured() && (
                           <Field label="Escrow currency">
@@ -10332,7 +10332,7 @@ const addLinkedVendorByDID = async () => {
                         <Card label={<StepLabel n="02" title="Terms & Settlement"/>}>
                           <div style={{ display: 'grid', gridTemplateColumns: isRLUSDConfigured() ? '1fr 1fr 1fr' : '1fr 1fr', gap: 12 }}>
                             <Field label="Payment terms">
-                              <SelectBox value={paymentTerms} onChange={setPaymentTerms} options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
+                              <SelectBox value={paymentTerms} onChange={setPaymentTerms} placeholder="—" options={['0 Days', '15 Days', '30 Days', '60 Days']}/>
                             </Field>
                             {isRLUSDConfigured() && (
                               <Field label="Escrow currency">
@@ -12712,7 +12712,7 @@ const addLinkedVendorByDID = async () => {
                       <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
                         Manual entry
                       </div>
-                      <div style={{ fontSize: 18, fontWeight: 600 }}>Register a new part</div>
+                      <div style={{ fontSize: 18, fontWeight: 600 }}>Register a New Part</div>
                     </>}
                     actions={(() => {
                       const haveText = invSku && invPartNumber && invName;

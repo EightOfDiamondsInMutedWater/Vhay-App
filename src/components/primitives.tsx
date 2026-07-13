@@ -238,9 +238,10 @@ type SelectBoxProps = {
   value: string;
   onChange: (v: string) => void;
   options: string[] | { value: string; label: string }[];
+  placeholder?: string;
 };
 
-export const SelectBox: React.FC<SelectBoxProps> = ({ value, onChange, options }) => (
+export const SelectBox: React.FC<SelectBoxProps> = ({ value, onChange, options, placeholder }) => (
   <div className="etched" style={{
     display: 'flex', alignItems: 'center', gap: 8,
     padding: '8px 12px', borderRadius: 12, position: 'relative',
@@ -254,6 +255,7 @@ export const SelectBox: React.FC<SelectBoxProps> = ({ value, onChange, options }
         appearance: 'none', padding: '2px 0', fontSize: 13, fontWeight: 500,
         color: 'var(--ink)', cursor: 'pointer', fontFamily: 'inherit',
       }}>
+      {placeholder && <option value="" disabled>{placeholder}</option>}
       {(options as any[]).map(opt => {
         if (typeof opt === 'string') return <option key={opt} value={opt}>{opt}</option>;
         return <option key={opt.value} value={opt.value}>{opt.label}</option>;
