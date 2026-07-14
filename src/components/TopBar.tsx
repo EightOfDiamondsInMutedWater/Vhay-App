@@ -64,8 +64,47 @@ export const TopBar: React.FC<Props> = ({
         zIndex: 2,
       }}
     >
-      {/* Brand slot — logo moved to sidebar bottom */}
-      <div/>
+      {/* Brand slot — Vhay wordmark + tagline */}
+      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 2, minWidth: 0 }}>
+        <span
+          style={{
+            fontFamily: "'Inter', system-ui, sans-serif",
+            fontWeight: 700,
+            fontSize: 34,
+            lineHeight: 1.05,
+            letterSpacing: '-0.02em',
+            color: 'oklch(0.82 0.14 78)',
+            textShadow: '0 1px 0 rgba(255,255,255,0.7), 0 -1px 1px rgba(90,55,10,0.4)',
+          }}
+        >
+          Vhay
+          <sup
+            style={{
+              fontSize: '0.32em',
+              fontWeight: 600,
+              verticalAlign: 'top',
+              marginLeft: '0.06em',
+              letterSpacing: 0,
+              position: 'relative',
+              top: '0.15em',
+            }}
+          >
+            ™
+          </sup>
+        </span>
+        <span
+          className="mono"
+          style={{
+            fontSize: 9,
+            textTransform: 'uppercase',
+            letterSpacing: '0.08em',
+            color: 'var(--ink-3)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Your trade platform for the modern supply chain
+        </span>
+      </div>
 
       {/* Mode toggle */}
       <div
