@@ -6,6 +6,7 @@ export const FEATURES = {
   escrowLockClaim: true,
   credentialing: true,
   inventory: true,
+  inviteOnly: true,
   // Phase 6 — gated off for the demo:
   escrowYield: false,
   poFinancing: false,

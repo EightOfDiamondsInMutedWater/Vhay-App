@@ -20,6 +20,7 @@ type Props = {
   mode: Mode;
   setMode: (m: Mode) => void;
   onAdminClick: () => void;
+  onLogout: () => void;
   onProfileClick: () => void;
   onBellClick: () => void;
   onClearNotifications: () => void;
@@ -33,6 +34,7 @@ export const TopBar: React.FC<Props> = ({
   mode,
   setMode,
   onAdminClick,
+  onLogout,
   onProfileClick,
   onBellClick,
   onClearNotifications,
@@ -42,6 +44,15 @@ export const TopBar: React.FC<Props> = ({
   profileName,
 }) => {
   const isBuy = mode === 'customer';
+  const [gearMenuOpen, setGearMenuOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (!gearMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (!(e.target as Element)?.closest('[data-gear-menu]')) setGearMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, [gearMenuOpen]);
 
   const initials = useMemo(() => {
     if (!profileName) return '';
@@ -349,27 +360,70 @@ export const TopBar: React.FC<Props> = ({
           )}
         </div>
 
-        {/* Gear — Admin */}
-        <button
-          type="button"
-          className="glass"
-          onClick={onAdminClick}
-          aria-label="Admin"
-          style={{
-            position: 'relative',
-            width: 40,
-            height: 40,
-            borderRadius: 999,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            cursor: 'pointer',
-            color: 'inherit',
-            fontFamily: 'inherit',
-          }}
-        >
-          <IconSettings size={16} />
-        </button>
+        {/* Gear — menu (Admin / Logout) */}
+        <div data-gear-menu style={{ position: 'relative' }}>
+          <button
+            type="button"
+            className="glass"
+            onClick={() => setGearMenuOpen(v => !v)}
+            aria-label="Menu"
+            style={{
+              position: 'relative',
+              width: 40,
+              height: 40,
+              borderRadius: 999,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              color: 'inherit',
+              fontFamily: 'inherit',
+            }}
+          >
+            <IconSettings size={16} />
+          </button>
+          {gearMenuOpen && (
+            <div
+              className="glass"
+              style={{
+                position: 'absolute',
+                top: 48,
+                right: 0,
+                minWidth: 150,
+                borderRadius: 12,
+                padding: 6,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
+                zIndex: 50,
+                boxShadow: '0 12px 32px -8px rgba(60,40,15,0.35)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => { setGearMenuOpen(false); onAdminClick(); }}
+                style={{
+                  textAlign: 'left', padding: '9px 12px', borderRadius: 8,
+                  background: 'transparent', border: 0, cursor: 'pointer',
+                  fontSize: 13, fontWeight: 500, color: 'var(--ink)', fontFamily: 'inherit',
+                }}
+              >
+                Admin
+              </button>
+              <button
+                type="button"
+                onClick={() => { setGearMenuOpen(false); onLogout(); }}
+                style={{
+                  textAlign: 'left', padding: '9px 12px', borderRadius: 8,
+                  background: 'transparent', border: 0, cursor: 'pointer',
+                  fontSize: 13, fontWeight: 500, color: 'var(--ink)', fontFamily: 'inherit',
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Avatar — Profile */}
         <button

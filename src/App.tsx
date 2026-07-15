@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { FEATURES, COMING_SOON_LABEL } from './featureFlags';
 import { ComingSoonOverlay } from './ComingSoonOverlay';
+import { AccessGate } from './components/AccessGate';
+import { WelcomeScreen } from './components/WelcomeScreen';
 import * as xrpl from 'xrpl';
 import type { EscrowCreate, EscrowFinish, Payment, AccountSet, Transaction, Memo, AccountTxResponse, AccountInfoResponse, AccountNFTsResponse, AccountNFToken } from 'xrpl';
 import CryptoJS from 'crypto-js';
@@ -1035,6 +1037,22 @@ export default function App() {
   const [acctTaxQuery,   setAcctTaxQuery]   = useState<string>('');
   const [acctTaxFilter,  setAcctTaxFilter]  = useState<'All' | 'Reportable' | 'Below threshold'>('All');
   const [acctExportOpen, setAcctExportOpen] = useState<boolean>(false);
+  const [unlocked, setUnlocked] = useState<boolean>(() => sessionStorage.getItem('vhay_access_unlocked') === 'true');
+  const [showWelcome, setShowWelcome] = useState<boolean>(false);
+  const handleLogout = () => {
+    sessionStorage.removeItem('vhay_access_unlocked');
+    setUnlocked(false);
+    setShowWelcome(false);
+  };
+  const handleUnlock = (pw: string): boolean => {
+    if (process.env.REACT_APP_ACCESS_PASSWORD && pw === process.env.REACT_APP_ACCESS_PASSWORD) {
+      sessionStorage.setItem('vhay_access_unlocked', 'true');
+      setUnlocked(true);
+      setShowWelcome(true);
+      return true;
+    }
+    return false;
+  };
   // Click-outside handler for the Accounting export dropdown menu (Patch 2.5-E1).
   useEffect(() => {
     if (!acctExportOpen) return;
@@ -8618,6 +8636,14 @@ const addLinkedVendorByDID = async () => {
       />
     );
   };
+  if (FEATURES.inviteOnly && !unlocked) {
+    return <AccessGate onUnlock={handleUnlock} />;
+  }
+
+  if (showWelcome) {
+    return <WelcomeScreen onEnter={() => setShowWelcome(false)} />;
+  }
+
   return (
     <>
       {EscrowRecoveryBanner}
@@ -8626,6 +8652,7 @@ const addLinkedVendorByDID = async () => {
         mode={mode}
         setMode={setMode}
         onAdminClick={() => setActiveTab('admin')}
+        onLogout={handleLogout}
         onProfileClick={() => setActiveTab(mode === 'customer' ? 'customerProfile' : 'vendorProfile')}
         onBellClick={() => {
           setShowNotifications(v => !v);
