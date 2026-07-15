@@ -18,6 +18,12 @@ import React, { useEffect, useRef, useState } from 'react';
 // - Outstanding [TBD] items: governing-law state, data-controller contact email.
 // - Acceptance is currently a per-device localStorage flag; real users should
 //   have acceptance recorded server-side (timestamp + version).
+// Privacy Policy notes:
+// - GDPR framing is included defensively; entity is a US LLC and legal research
+//   is US-framed (FinCEN/SEC/state MTLs). Trim GDPR sections if no EU users.
+// - Real operation will require KYB/KYC data collection (entity identity,
+//   beneficial owners, OFAC screening per FinCEN CDD rule) — not collected in
+//   this preview; add to Privacy Policy before those flows go live.
 // ─────────────────────────────────────────────────────────────
 
 export const TERMS_TEXT = `DRAFT — PENDING LEGAL REVIEW. Interim terms for the invite-only preview. Not final legal text.
@@ -67,11 +73,11 @@ This preview of Vhay (the "Platform") is operated by Vhay Hold LLC. Data control
 2. Data we process
 - Profile information you enter (e.g. company name, contact details, addresses).
 - XRPL wallet addresses associated with your activity.
-- Documents and profile data pinned to IPFS via third-party pinning services.
+- Documents and profile data pinned to IPFS via third-party pinning services. Profile information and purchase-order documents are encrypted before they are pinned; inventory catalog data (product specs, pricing, images) is stored unencrypted and is public by design.
 - Your access to the preview (the invite password you use is not tied to a personal identity in this phase).
 
 3. Public and permanent on-chain / IPFS data
-IMPORTANT: Data written to the XRP Ledger and data pinned to IPFS is public by design and permanent. It cannot be edited or deleted once published. This includes wallet addresses, transaction data, and profile/document content anchored on-chain or pinned to IPFS. Because of this permanence, the right to erasure (where it would otherwise apply) cannot be exercised over data already published to these public, decentralized systems.
+IMPORTANT: Data written to the XRP Ledger, and data pinned to IPFS, is permanent and cannot be edited or deleted once published. Some of this data is public and readable by anyone — including wallet addresses, transaction data, and unencrypted inventory catalog data. Profile information and purchase-order documents are encrypted before pinning, so while the encrypted files are permanent and publicly addressable, their contents are not readable without the decryption key. Because of this permanence, the right to erasure (where it would otherwise apply) cannot be exercised over data already published to these public, decentralized systems, even where that data is encrypted.
 
 4. Legal basis (where GDPR applies)
 Where the EU General Data Protection Regulation applies, we process data on the basis of your consent (your use of this preview), our legitimate interest in operating and securing the preview, and to perform the service you request.
