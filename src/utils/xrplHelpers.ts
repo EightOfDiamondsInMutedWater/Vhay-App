@@ -13,7 +13,7 @@ export const autofillTagged = (client: any, tx: any) => client.autofill(withSour
 // Constants — Credential tier hex values
 export const SCPO_BASIC_HEX = '5343504F5F4241534943'; // hex("SCPO_BASIC")
 export const SCPO_VERIFIED_HEX = '5343504F5F564552494649'; // hex("SCPO_VERIFIED")
-export const SCPO_INSTITUTIONAL_HEX = '5343504F5F494E5354'; // hex("SCPO_INSTITUTIONAL")
+export const SCPO_INSTITUTIONAL_HEX = '5343504F5F494E5354'; // bytes for "SCPO_INST" — institutional-tier credential type in the Permissioned Domain's AcceptedCredentials. MUST stay byte-identical to SCPO_INST_HEX (~L1037), which is what institutional credentials are actually issued under (~L1049). Name is legacy; do NOT change the value — mainnet credentials were issued under these exact bytes.
 
 export const decodeTier = (hexType: string): string => {
   try {
@@ -1067,7 +1067,6 @@ export const addInstitutionalToPermissionedDomain = async (
       { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_BASIC_HEX } },
       { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_VERIFIED_HEX } },
       { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_INSTITUTIONAL_HEX } },
-      { Credential: { Issuer: platformWallet.classicAddress, CredentialType: SCPO_INST_HEX } },
     ]
   };
   const tx = await submitQueued(transaction, platformWallet);
