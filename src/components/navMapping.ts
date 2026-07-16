@@ -13,7 +13,8 @@ export type InternalTab =
   | 'vendorProfile'
   | 'admin'
   | 'accounting'
-  | 'financing';
+  | 'financing'
+  | 'marketplace'; // MARKETPLACE Task 5.2 Tier 3
 
 export type DisplayTab =
   | 'create'
@@ -22,7 +23,8 @@ export type DisplayTab =
   | 'inventory'
   | 'financing'
   | 'accounting'
-  | 'profile';
+  | 'profile'
+  | 'marketplace'; // MARKETPLACE Task 5.2 Tier 3
 
 export function displayToInternal(display: DisplayTab, mode: Mode): InternalTab {
   switch (display) {
@@ -32,6 +34,7 @@ export function displayToInternal(display: DisplayTab, mode: Mode): InternalTab 
     case 'inventory':  return 'inventoryCatalog';
     case 'financing':  return 'financing';
     case 'accounting': return 'accounting';
+    case 'marketplace': return 'marketplace'; // MARKETPLACE Task 5.2 Tier 3
     case 'profile':    return mode === 'customer' ? 'customerProfile' : 'vendorProfile';
   }
 }
@@ -44,6 +47,7 @@ export function internalToDisplay(internal: InternalTab): DisplayTab | null {
     case 'inventoryCatalog':  return 'inventory';
     case 'financing':         return 'financing';
     case 'accounting':        return 'accounting';
+    case 'marketplace':       return 'marketplace'; // MARKETPLACE Task 5.2 Tier 3
     case 'customerProfile':
     case 'vendorProfile':     return 'profile';
     case 'admin':             return null;

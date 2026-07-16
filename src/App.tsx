@@ -32,6 +32,7 @@ import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHe
 // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3
 import type { StorefrontIdentity } from './utils/marketplaceStorefront';
 import { buildStorefront } from './utils/marketplaceStorefront';
+import { MarketplaceTab } from './components/MarketplaceTab';
 // ▲▲▲ MARKETPLACE ▲▲▲
 import {
   YieldPosition,
@@ -8777,6 +8778,11 @@ const addLinkedVendorByDID = async () => {
         <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 20, padding: '12px 20px 40px', alignItems: 'flex-start' }}>
           <Sidebar mode={mode} activeTab={activeTab} setActiveTab={setActiveTab}/>
           <main key={mode + '-' + activeTab} className="rise">
+        {/* ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — buyer marketplace tab */}
+        {activeTab === 'marketplace' && mode === 'customer' && (
+          <MarketplaceTab resolveDID={resolveDID} />
+        )}
+        {/* ▲▲▲ MARKETPLACE ▲▲▲ */}
         {activeTab === 'create' && mode === 'customer' && (
           <Page
             tag="Buy · Purchase Orders"

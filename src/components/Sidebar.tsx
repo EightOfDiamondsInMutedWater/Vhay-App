@@ -7,8 +7,10 @@ import {
   IconBook,
   IconUser,
   IconBox,
+  IconSearch,
 } from './icons';
 import type { IconProps } from './icons';
+import { FEATURES } from '../featureFlags'; // MARKETPLACE Task 5.2 Tier 3
 import {
   displayToInternal,
   internalToDisplay,
@@ -35,6 +37,7 @@ export const Sidebar: React.FC<Props> = ({ mode, activeTab, setActiveTab }) => {
     ? [
         { k: 'create',     label: 'Create',     icon: IconPlus,   hint: 'New PO' },
         { k: 'action',     label: 'Action',     icon: IconSpark,  hint: null },
+        ...(FEATURES.marketplace ? [{ k: 'marketplace' as const, label: 'Marketplace', icon: IconSearch, hint: null }] : []), // MARKETPLACE Task 5.2 Tier 3
         { k: 'overview',   label: 'Overview',   icon: IconChart,  hint: null },
         { k: 'financing',  label: 'Financing',  icon: IconWallet, hint: 'yield' },
         { k: 'accounting', label: 'Accounting', icon: IconBook,   hint: null },
