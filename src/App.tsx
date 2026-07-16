@@ -29,6 +29,9 @@ import { exportAsJSON, exportAsCSV, export1099CSV } from './utils/exportHelpers'
 import type { SCPOExportBundle, NinetyNineRow } from './utils/exportHelpers';
 import { buildMemo, parseMemo, parseLegacyRefMemo, SCPO_ACTIONS } from './utils/memoHelpers';
 import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHelpers';
+// ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3
+import type { StorefrontIdentity } from './utils/marketplaceStorefront';
+// ▲▲▲ MARKETPLACE ▲▲▲
 import {
   YieldPosition,
   YieldSummary,
@@ -1175,6 +1178,12 @@ export default function App() {
   const [savedPOs, setSavedPOs] = useState<SavedPO[]>([]);
   const [customerProfile, setCustomerProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
   const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
+  // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — public seller listing, isolated from Profile (removable)
+  const [vendorListing, setVendorListing] = useState<StorefrontIdentity>({ name: '', country: '', website: '', description: '', contact: '' });
+  const updateVendorListing = (patch: Partial<StorefrontIdentity>) => {
+    setVendorListing(prev => { const next = { ...prev, ...patch }; try { localStorage.setItem('vhay_vendor_listing', JSON.stringify(next)); } catch (e) { /* ignore */ } return next; });
+  };
+  // ▲▲▲ MARKETPLACE ▲▲▲
 
   // Auto-fetch on-chain audit log when entering the Audit Log sub-tab.
   // Replaces the fetch side-effect previously welded into the pill onClick (Session 8 Patch 1).
@@ -7518,6 +7527,15 @@ const getUpdatablePOs = () => {
 
     loadProfile('customerProfile', setCustomerProfile);
     loadProfile('vendorProfile', setVendorProfile);
+    // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — load isolated seller listing
+    try {
+      const savedListing = localStorage.getItem('vhay_vendor_listing');
+      if (savedListing) {
+        const p = JSON.parse(savedListing);
+        setVendorListing({ name: p.name || '', country: p.country || '', website: p.website || '', description: p.description || '', contact: p.contact || '' });
+      }
+    } catch (e) { /* ignore malformed listing */ }
+    // ▲▲▲ MARKETPLACE ▲▲▲
     const savedTab = localStorage.getItem('activeTab');
     if (savedTab) setActiveTab(savedTab as any);
     // Seed linked UUIDs from localStorage so they survive until on-chain scan completes
@@ -14930,6 +14948,35 @@ const addLinkedVendorByDID = async () => {
 
               {/* ——— Organization ——— */}
               {/* ——— 3-COLUMN GRID: Organization | Wallet | Verification ——— */}
+              {/* ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — public seller listing (flag-gated, isolated from Profile) */}
+              {FEATURES.marketplace && (
+                <Card layered label="Public Marketplace Listing">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>
+                      Shown publicly in the Vhay marketplace so buyers can find you before any link. Written on-chain and to IPFS — world-readable and permanent; it cannot be edited off-chain or deleted later. Leave blank to stay unlisted.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <Field label="Seller / company name" full>
+                        <input value={vendorListing.name} onChange={(e) => updateVendorListing({ name: e.target.value })} placeholder="e.g. Vhay Industries" style={inpStyle}/>
+                      </Field>
+                      <Field label="Country of origin" full>
+                        <input value={vendorListing.country} onChange={(e) => updateVendorListing({ country: e.target.value })} placeholder="e.g. United States" style={inpStyle}/>
+                      </Field>
+                      <Field label="Website" full>
+                        <input value={vendorListing.website} onChange={(e) => updateVendorListing({ website: e.target.value })} placeholder="https://…" style={inpStyle}/>
+                      </Field>
+                      <Field label="Public contact" full>
+                        <input value={vendorListing.contact} onChange={(e) => updateVendorListing({ contact: e.target.value })} placeholder="sales@company.com" style={inpStyle}/>
+                      </Field>
+                    </div>
+                    <Field label="Short description" full>
+                      <textarea value={vendorListing.description} onChange={(e) => updateVendorListing({ description: e.target.value })} placeholder="One or two sentences on what you make or supply." style={{ ...inpStyle, minHeight: 72, resize: 'vertical', lineHeight: 1.5 }}/>
+                    </Field>
+                  </div>
+                </Card>
+              )}
+              {/* ▲▲▲ MARKETPLACE ▲▲▲ */}
+
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 320px', gap: 16, alignItems: 'stretch' }}>
 
               {/* — Organization — */}
