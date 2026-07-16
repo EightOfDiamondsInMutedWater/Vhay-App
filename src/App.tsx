@@ -5731,7 +5731,7 @@ const getUpdatablePOs = () => {
     }
     const nftId = extractNFTokenID(nftResult.result.meta) || 'unknown';
 
-    // Inventory Parent NFT fee: $1.00 flat per SKU created → Vhay company wallet
+      // Inventory Parent NFT fee: $1.00 flat per SKU created → Vhay company wallet
     const companyWalletForFee = process.env.REACT_APP_COMPANY_WALLET || '';
     if (companyWalletForFee && isRLUSDConfigured()) {
       try {
@@ -5927,6 +5927,10 @@ const getUpdatablePOs = () => {
     // Refresh catalog from chain
     const freshItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, wallet);
     setVendorInventoryV2(freshItems);
+
+    // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 (3b) — bulk CSV import done → ONE storefront rebuild + repoint (not per row)
+    if (imported > 0) await repointStorefrontOnDID(wallet);
+    // ▲▲▲ MARKETPLACE ▲▲▲
 
     setCsvImportedCount(imported);
     setCsvSkippedCount(skipped);
@@ -6694,6 +6698,10 @@ const getUpdatablePOs = () => {
 
       const nftId = extractNFTokenID(nftResult.result.meta) || 'unknown';
 
+      // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 (3b) — new SKU minted → refresh storefront + repoint DID
+      await repointStorefrontOnDID(wallet);
+      // ▲▲▲ MARKETPLACE ▲▲▲
+
       // Inventory Parent NFT fee: $1.00 flat per SKU created → Vhay company wallet
       const companyWalletForNftFee = process.env.REACT_APP_COMPANY_WALLET || '';
       if (companyWalletForNftFee && isRLUSDConfigured()) {
@@ -7353,6 +7361,9 @@ const getUpdatablePOs = () => {
       await uploadVendorInventoryDoc(updatedVendorDoc, wallet);
       await uploadSharedInventoryDoc(updatedSharedDoc, wallet);
       await new Promise(resolve => setTimeout(resolve, 3000));
+      // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 (3b) — catalog changed (name/price/status/desc/image) → refresh storefront + repoint DID
+      await repointStorefrontOnDID(wallet);
+      // ▲▲▲ MARKETPLACE ▲▲▲
       const refreshedItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, wallet);
       const allItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, wallet, true);
       const patchedItems = refreshedItems.map(i => {
@@ -8170,7 +8181,9 @@ const fetchSharedInventoryDoc = async (
     let sourceItems: InventoryItemV2[] = [];
     try { sourceItems = await fetchVendorInventoryV2(vendorAddress, wallet); }
     catch (invErr) { console.warn('[MARKETPLACE] inventory fetch for storefront failed, pinning identity-only:', invErr); }
-    const publicItems = (sourceItems || []).map((it) => ({
+    // Denylist by status: exclude discontinued from the public marketplace; keep active,
+    // out_of_stock, and any future status visible (seller-discoverability default).
+    const publicItems = (sourceItems || []).filter((it) => it.status !== 'discontinued').map((it) => ({
       sku: it.sku || '',
       partNumber: it.partNumber || '',
       name: it.name || '',
@@ -8192,6 +8205,36 @@ const fetchSharedInventoryDoc = async (
   };
   // ▲▲▲ MARKETPLACE ▲▲▲
 
+  // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 (3b) — regenerate storefront + repoint DID on a
+  // CATALOG-shape change (mint / edit / status), NOT on quantity movement. Read-then-write:
+  // resolve the current DID, preserve its p (profile) and c (catalog) pointers, swap only s.
+  // Non-fatal: a failure here logs and returns; it must never break the mint/edit that called it.
+  const repointStorefrontOnDID = async (wallet: xrpl.Wallet): Promise<void> => {
+    if (!FEATURES.marketplace) return;
+    try {
+      const storefrontCid = await buildAndPinStorefront(wallet.classicAddress, wallet);
+      const didResult = await resolveDID(wallet.classicAddress);
+      const existingProfileUri = getProfileUriFromDID(didResult.didDocument, didResult.uri) || didResult.uri || '';
+      const existingCatalogUri = getCatalogUriFromDID(didResult.didDocument) || undefined;
+      if (!existingProfileUri) { console.warn('[MARKETPLACE] repoint skipped — no existing profile URI on DID'); return; }
+      const didDocStr = buildDIDDocument(wallet.publicKey, existingProfileUri, existingCatalogUri, storefrontCid || undefined);
+      const didSet: any = {
+        TransactionType: 'DIDSet',
+        Account: wallet.classicAddress,
+        URI: xrpl.convertStringToHex(existingProfileUri),
+        DIDDocument: xrpl.convertStringToHex(didDocStr),
+      };
+      const client = await getXRPLClient();
+      const preparedSet = await autofillTagged(client, didSet);
+      const signedSet = wallet.sign(preparedSet);
+      await submitBlobQueued(signedSet.tx_blob);
+      console.log('[MARKETPLACE] storefront repointed on DID:', storefrontCid);
+    } catch (e) {
+      console.warn('[MARKETPLACE] repointStorefrontOnDID failed (non-fatal):', e);
+    }
+  };
+  // ▲▲▲ MARKETPLACE ▲▲▲
+  
   const saveVendorProfile = async () => {
     try {
       let updatedProfile = { ...vendorProfile };
@@ -21158,6 +21201,9 @@ const addLinkedVendorByDID = async () => {
                         await uploadSharedInventoryDoc(updatedSharedDoc, wallet);
                        // Wait for devnet to index the new NFT memo before fetching
                         await new Promise(resolve => setTimeout(resolve, 3000));
+                        // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 (3b) — catalog changed → refresh storefront + repoint DID (inline dup edit handler)
+                        await repointStorefrontOnDID(wallet);
+                        // ▲▲▲ MARKETPLACE ▲▲▲
                         const refreshedItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, wallet);
                         const allItems = await fetchVendorInventoryV2(vendorProfile.classicAddress, wallet, true);
                         // Patch the new item with preserved qty and pricing in case IPFS
