@@ -25,6 +25,7 @@ export interface StorefrontItem {
   partNumber: string;
   name: string;
   shortDescription: string;
+  category: string;       // public browse/filter field (e.g. 'Hardware')
   price: number;          // list price at write time
   currency: string;       // pricing currency (e.g. 'USD')
   imageCid: string;       // productImageUri (may be '')
@@ -49,6 +50,7 @@ interface StorefrontItemInput {
   partNumber?: string;
   name?: string;
   shortDescription?: string;
+  category?: string;
   listPrice?: number;
   pricingCurrency?: string;
   productImageUri?: string;
@@ -71,6 +73,7 @@ export const buildStorefront = (
     partNumber: it.partNumber || '',
     name: it.name || '',
     shortDescription: it.shortDescription || '',
+    category: it.category || '',
     price: typeof it.listPrice === 'number' ? it.listPrice : 0,
     currency: it.pricingCurrency || 'USD',
     imageCid: it.productImageUri || '',

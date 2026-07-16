@@ -8189,6 +8189,7 @@ const fetchSharedInventoryDoc = async (
       partNumber: it.partNumber || '',
       name: it.name || '',
       shortDescription: it.shortDescription || '',
+      category: it.category || '',
       listPrice: typeof it.listPrice === 'number' ? it.listPrice : 0,
       pricingCurrency: it.pricingCurrency || 'USD',
       productImageUri: it.productImageUri || '',
