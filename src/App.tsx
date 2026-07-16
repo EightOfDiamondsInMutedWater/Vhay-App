@@ -31,6 +31,7 @@ import { buildMemo, parseMemo, parseLegacyRefMemo, SCPO_ACTIONS } from './utils/
 import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHelpers';
 // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3
 import type { StorefrontIdentity } from './utils/marketplaceStorefront';
+import { buildStorefront } from './utils/marketplaceStorefront';
 // ▲▲▲ MARKETPLACE ▲▲▲
 import {
   YieldPosition,
@@ -1183,6 +1184,7 @@ export default function App() {
   const updateVendorListing = (patch: Partial<StorefrontIdentity>) => {
     setVendorListing(prev => { const next = { ...prev, ...patch }; try { localStorage.setItem('vhay_vendor_listing', JSON.stringify(next)); } catch (e) { /* ignore */ } return next; });
   };
+  const [vendorStorefrontCid, setVendorStorefrontCid] = useState<string>(() => { try { return localStorage.getItem('vhay_vendor_storefront_cid') || ''; } catch (e) { return ''; } });
   // ▲▲▲ MARKETPLACE ▲▲▲
 
   // Auto-fetch on-chain audit log when entering the Audit Log sub-tab.
@@ -7985,9 +7987,10 @@ const fetchSharedInventoryDoc = async (
   // 'p' = profile IPFS URI, 'c' = catalog URI (omitted if not vendor),
   // 'vm' = Ed25519 public key hex for ECDH decryption.
   // Catalog URI is just the wallet address — "scpo:c:<addr>" prefix is 8 chars.
-  const buildDIDDocument = (publicKey: string, profileUri: string, catalogUri?: string): string => {
+  const buildDIDDocument = (publicKey: string, profileUri: string, catalogUri?: string, storefrontUri?: string): string => {
     const doc: any = { p: profileUri, vm: publicKey };
     if (catalogUri) doc.c = catalogUri;
+    if (storefrontUri) doc.s = storefrontUri; // ▼▲ MARKETPLACE — public storefront CID pointer (Task 5.2 Tier 3)
     return JSON.stringify(doc);
   };
 
@@ -8157,6 +8160,38 @@ const fetchSharedInventoryDoc = async (
     } catch (err: any) { alert('Failed to post update on-chain: ' + (err.message || String(err))); }
   };
 
+  // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — build + pin the public storefront doc.
+  // PUBLIC artifact: copy ONLY the allowlisted public fields below. Never spread
+  // an inventory item (they carry decrypted cost/supplier data for the owner).
+  const buildAndPinStorefront = async (vendorAddress: string, wallet: xrpl.Wallet): Promise<string> => {
+    // Fetch inventory fresh at save time (do NOT rely on savedInventoryV2 state — it
+    // only populates after visiting the Inventory tab, so a profile-only save would
+    // pin an empty catalog). Public-field allowlist only; never spread the item.
+    let sourceItems: InventoryItemV2[] = [];
+    try { sourceItems = await fetchVendorInventoryV2(vendorAddress, wallet); }
+    catch (invErr) { console.warn('[MARKETPLACE] inventory fetch for storefront failed, pinning identity-only:', invErr); }
+    const publicItems = (sourceItems || []).map((it) => ({
+      sku: it.sku || '',
+      partNumber: it.partNumber || '',
+      name: it.name || '',
+      shortDescription: it.shortDescription || '',
+      listPrice: typeof it.listPrice === 'number' ? it.listPrice : 0,
+      pricingCurrency: it.pricingCurrency || 'USD',
+      productImageUri: it.productImageUri || '',
+      quantityOnHand: typeof it.quantityOnHand === 'number' ? it.quantityOnHand : 0,
+      nftId: it.nftId || '',
+      mptIssuanceId: it.mptIssuanceId || '',
+    }));
+    const doc = buildStorefront(vendorAddress, vendorListing, publicItems);
+    const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
+    if (!pinataApiKey) throw new Error('Pinata API key missing');
+    const cid = await pinJSONToBoth(doc, pinataApiKey);
+    try { localStorage.setItem('vhay_vendor_storefront_cid', cid); } catch (e) { /* ignore */ }
+    setVendorStorefrontCid(cid);
+    return cid;
+  };
+  // ▲▲▲ MARKETPLACE ▲▲▲
+
   const saveVendorProfile = async () => {
     try {
       let updatedProfile = { ...vendorProfile };
@@ -8169,7 +8204,11 @@ const fetchSharedInventoryDoc = async (
         });
         return;
       }
-      const contentHash = await hashProfileContent(updatedProfile);
+      // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — fold listing + storefront CID into change detection
+      // so a listing-only edit doesn't hit the early-return (vendorListing is NOT part of Profile).
+      const mktSig = FEATURES.marketplace ? { __mkt: vendorListing, __sf: vendorStorefrontCid } : {};
+      const contentHash = await hashProfileContent({ ...updatedProfile, ...mktSig });
+      // ▲▲▲ MARKETPLACE ▲▲▲
       const vendorHasNoCred = !vendorCredStatus || !vendorCredStatus.valid;
       if (vendorProfile.lastOnChainHash && contentHash === vendorProfile.lastOnChainHash && !vendorHasNoCred) { console.log('No profile changes'); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile)); return; }
       if (true) {
@@ -8182,7 +8221,15 @@ const fetchSharedInventoryDoc = async (
         // Phase 1A: Use DIDSet instead of AccountSet for profile anchoring
         const previousIpfsUri = updatedProfile.ipfsUri || undefined;
         const newVersion = (updatedProfile.profileVersion || 0) + 1;
-        const didDocStr = buildDIDDocument(wallet.publicKey, newIpfsUri);
+        // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — regen storefront, carry its CID into the DID (s pointer).
+        // Always pass the current CID (fresh or persisted) so a profile-only save never orphans it.
+        let storefrontCid = vendorStorefrontCid;
+        if (FEATURES.marketplace) {
+          try { storefrontCid = await buildAndPinStorefront(wallet.classicAddress, wallet); }
+          catch (sfErr) { console.warn('[MARKETPLACE] storefront pin failed (non-fatal):', sfErr); }
+        }
+        const didDocStr = buildDIDDocument(wallet.publicKey, newIpfsUri, undefined, FEATURES.marketplace ? (storefrontCid || undefined) : undefined);
+        // ▲▲▲ MARKETPLACE ▲▲▲
         const didDataStr = buildDIDData('basic', newVersion, previousIpfsUri);
         
         const didSet: any = {
@@ -14948,35 +14995,6 @@ const addLinkedVendorByDID = async () => {
 
               {/* ——— Organization ——— */}
               {/* ——— 3-COLUMN GRID: Organization | Wallet | Verification ——— */}
-              {/* ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — public seller listing (flag-gated, isolated from Profile) */}
-              {FEATURES.marketplace && (
-                <Card layered label="Public Marketplace Listing">
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                    <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>
-                      Shown publicly in the Vhay marketplace so buyers can find you before any link. Written on-chain and to IPFS — world-readable and permanent; it cannot be edited off-chain or deleted later. Leave blank to stay unlisted.
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                      <Field label="Seller / company name" full>
-                        <input value={vendorListing.name} onChange={(e) => updateVendorListing({ name: e.target.value })} placeholder="e.g. Vhay Industries" style={inpStyle}/>
-                      </Field>
-                      <Field label="Country of origin" full>
-                        <input value={vendorListing.country} onChange={(e) => updateVendorListing({ country: e.target.value })} placeholder="e.g. United States" style={inpStyle}/>
-                      </Field>
-                      <Field label="Website" full>
-                        <input value={vendorListing.website} onChange={(e) => updateVendorListing({ website: e.target.value })} placeholder="https://…" style={inpStyle}/>
-                      </Field>
-                      <Field label="Public contact" full>
-                        <input value={vendorListing.contact} onChange={(e) => updateVendorListing({ contact: e.target.value })} placeholder="sales@company.com" style={inpStyle}/>
-                      </Field>
-                    </div>
-                    <Field label="Short description" full>
-                      <textarea value={vendorListing.description} onChange={(e) => updateVendorListing({ description: e.target.value })} placeholder="One or two sentences on what you make or supply." style={{ ...inpStyle, minHeight: 72, resize: 'vertical', lineHeight: 1.5 }}/>
-                    </Field>
-                  </div>
-                </Card>
-              )}
-              {/* ▲▲▲ MARKETPLACE ▲▲▲ */}
-
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 320px', gap: 16, alignItems: 'stretch' }}>
 
               {/* — Organization — */}
@@ -15267,6 +15285,35 @@ const addLinkedVendorByDID = async () => {
               </Card>
 
               {/* ——— 3-COLUMN GRID: Organization | Wallet | Verification ——— */}
+              {/* ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — public seller listing (flag-gated, isolated from Profile, SELLER ONLY) */}
+              {FEATURES.marketplace && (
+                <Card layered label="Public Marketplace Listing">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>
+                      Shown publicly in the Vhay marketplace so buyers can find you before any link. Written on-chain and to IPFS — world-readable and permanent; it cannot be edited off-chain or deleted later. Leave blank to stay unlisted.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <Field label="Seller / company name" full>
+                        <input value={vendorListing.name} onChange={(e) => updateVendorListing({ name: e.target.value })} placeholder="e.g. Vhay Industries" style={inpStyle}/>
+                      </Field>
+                      <Field label="Country of origin" full>
+                        <input value={vendorListing.country} onChange={(e) => updateVendorListing({ country: e.target.value })} placeholder="e.g. United States" style={inpStyle}/>
+                      </Field>
+                      <Field label="Website" full>
+                        <input value={vendorListing.website} onChange={(e) => updateVendorListing({ website: e.target.value })} placeholder="https://…" style={inpStyle}/>
+                      </Field>
+                      <Field label="Public contact" full>
+                        <input value={vendorListing.contact} onChange={(e) => updateVendorListing({ contact: e.target.value })} placeholder="sales@company.com" style={inpStyle}/>
+                      </Field>
+                    </div>
+                    <Field label="Short description" full>
+                      <textarea value={vendorListing.description} onChange={(e) => updateVendorListing({ description: e.target.value })} placeholder="One or two sentences on what you make or supply." style={{ ...inpStyle, minHeight: 72, resize: 'vertical', lineHeight: 1.5 }}/>
+                    </Field>
+                  </div>
+                </Card>
+              )}
+              {/* ▲▲▲ MARKETPLACE ▲▲▲ */}
+
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 320px', gap: 16, alignItems: 'stretch' }}>
 
               {/* — Organization — */}
