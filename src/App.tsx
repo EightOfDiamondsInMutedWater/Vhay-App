@@ -8356,13 +8356,19 @@ const fetchSharedInventoryDoc = async (
     return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-const addLinkedVendorByDID = async () => {
-    if (!inputVendorWalletAddress) return alert('Enter vendor wallet address');
+const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Promise<string | null> => {
+    const vendorAddr = overrideAddr || inputVendorWalletAddress;
+    if (!vendorAddr) { if (!silent) alert('Enter vendor wallet address'); return null; }
+    // Already linked? Return the existing UUID without re-paying (marketplace re-click).
+    const already = customerLinkedVendorUUIDs
+      .map(uuid => publicProfiles[uuid])
+      .find(p => p && p.classicAddress === vendorAddr);
+    if (already) return already.profileUUID;
     try {
       // Step 1: Resolve DID
-      const didResult = await resolveDID(inputVendorWalletAddress);
-      if (!didResult.uri) return alert('No DID found for this wallet address. The vendor must save their profile on-chain first.');
-      if (!didResult.didDocument?.vm) return alert('DID found but no public key in DID document.');
+      const didResult = await resolveDID(vendorAddr);
+      if (!didResult.uri) { if (!silent) alert('No DID found for this wallet address. The vendor must save their profile on-chain first.'); return null; }
+      if (!didResult.didDocument?.vm) { if (!silent) alert('DID found but no public key in DID document.'); return null; }
       
       // Step 2: Derive decryption key from their public key
       const theirPubKey = didResult.didDocument.vm;
@@ -8373,14 +8379,14 @@ const addLinkedVendorByDID = async () => {
       const ipfsUri = getProfileUriFromDID(didResult.didDocument, didResult.uri) || didResult.uri!;
       let decoded = await fetchAndDecryptProfileFromIPFS(ipfsUri, decryptionKey);
       decoded.ipfsUri = ipfsUri;
-      decoded.classicAddress = inputVendorWalletAddress;
+      decoded.classicAddress = vendorAddr;
 
       // Task 3.5: Check if vendor has a catalog service endpoint registered
       const catalogUri = getCatalogUriFromDID(didResult.didDocument);
       if (catalogUri) {
-        console.log(`[DID 3.5] Vendor ${inputVendorWalletAddress} has catalog endpoint: ${catalogUri}`);
+        console.log(`[DID 3.5] Vendor ${vendorAddr} has catalog endpoint: ${catalogUri}`);
       } else {
-        console.log(`[DID 3.5] Vendor ${inputVendorWalletAddress} has no catalog endpoint in DID (older profile).`);
+        console.log(`[DID 3.5] Vendor ${vendorAddr} has no catalog endpoint in DID (older profile).`);
       }
             
       // Step 4: Store profile
@@ -8392,12 +8398,35 @@ const addLinkedVendorByDID = async () => {
         localStorage.setItem('customerLinkedVendorUUIDs', JSON.stringify(updatedUUIDs)); 
       }
       
-      setInputVendorWalletAddress('');
-      const catalogMsg = catalogUri ? '\n📦 Catalog endpoint registered — inventory is discoverable.' : '';
-      alert(`Vendor linked via DID! No password needed.${catalogMsg}`);
+      if (!overrideAddr) setInputVendorWalletAddress('');
+      if (!silent) {
+        const catalogMsg = catalogUri ? '\n📦 Catalog endpoint registered — inventory is discoverable.' : '';
+        alert(`Vendor linked via DID! No password needed.${catalogMsg}`);
+      }
       await recordLinkOnChain(customerProfile, decoded, true);
-    } catch (err: any) { alert('Failed to link vendor: ' + (err.message || 'DID resolution failed')); }
+      return decoded.profileUUID;
+    } catch (err: any) { if (!silent) alert('Failed to link vendor: ' + (err.message || 'DID resolution failed')); return null; }
   };
+
+  // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — Step 4e: Create-PO / Link from a marketplace row.
+  // Reuses addLinkedVendorByDID (silent, address-param, returns profileUUID).
+  const handleMarketplaceLink = async (vendorAddr: string): Promise<string | null> => {
+    const uuid = await addLinkedVendorByDID(vendorAddr, true);
+    if (!uuid) { alert('Could not link supplier — they may not have a profile on-chain yet.'); return null; }
+    return uuid;
+  };
+
+  const handleMarketplaceCreatePO = async (vendorAddr: string, partNumber: string): Promise<void> => {
+    const uuid = await handleMarketplaceLink(vendorAddr);
+    if (!uuid) return;
+    // Setting vendor (address) cascades: the linkedVendorInventoryV2[vendor] load
+    // effect fires, then the price-fetch effect resolves pricing for the item.
+    setSelectedVendorUUID(uuid);
+    setVendor(vendorAddr);
+    setSelectedInventoryItem(partNumber || 'custom');
+    setActiveTab('create');
+  };
+  // ▲▲▲ MARKETPLACE ▲▲▲
 
   const addLinkedCustomerByDID = async () => {
     if (!inputCustomerWalletAddress) return alert('Enter customer wallet address');
@@ -8781,7 +8810,11 @@ const addLinkedVendorByDID = async () => {
           <main key={mode + '-' + activeTab} className="rise">
         {/* ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — buyer marketplace tab */}
         {activeTab === 'marketplace' && mode === 'customer' && (
-          <MarketplaceTab resolveDID={resolveDID} />
+          <MarketplaceTab
+            resolveDID={resolveDID}
+            onCreatePO={handleMarketplaceCreatePO}
+            onLinkSupplier={handleMarketplaceLink}
+          />
         )}
         {/* ▲▲▲ MARKETPLACE ▲▲▲ */}
         {activeTab === 'create' && mode === 'customer' && (

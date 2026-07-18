@@ -8,7 +8,44 @@ import type { VendorStorefront } from '../utils/marketplaceStorefront';
 import { IconSearch, IconX } from './icons';
 import { Card } from './primitives';
 
-type Props = { resolveDID: DIDResolver };
+type Props = {
+  resolveDID: DIDResolver;
+  onCreatePO: (vendorAddr: string, partNumber: string) => Promise<void>;
+  onLinkSupplier: (vendorAddr: string) => Promise<string | null>;
+};
+
+// Gateway list mirrors App's ProductImage (dweb → w3s → ipfs.io), with fallback.
+const IMG_GATEWAYS = [
+  (h: string) => `https://dweb.link/ipfs/${h}`,
+  (h: string) => `https://w3s.link/ipfs/${h}`,
+  (h: string) => `https://ipfs.io/ipfs/${h}`,
+];
+
+// Self-contained product image. imageCid may be 'ipfs://Qm...' or a bare CID;
+// falls back through gateways on error, then to a 📦 placeholder.
+const ProductThumb: React.FC<{ imageCid?: string; name: string; size?: number; fit?: 'cover' | 'contain' }> = ({ imageCid, name, size = 28, fit = 'cover' }) => {
+  const [gatewayIdx, setGatewayIdx] = useState(0);
+  const [errored, setErrored] = useState(false);
+  const cid = imageCid ? imageCid.replace('ipfs://', '') : '';
+  if (!cid || errored) {
+    return (
+      <div style={{
+        width: size, height: size, borderRadius: 8, background: '#F3F4F6',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: size * 0.55, color: '#D1D5DB', flexShrink: 0,
+      }}>📦</div>
+    );
+  }
+  const handleError = () => {
+    const next = gatewayIdx + 1;
+    if (next < IMG_GATEWAYS.length) setGatewayIdx(next);
+    else setErrored(true);
+  };
+  return (
+    <img src={IMG_GATEWAYS[Math.min(gatewayIdx, IMG_GATEWAYS.length - 1)](cid)} alt={name} onError={handleError}
+      style={{ width: size, height: size, borderRadius: 8, objectFit: fit, flexShrink: 0, border: '1px solid #E5E7EB' }}/>
+  );
+};
 
 type Row = {
   rowKey: string;
@@ -30,13 +67,27 @@ type Row = {
   mptIssuanceId: string;
 };
 
-export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
+export const MarketplaceTab: React.FC<Props> = ({ resolveDID, onCreatePO, onLinkSupplier }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[]>([]);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('All');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<null | 'po' | 'link'>(null);
+
+  const doCreatePO = async (r: Row) => {
+    if (busyAction) return;
+    setBusyAction('po');
+    try { await onCreatePO(r.vendorAddr, r.partNumber); }
+    finally { setBusyAction(null); }
+  };
+  const doLink = async (r: Row) => {
+    if (busyAction) return;
+    setBusyAction('link');
+    try { await onLinkSupplier(r.vendorAddr); }
+    finally { setBusyAction(null); }
+  };
 
   // resolveDID gets a new reference on every App re-render (not memoized), so we
   // capture the latest in a ref and load ONCE on mount — otherwise every parent
@@ -111,7 +162,7 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
     [filtered, rows, selectedKey]
   );
 
-  const COLS = 'minmax(0, 1fr) 80px minmax(0, 1.4fr) minmax(0, 1.1fr)';
+  const COLS = 'minmax(0, 1.3fr) 64px minmax(0, 1.2fr) minmax(0, 1.1fr) 96px';
   const fmt = (n: number) => '$' + Number(n || 0).toFixed(2);
 
   return (
@@ -126,7 +177,7 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
       {error && <div style={{ padding: 20, color: '#6a2a10', fontSize: 13 }}>Error: {error}</div>}
 
       {!loading && !error && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 20, alignItems: 'flex-start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 20, alignItems: 'flex-start' }}>
 
           {/* LEFT — search + filter + table */}
           <Card layered style={{ padding: 18 }}>
@@ -156,9 +207,10 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
               {filtered.length} of {rows.length} products
             </div>
 
-            <div style={{ maxHeight: 460, overflow: 'auto', borderRadius: 10, border: '1px solid rgba(180, 140, 60, 0.12)' }}>
+            <div style={{ maxHeight: 460, overflowY: 'auto', overflowX: 'hidden', borderRadius: 10, border: '1px solid rgba(180, 140, 60, 0.12)' }}>
               <div style={{
                 display: 'grid', gridTemplateColumns: COLS, gap: 10, padding: '10px 14px',
+                width: '100%', boxSizing: 'border-box',
                 borderBottom: '1px solid rgba(180, 140, 60, 0.15)',
                 position: 'sticky', top: 0, zIndex: 2,
                 background: 'rgba(255, 248, 222, 0.95)', backdropFilter: 'blur(8px)',
@@ -168,6 +220,7 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
                 <span style={{ textAlign: 'left' }}>Price</span>
                 <span>Description</span>
                 <span>Supplier</span>
+                <span></span>
               </div>
 
               {filtered.length === 0 ? (
@@ -175,23 +228,34 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
               ) : filtered.map((r) => {
                 const isActive = selectedKey === r.rowKey;
                 return (
-                  <button key={r.rowKey} type="button"
+                  <div key={r.rowKey} role="button" tabIndex={0}
                     onClick={() => setSelectedKey(r.rowKey)}
                     onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = 'rgba(255, 248, 222, 0.5)'; }}
                     onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
                     style={{
-                      width: '100%', textAlign: 'left', display: 'grid', gridTemplateColumns: COLS,
+                      width: '100%', boxSizing: 'border-box', textAlign: 'left', display: 'grid', gridTemplateColumns: COLS,
                       gap: 10, padding: '11px 14px', alignItems: 'center',
                       background: isActive ? 'rgba(255, 232, 170, 0.55)' : 'transparent',
-                      border: 0, borderLeft: isActive ? '3px solid oklch(0.78 0.14 78)' : '3px solid transparent',
+                      borderLeft: isActive ? '3px solid oklch(0.78 0.14 78)' : '3px solid transparent',
                       borderBottom: '1px solid rgba(180, 140, 60, 0.08)',
                       transition: 'background 0.12s ease', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit',
                     }}>
-                    <span title={r.name} style={{ fontSize: 12.5, fontWeight: isActive ? 600 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name || '—'}</span>
+                    <span title={r.name} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                      <ProductThumb imageCid={r.imageCid} name={r.name} size={28}/>
+                      <span style={{ fontSize: 12.5, fontWeight: isActive ? 600 : 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name || '—'}</span>
+                    </span>
                     <span className="mono" style={{ fontSize: 12, textAlign: 'left' }}>{r.price ? fmt(r.price) : '—'}</span>
                     <span title={r.shortDescription} style={{ fontSize: 11.5, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.shortDescription || '—'}</span>
                     <span style={{ fontSize: 11.5, color: 'var(--ink-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.vendorName}{r.vendorCountry ? ' · ' + r.vendorCountry : ''}</span>
-                  </button>
+                    <button type="button" disabled={busyAction !== null}
+                      onClick={(e) => { e.stopPropagation(); doCreatePO(r); }}
+                      style={{
+                        fontSize: 10.5, fontWeight: 600, padding: '6px 8px', borderRadius: 8,
+                        border: '1px solid rgba(180,140,60,0.3)', background: 'rgba(255,232,170,0.6)',
+                        color: '#3a2c08', cursor: busyAction ? 'default' : 'pointer', fontFamily: 'inherit',
+                        whiteSpace: 'nowrap', opacity: busyAction ? 0.5 : 1,
+                      }}>Create PO</button>
+                  </div>
                 );
               })}
             </div>
@@ -207,7 +271,12 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
               <div>
                 <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Product</div>
                 <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 4 }}>{selected.name || 'Unnamed product'}</div>
-                <div style={{ fontSize: 13, color: 'var(--ink-2)', marginBottom: 12 }}>{selected.shortDescription || 'No description.'}</div>
+                <div style={{ fontSize: 13, color: 'var(--ink-2)', marginBottom: 14 }}>{selected.shortDescription || 'No description.'}</div>
+                {selected.imageCid && (
+                  <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
+                    <ProductThumb imageCid={selected.imageCid} name={selected.name} size={180} fit="contain"/>
+                  </div>
+                )}
                 <div style={{ fontSize: 15, fontWeight: 600 }}>{selected.price ? fmt(selected.price) : 'Price on request'}</div>
                 <div style={{ marginTop: 8, fontSize: 12, color: 'var(--ink-3)' }} className="mono">{selected.partNumber ? 'Part # ' + selected.partNumber : ''}</div>
                 <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid rgba(180,140,60,0.15)' }}>
@@ -216,7 +285,23 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID }) => {
                   <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>{selected.vendorCountry || '—'}</div>
                   {selected.vendorDescription && <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 6 }}>{selected.vendorDescription}</div>}
                 </div>
-                {/* 4d: live quantity, image, docs. 4e: Create PO / Link actions. */}
+                <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+                  <button type="button" disabled={busyAction !== null}
+                    onClick={() => doCreatePO(selected)}
+                    style={{
+                      flex: 1, fontSize: 13, fontWeight: 600, padding: '10px 14px', borderRadius: 10,
+                      border: 0, background: '#2a1f08', color: '#f9efd2',
+                      cursor: busyAction ? 'default' : 'pointer', fontFamily: 'inherit', opacity: busyAction ? 0.6 : 1,
+                    }}>{busyAction === 'po' ? 'Working…' : 'Create PO'}</button>
+                  <button type="button" disabled={busyAction !== null}
+                    onClick={() => doLink(selected)}
+                    style={{
+                      fontSize: 13, fontWeight: 600, padding: '10px 14px', borderRadius: 10,
+                      border: '1px solid rgba(180,140,60,0.3)', background: 'transparent',
+                      color: 'var(--ink-2)', cursor: busyAction ? 'default' : 'pointer', fontFamily: 'inherit', opacity: busyAction ? 0.6 : 1,
+                    }}>{busyAction === 'link' ? 'Linking…' : 'Link Supplier'}</button>
+                </div>
+                {/* 4d: live quantity, image, docs (deferred) */}
               </div>
             )}
           </Card>
