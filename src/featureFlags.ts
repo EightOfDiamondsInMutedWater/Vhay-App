@@ -8,7 +8,7 @@ export const FEATURES = {
   inventory: true,
   inviteOnly: true,
   // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — dark-launched; flip to true when the tab ships
-  marketplace: false,
+  marketplace: true,
   // ▲▲▲ MARKETPLACE ▲▲▲
   // Phase 6 — gated off for the demo:
   escrowYield: false,
