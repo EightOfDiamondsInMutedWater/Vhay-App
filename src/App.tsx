@@ -31,6 +31,9 @@ import { buildMemo, parseMemo, parseLegacyRefMemo, SCPO_ACTIONS } from './utils/
 import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHelpers';
 // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3
 import type { StorefrontIdentity } from './utils/marketplaceStorefront';
+// ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10
+import type { BuyerCompanyIdentity } from './utils/poDocument';
+// ▲▲▲ PO_BUILDOUT ▲▲▲
 import { buildStorefront } from './utils/marketplaceStorefront';
 import { MarketplaceTab } from './components/MarketplaceTab';
 // ▲▲▲ MARKETPLACE ▲▲▲
@@ -1187,6 +1190,13 @@ export default function App() {
   };
   const [vendorStorefrontCid, setVendorStorefrontCid] = useState<string>(() => { try { return localStorage.getItem('vhay_vendor_storefront_cid') || ''; } catch (e) { return ''; } });
   // ▲▲▲ MARKETPLACE ▲▲▲
+
+  // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10 — buyer PO-letterhead identity, isolated from Profile (removable)
+  const [buyerCompany, setBuyerCompany] = useState<BuyerCompanyIdentity>({ company: '', contactName: '', email: '', phone: '', duns: '', postal: '', logoCid: '' });
+  const updateBuyerCompany = (patch: Partial<BuyerCompanyIdentity>) => {
+    setBuyerCompany(prev => { const next = { ...prev, ...patch }; try { localStorage.setItem('vhay_buyer_company', JSON.stringify(next)); } catch (e) { /* ignore */ } return next; });
+  };
+  // ▲▲▲ PO_BUILDOUT ▲▲▲
 
   // Auto-fetch on-chain audit log when entering the Audit Log sub-tab.
   // Replaces the fetch side-effect previously welded into the pill onClick (Session 8 Patch 1).
@@ -7541,6 +7551,15 @@ const getUpdatablePOs = () => {
 
     loadProfile('customerProfile', setCustomerProfile);
     loadProfile('vendorProfile', setVendorProfile);
+    // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10 — load isolated buyer letterhead
+    try {
+      const savedBuyerCo = localStorage.getItem('vhay_buyer_company');
+      if (savedBuyerCo) {
+        const b = JSON.parse(savedBuyerCo);
+        setBuyerCompany({ company: b.company || '', contactName: b.contactName || '', email: b.email || '', phone: b.phone || '', duns: b.duns || '', postal: b.postal || '', logoCid: b.logoCid || '' });
+      }
+    } catch (e) { /* ignore */ }
+    // ▲▲▲ PO_BUILDOUT ▲▲▲
     // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — load isolated seller listing
     try {
       const savedListing = localStorage.getItem('vhay_vendor_listing');
@@ -15075,6 +15094,38 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                   )}
                 </div>
               </Card>
+
+              {/* ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10 — buyer PO letterhead (isolated, removable) */}
+              {FEATURES.poBuildout && (
+                <Card layered label="Company Details (PO Letterhead)">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>
+                      Appears as the letterhead on purchase orders you issue. Shared with the supplier on each PO (inside the encrypted PO document) — it is not published publicly and does not appear on-chain. Leave blank to omit.
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                      <Field label="Company name" full>
+                        <input value={buyerCompany.company} onChange={(e) => updateBuyerCompany({ company: e.target.value })} placeholder="e.g. Vhay Industries LLC" style={inpStyle}/>
+                      </Field>
+                      <Field label="D-U-N-S number" full>
+                        <input value={buyerCompany.duns} onChange={(e) => updateBuyerCompany({ duns: e.target.value })} placeholder="e.g. 15-048-3782" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)' }}/>
+                      </Field>
+                      <Field label="PO contact name" full>
+                        <input value={buyerCompany.contactName} onChange={(e) => updateBuyerCompany({ contactName: e.target.value })} placeholder="e.g. Jordan Rivera" style={inpStyle}/>
+                      </Field>
+                      <Field label="PO contact email" full>
+                        <input value={buyerCompany.email} onChange={(e) => updateBuyerCompany({ email: e.target.value })} placeholder="procurement@company.com" style={inpStyle}/>
+                      </Field>
+                      <Field label="PO contact phone" full>
+                        <input value={buyerCompany.phone} onChange={(e) => updateBuyerCompany({ phone: e.target.value })} placeholder="+1 (555) 555-0100" style={inpStyle}/>
+                      </Field>
+                    </div>
+                    <Field label="Billing / letterhead address" full>
+                      <textarea value={buyerCompany.postal} onChange={(e) => updateBuyerCompany({ postal: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 72, resize: 'vertical', lineHeight: 1.5 }}/>
+                    </Field>
+                  </div>
+                </Card>
+              )}
+              {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
 
               {/* ——— Organization ——— */}
               {/* ——— 3-COLUMN GRID: Organization | Wallet | Verification ——— */}

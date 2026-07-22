@@ -253,3 +253,17 @@ export function buildPODoc(input: BuildPODocInput): POMetadataV2 {
     fulfillment: input.fulfillment,
   };
 }
+// ── Buyer letterhead identity (Step 2) ──────────────────────────────────────
+// The buyer's PO letterhead block. Isolated from the app's Profile type on
+// purpose — a distinct, consented public-facing object, mirroring how the
+// seller's StorefrontIdentity is kept separate. Populated into POParty.buyer
+// at PO-build time (a later step); this type is just the form/state shape.
+export interface BuyerCompanyIdentity {
+  company: string;
+  contactName: string;
+  email: string;
+  phone: string;
+  duns: string;
+  postal: string;      // free-text postal block (matches profile address textareas)
+  logoCid: string;     // letterhead logo IPFS CID (populated when logo upload lands)
+}
