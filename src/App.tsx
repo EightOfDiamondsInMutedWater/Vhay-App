@@ -1184,7 +1184,7 @@ export default function App() {
   const [customerProfile, setCustomerProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
   const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
   // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — public seller listing, isolated from Profile (removable)
-  const [vendorListing, setVendorListing] = useState<StorefrontIdentity>({ name: '', country: '', website: '', description: '', contact: '' });
+  const [vendorListing, setVendorListing] = useState<StorefrontIdentity>({ name: '', country: '', website: '', description: '', contact: '', duns: '' });
   const updateVendorListing = (patch: Partial<StorefrontIdentity>) => {
     setVendorListing(prev => { const next = { ...prev, ...patch }; try { localStorage.setItem('vhay_vendor_listing', JSON.stringify(next)); } catch (e) { /* ignore */ } return next; });
   };
@@ -7565,7 +7565,7 @@ const getUpdatablePOs = () => {
       const savedListing = localStorage.getItem('vhay_vendor_listing');
       if (savedListing) {
         const p = JSON.parse(savedListing);
-        setVendorListing({ name: p.name || '', country: p.country || '', website: p.website || '', description: p.description || '', contact: p.contact || '' });
+        setVendorListing({ name: p.name || '', country: p.country || '', website: p.website || '', description: p.description || '', contact: p.contact || '', duns: p.duns || '' });
       }
     } catch (e) { /* ignore malformed listing */ }
     // ▲▲▲ MARKETPLACE ▲▲▲
@@ -15438,6 +15438,9 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       </Field>
                       <Field label="Public contact" full>
                         <input value={vendorListing.contact} onChange={(e) => updateVendorListing({ contact: e.target.value })} placeholder="sales@company.com" style={inpStyle}/>
+                      </Field>
+                      <Field label="D-U-N-S number" full>
+                        <input value={vendorListing.duns || ''} onChange={(e) => updateVendorListing({ duns: e.target.value })} placeholder="e.g. 15-048-3782" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)' }}/>
                       </Field>
                     </div>
                     <Field label="Short description" full>

@@ -16,6 +16,7 @@ export interface StorefrontIdentity {
   website: string;
   description: string;  // short "what we make"
   contact: string;      // public contact (email or link)
+  duns?: string;        // PO_BUILDOUT: public business identifier (optional — back-compat)
 }
 
 // One lightweight row per SKU — denormalized public fields for a fast list render.
@@ -91,6 +92,7 @@ export const buildStorefront = (
       website: identity.website || '',
       description: identity.description || '',
       contact: identity.contact || '',
+      duns: identity.duns || '',
     },
     items: rows,
   };

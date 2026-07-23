@@ -52,6 +52,7 @@ type Row = {
   vendorAddr: string;
   vendorName: string;
   vendorCountry: string;
+  vendorDuns: string;
   vendorWebsite: string;
   vendorDescription: string;
   vendorContact: string;
@@ -110,6 +111,7 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID, onCreatePO, onLink
               vendorAddr: s.addr,
               vendorName: id.name || s.addr,
               vendorCountry: id.country || '',
+              vendorDuns: id.duns || '',
               vendorWebsite: id.website || '',
               vendorDescription: id.description || '',
               vendorContact: id.contact || '',
@@ -283,6 +285,7 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID, onCreatePO, onLink
                   <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>Supplier</div>
                   <div style={{ fontSize: 15, fontWeight: 600 }}>{selected.vendorName}</div>
                   <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>{selected.vendorCountry || '—'}</div>
+                  {selected.vendorDuns && <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>D-U-N-S {selected.vendorDuns}</div>}
                   {selected.vendorDescription && <div style={{ fontSize: 12, color: 'var(--ink-2)', marginTop: 6 }}>{selected.vendorDescription}</div>}
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
