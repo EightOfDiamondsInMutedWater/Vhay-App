@@ -33,6 +33,7 @@ import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHe
 import type { StorefrontIdentity } from './utils/marketplaceStorefront';
 // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10
 import type { BuyerCompanyIdentity } from './utils/poDocument';
+import { buildPODoc } from './utils/poDocument';
 // ▲▲▲ PO_BUILDOUT ▲▲▲
 import { buildStorefront } from './utils/marketplaceStorefront';
 import { MarketplaceTab } from './components/MarketplaceTab';
@@ -129,7 +130,17 @@ const getOrGenerateUUID = (key: string): string => {
 
 interface Item { num: string; qty: string; piecePrice?: string; total: string; invNFTId?: string; }
 interface Attachment { name: string; uri: string; }
-interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string; }
+interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string;
+  // ── PO_BUILDOUT (Task 5.2 Tier 3 #10) — all optional; back-compat with every pre-existing encrypted doc ──
+  schemaVersion?: number; poNumber?: string; poDate?: string;
+  createdBy?: { name?: string; email?: string; phone?: string };
+  buyer?: import('./utils/poDocument').POParty; seller?: import('./utils/poDocument').POParty;
+  shipTo?: import('./utils/poDocument').POAddress; billTo?: import('./utils/poDocument').POAddress;
+  requestedDeliveryDate?: string; legalTerms?: string; notes?: string;
+  totals?: import('./utils/poDocument').POTotals;
+  sourceSystem?: string; externalId?: string; rfqRef?: string;
+  fulfillment?: import('./utils/poDocument').POFulfillment;
+}
 interface SavedPO { id: string; poName: string; dateIssued: string; total: string; ipfsUri: string; status: 'open' | 'accepted' | 'funded' | 'claimed' | 'updated' | 'recalled' | 'superseded'; issuanceId: string; escrowSequence?: number; txHash: string; buyerAddress: string; vendorAddress: string; paymentTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; vendorUUID?: string; clawbackEnabled?: boolean; parentIssuanceId?: string; yieldOptIn?: boolean; metadata: any; }
 interface PublicProfile { company: string; name: string; jobTitle?: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity?: string; shippingState?: string; shippingZip?: string; shippingCountry?: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
 interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
@@ -4172,6 +4183,70 @@ useEffect(() => {
     setIsLoadingEditPO(false);
   };
 
+  // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10 — new doc-construction path (narrow fork).
+  // Returns { poData, fullMetadata } as a matched pair from ONE buildPODoc call, so the
+  // encrypted-IPFS doc (authoritative) and the local metadata cache can never diverge.
+  // 4a: carries only fields that already exist in state; tax/addresses/terms/date land in
+  // later slices. Escrow amount is NOT computed here — unchanged from today.
+  const buildViaPODoc = (args: {
+    poName: string; desc: string; department: string; paymentTerms: string; deliveryTerms: string;
+    escrowCurrency?: 'XRP' | 'RLUSD'; items: Item[]; attachments: Attachment[];
+    buyerAddress: string; vendorAddress: string;
+    parentIssuanceId?: string; priorHistory?: Array<{ ts: number; status: string; by: string }>;
+    createdBy?: { name?: string; email?: string; phone?: string };
+  }): { poData: POData; fullMetadata: any } => {
+    const doc = buildPODoc({
+      poName: args.poName,
+      description: args.desc,
+      department: args.department,
+      paymentTerms: args.paymentTerms,
+      deliveryTerms: args.deliveryTerms,
+      escrowCurrency: args.escrowCurrency,
+      items: args.items as any,            // Item is a structural subset of POItemV2
+      attachments: args.attachments,
+      buyerAddress: args.buyerAddress,
+      vendorAddress: args.vendorAddress,
+      status: 'open',
+      parentIssuanceId: args.parentIssuanceId,
+      clawbackEnabled: true,
+      priorHistory: args.priorHistory,
+      by: 'buyer',
+      createdBy: args.createdBy,
+    });
+    // poData = the durable encrypted-IPFS shape (POData superset). Keep items as the
+    // app's Item[] (doc.items is a superset; extra keys are harmless in the encrypted doc).
+    const poData: POData = {
+      poName: doc.poName, description: doc.description, department: doc.department,
+      paymentTerms: doc.paymentTerms, deliveryTerms: doc.deliveryTerms,
+      escrowCurrency: args.escrowCurrency,
+      items: args.items,
+      attachments: args.attachments.length > 0 ? args.attachments : undefined,
+      parentIssuanceId: args.parentIssuanceId,
+      schemaVersion: 2, poNumber: doc.poNumber, poDate: doc.poDate,
+      createdBy: doc.createdBy, buyer: doc.buyer, seller: doc.seller,
+      shipTo: doc.shipTo, billTo: doc.billTo,
+      requestedDeliveryDate: doc.requestedDeliveryDate, legalTerms: doc.legalTerms,
+      notes: doc.notes, totals: doc.totals,
+      sourceSystem: doc.sourceSystem, externalId: doc.externalId, rfqRef: doc.rfqRef,
+      fulfillment: doc.fulfillment,
+    };
+    // fullMetadata = local cache, DERIVED from the same doc so the two can't disagree.
+    // Mirrors buildPOMetadata's output shape exactly, plus the schemaVersion marker.
+    const fullMetadata: any = {
+      poName: doc.poName, description: doc.description, department: doc.department,
+      paymentTerms: doc.paymentTerms, deliveryTerms: doc.deliveryTerms,
+      items: args.items.map(i => ({ ...i })), attachments: args.attachments || [],
+      buyerAddress: doc.buyerAddress, vendorAddress: doc.vendorAddress,
+      issued: doc.issued, lastUpdated: doc.lastUpdated, status: doc.status,
+      parentIssuanceId: doc.parentIssuanceId, clawbackEnabled: doc.clawbackEnabled,
+      history: doc.history,
+      schemaVersion: 2, poNumber: doc.poNumber, createdBy: doc.createdBy,
+      buyer: doc.buyer, seller: doc.seller, totals: doc.totals,
+    };
+    return { poData, fullMetadata };
+  };
+  // ▲▲▲ PO_BUILDOUT ▲▲▲
+
   const createSCPO = async () => {
     if (!poName) {
       await openConfirm({
@@ -4291,7 +4366,22 @@ useEffect(() => {
         }
       }
     }
-    const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
+    // ▼▼▼ PO_BUILDOUT ▼▼▼ create fork — new path builds poData+fullMetadata as a pair; old path unchanged
+    let poData: POData;
+    let fullMetadataPO: any | null = null;
+    if (FEATURES.poBuildout) {
+      const built = buildViaPODoc({
+        poName, desc, department, paymentTerms, deliveryTerms, escrowCurrency,
+        items, attachments,
+        buyerAddress: xrpl.Wallet.fromSeed(seed).classicAddress, vendorAddress: vendor,
+        createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
+      });
+      poData = built.poData;
+      fullMetadataPO = built.fullMetadata;
+    } else {
+      poData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
+    }
+    // ▲▲▲ PO_BUILDOUT ▲▲▲
     try {
       setResult('Encrypting and uploading PO data to IPFS...');
       const password = getPOEncryptionKey(selectedVendorUUID)!;
@@ -4307,7 +4397,9 @@ useEffect(() => {
       const feeResult = await submitBlobQueued(signedFee.tx_blob);
       if (typeof feeResult.result.meta === 'object' && feeResult.result.meta.TransactionResult !== 'tesSUCCESS') throw new Error('Fee failed');
       setResult('Creating MPToken Issuance...');
-      const fullMetadata = buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, vendor, 'open', undefined, true);
+      // ▼▼▼ PO_BUILDOUT ▼▼▼ use the pre-built fullMetadata from the new path when flag on; else old inline build
+      const fullMetadata = fullMetadataPO !== null ? fullMetadataPO : buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, vendor, 'open', undefined, true);
+      // ▲▲▲ PO_BUILDOUT ▲▲▲
       const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, vendor, totalEscrowAmount, paymentTerms, undefined, escrowCurrency);
       const mptCreate: any = {
         TransactionType: 'MPTokenIssuanceCreate',
@@ -4373,7 +4465,7 @@ useEffect(() => {
         }
       }
 
-      setResult(`SC.PO Created Successfully!\nIssuance ID: ${issuanceId}\nTx Hash: ${txHash}\nIPFS URI: ${ipfsUri}\n\nVendor must now ACCEPT to authorize.`);
+      setResult(`PO Created Successfully!\nIssuance ID: ${issuanceId}\nTx Hash: ${txHash}\nIPFS URI: ${ipfsUri}\n\nVendor must now ACCEPT to authorize.`);
       setScpoSuccess(true); setTimeout(() => setScpoSuccess(false), 3000);
       setItems([]); localStorage.removeItem('createItems');
       setYieldOptIn(false); setYieldOptInAPR(null); setYieldEstimatedReturn(null);
@@ -4444,7 +4536,24 @@ useEffect(() => {
         }
       }
     }
-    const poData: POData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
+    // ▼▼▼ PO_BUILDOUT ▼▼▼ update fork — passes parentIssuanceId + prior history to match today's behavior
+    let poData: POData;
+    let fullMetadataUpd: any | null = null;
+    if (FEATURES.poBuildout) {
+      const built = buildViaPODoc({
+        poName, desc, department, paymentTerms, deliveryTerms, escrowCurrency,
+        items, attachments,
+        buyerAddress: xrpl.Wallet.fromSeed(seed).classicAddress, vendorAddress: selectedUpdatePO.vendorAddress,
+        parentIssuanceId: selectedUpdatePO.issuanceId,
+        priorHistory: selectedUpdatePO.metadata?.history || [],
+        createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
+      });
+      poData = built.poData;
+      fullMetadataUpd = built.fullMetadata;
+    } else {
+      poData = { poName, description: desc, department, paymentTerms, deliveryTerms, escrowCurrency, items, attachments: attachments.length > 0 ? attachments : undefined };
+    }
+    // ▲▲▲ PO_BUILDOUT ▲▲▲
     try {
       setUpdateResult('Encrypting and uploading updated PO...');
       const ipfsUri = await uploadEncryptedToIPFS(poData, password);
@@ -4487,7 +4596,9 @@ useEffect(() => {
           console.log('Recall receipt sent for updated PO');
         } catch (e) { console.error('Recall receipt failed during update:', e); }
       }
-      const fullMetadata = buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, selectedUpdatePO.vendorAddress, 'open', selectedUpdatePO.issuanceId, true, selectedUpdatePO.metadata?.history || []);
+      // ▼▼▼ PO_BUILDOUT ▼▼▼ use pre-built fullMetadata from the new path when flag on; else old inline build
+      const fullMetadata = fullMetadataUpd !== null ? fullMetadataUpd : buildPOMetadata(poName, desc, department, paymentTerms, deliveryTerms, items, attachments, wallet.classicAddress, selectedUpdatePO.vendorAddress, 'open', selectedUpdatePO.issuanceId, true, selectedUpdatePO.metadata?.history || []);
+      // ▲▲▲ PO_BUILDOUT ▲▲▲
       const ledgerMetadata = buildLedgerMetadata(poName, ipfsUri, 'open', wallet.classicAddress, selectedUpdatePO.vendorAddress, totalEscrowAmount, paymentTerms, selectedUpdatePO.issuanceId, escrowCurrency);
       const mptCreate: any = {
         TransactionType: 'MPTokenIssuanceCreate',
