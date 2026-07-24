@@ -33,7 +33,7 @@ import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHe
 import type { StorefrontIdentity } from './utils/marketplaceStorefront';
 // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10
 import type { BuyerCompanyIdentity } from './utils/poDocument';
-import { buildPODoc } from './utils/poDocument';
+import { buildPODoc, computeTotals } from './utils/poDocument';
 // ▲▲▲ PO_BUILDOUT ▲▲▲
 import { buildStorefront } from './utils/marketplaceStorefront';
 import { MarketplaceTab } from './components/MarketplaceTab';
@@ -128,7 +128,7 @@ const getOrGenerateUUID = (key: string): string => {
   return uuid;
 };
 
-interface Item { num: string; qty: string; piecePrice?: string; total: string; invNFTId?: string; }
+interface Item { num: string; qty: string; piecePrice?: string; total: string; invNFTId?: string; taxRate?: string; lineTax?: string; }
 interface Attachment { name: string; uri: string; }
 interface POData { poName: string; description: string; department: string; paymentTerms: string; deliveryTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; items: Item[]; attachments?: Attachment[]; parentIssuanceId?: string;
   // ── PO_BUILDOUT (Task 5.2 Tier 3 #10) — all optional; back-compat with every pre-existing encrypted doc ──
@@ -963,6 +963,9 @@ export default function App() {
   const [newQty, setNewQty] = useState('');
   const [newPiecePrice, setNewPiecePrice] = useState('');
   const [newTotal, setNewTotal] = useState('');
+  // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10 — single PO-level tax rate (percent string, e.g. "8.25")
+  const [poTaxRate, setPoTaxRate] = useState('');
+  // ▲▲▲ PO_BUILDOUT ▲▲▲
   const [totalEscrowAmount, setTotalEscrowAmount] = useState('0');
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const [scpoSuccess, setScpoSuccess] = useState(false);
@@ -3379,9 +3382,18 @@ export default function App() {
   };
 
   useEffect(() => {
-    const total = items.reduce((sum, item) => sum + parseFloat(item.total || '0'), 0);
-    setTotalEscrowAmount(parseFloat(total.toFixed(2)).toString());
-  }, [items]);
+    // ▼▼▼ PO_BUILDOUT ▼▼▼ escrow locks GRAND TOTAL (subtotal + tax) when flag on; subtotal otherwise.
+    // Flag-off path is byte-identical to before. Summary Subtotal/Tax rows read computeTotals
+    // independently, so this only changes the escrow number, not the displayed subtotal.
+    if (FEATURES.poBuildout) {
+      const t = computeTotals({ items: items.map(i => ({ ...i, taxRate: poTaxRate })) as any, currency: escrowCurrency });
+      setTotalEscrowAmount(t.grandTotal);
+    } else {
+      const total = items.reduce((sum, item) => sum + parseFloat(item.total || '0'), 0);
+      setTotalEscrowAmount(parseFloat(total.toFixed(2)).toString());
+    }
+    // ▲▲▲ PO_BUILDOUT ▲▲▲
+  }, [items, poTaxRate, escrowCurrency]);
 
   useEffect(() => {
     if (process.env.REACT_APP_COMPANY_WALLET) {
@@ -4132,6 +4144,7 @@ useEffect(() => {
     let loadedPayTerms = po.metadata?.pt || po.paymentTerms || '';
     let loadedDelTerms = 'FOB';
     let loadedItems: Item[] = [];
+    let loadedTaxRate = ''; // PO_BUILDOUT: single PO-level rate, derived from first taxed line
     let loadedAttachments: Attachment[] = [];
 
     if (po.ipfsUri) {
@@ -4153,6 +4166,10 @@ useEffect(() => {
               loadedDelTerms = poData.deliveryTerms || 'FOB';
               loadedItems = poData.items || [];
               loadedAttachments = poData.attachments || [];
+              // PO_BUILDOUT: recover the PO-level tax rate from the first line that carries one
+              // (4c-minimal stamps the same rate on every line). Pre-4c POs have none → stays ''.
+              const taxedLine = (poData.items || []).find(it => it.taxRate !== undefined && it.taxRate !== '');
+              loadedTaxRate = taxedLine ? (taxedLine.taxRate as string) : '';
             }
           }
         }
@@ -4177,6 +4194,7 @@ useEffect(() => {
     setEscrowCurrency(po.escrowCurrency || (isRLUSDConfigured() ? 'RLUSD' : 'XRP'));
     setItems(loadedItems);
     setExistingAttachments(loadedAttachments);
+    setPoTaxRate(loadedTaxRate); // PO_BUILDOUT
     setVendor(po.vendorAddress || '');
     setSelectedVendorUUID(po.vendorUUID || '');
     setSelectedFiles(null);
@@ -4194,7 +4212,13 @@ useEffect(() => {
     buyerAddress: string; vendorAddress: string;
     parentIssuanceId?: string; priorHistory?: Array<{ ts: number; status: string; by: string }>;
     createdBy?: { name?: string; email?: string; phone?: string };
+    taxRate?: string;
   }): { poData: POData; fullMetadata: any } => {
+    // Stamp the single PO-level tax rate onto every line; buildPODoc's withLineTax
+    // derives lineTax + computeTotals rolls up taxTotal/grandTotal into doc.totals.
+    const taxedItems: Item[] = (args.taxRate && args.taxRate !== '')
+      ? args.items.map(i => ({ ...i, taxRate: args.taxRate }))
+      : args.items;
     const doc = buildPODoc({
       poName: args.poName,
       description: args.desc,
@@ -4202,7 +4226,7 @@ useEffect(() => {
       paymentTerms: args.paymentTerms,
       deliveryTerms: args.deliveryTerms,
       escrowCurrency: args.escrowCurrency,
-      items: args.items as any,            // Item is a structural subset of POItemV2
+      items: taxedItems as any,            // tax-stamped; Item is a structural subset of POItemV2
       attachments: args.attachments,
       buyerAddress: args.buyerAddress,
       vendorAddress: args.vendorAddress,
@@ -4219,7 +4243,7 @@ useEffect(() => {
       poName: doc.poName, description: doc.description, department: doc.department,
       paymentTerms: doc.paymentTerms, deliveryTerms: doc.deliveryTerms,
       escrowCurrency: args.escrowCurrency,
-      items: args.items,
+      items: taxedItems,
       attachments: args.attachments.length > 0 ? args.attachments : undefined,
       parentIssuanceId: args.parentIssuanceId,
       schemaVersion: 2, poNumber: doc.poNumber, poDate: doc.poDate,
@@ -4235,7 +4259,7 @@ useEffect(() => {
     const fullMetadata: any = {
       poName: doc.poName, description: doc.description, department: doc.department,
       paymentTerms: doc.paymentTerms, deliveryTerms: doc.deliveryTerms,
-      items: args.items.map(i => ({ ...i })), attachments: args.attachments || [],
+      items: taxedItems.map(i => ({ ...i })), attachments: args.attachments || [],
       buyerAddress: doc.buyerAddress, vendorAddress: doc.vendorAddress,
       issued: doc.issued, lastUpdated: doc.lastUpdated, status: doc.status,
       parentIssuanceId: doc.parentIssuanceId, clawbackEnabled: doc.clawbackEnabled,
@@ -4375,6 +4399,7 @@ useEffect(() => {
         items, attachments,
         buyerAddress: xrpl.Wallet.fromSeed(seed).classicAddress, vendorAddress: vendor,
         createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
+        taxRate: poTaxRate,
       });
       poData = built.poData;
       fullMetadataPO = built.fullMetadata;
@@ -4547,6 +4572,7 @@ useEffect(() => {
         parentIssuanceId: selectedUpdatePO.issuanceId,
         priorHistory: selectedUpdatePO.metadata?.history || [],
         createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
+        taxRate: poTaxRate,
       });
       poData = built.poData;
       fullMetadataUpd = built.fullMetadata;
@@ -9476,16 +9502,50 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       {yieldOptIn && escrowCurrency === 'RLUSD' && yieldOptInAPR !== null && (
                         <SumRow label="Yield" v={`${formatAPR(yieldOptInAPR)} active`} highlight/>
                       )}
+                      {/* ▼▼▼ PO_BUILDOUT ▼▼▼ single PO-level tax rate input */}
+                      {FEATURES.poBuildout && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--ink-3)' }}>Tax rate (%)</span>
+                          <input value={poTaxRate} onChange={(e) => setPoTaxRate(e.target.value)} placeholder="0"
+                            className="mono" style={{ ...inpStyle, width: 90, padding: '4px 8px', fontSize: 13, textAlign: 'right' }}/>
+                        </div>
+                      )}
+                      {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
                     </div>
-                    <hr style={{ border: 0, borderTop: '1px dashed rgba(180, 140, 60, 0.25)', margin: '16px 0 12px' }}/>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                      <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-                        Sub total
-                      </div>
-                      <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
-                        ${totalEscrowAmount}
-                      </div>
-                    </div>
+                    {/* ▼▼▼ PO_BUILDOUT ▼▼▼ tax-aware subtotal / tax / grand total */}
+                    {FEATURES.poBuildout ? (() => {
+                      const t = computeTotals({ items: items.map(i => ({ ...i, taxRate: poTaxRate })) as any, currency: escrowCurrency });
+                      return (
+                        <>
+                          <hr style={{ border: 0, borderTop: '1px dashed rgba(180, 140, 60, 0.25)', margin: '16px 0 12px' }}/>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
+                            <SumRow label="Subtotal" v={`$${t.subtotal}`}/>
+                            <SumRow label={`Tax (${poTaxRate || '0'}%)`} v={`$${t.taxTotal}`}/>
+                          </div>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 12 }}>
+                            <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                              Grand total
+                            </div>
+                            <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
+                              ${t.grandTotal}
+                            </div>
+                          </div>
+                        </>
+                      );
+                    })() : (
+                      <>
+                        <hr style={{ border: 0, borderTop: '1px dashed rgba(180, 140, 60, 0.25)', margin: '16px 0 12px' }}/>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                            Sub total
+                          </div>
+                          <div className="mono" style={{ fontSize: 28, fontWeight: 500, letterSpacing: '-0.03em' }}>
+                            ${totalEscrowAmount}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
                   </Card>
 
                   <button type="button"
@@ -10000,9 +10060,23 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       </div>
 
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
-                        <div className="mono" style={{ fontSize: 13 }}>
-                          <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
-                          <span style={{ fontWeight: 600, fontSize: 16 }}>${totalEscrowAmount}</span>
+                        <div className="mono" style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 14 }}>
+                          {FEATURES.poBuildout ? (() => {
+                            const t = computeTotals({ items: items.map(i => ({ ...i, taxRate: poTaxRate })) as any, currency: escrowCurrency });
+                            return (
+                              <>
+                                <span><span style={{ color: 'var(--ink-3)' }}>Subtotal · </span><span style={{ fontWeight: 600, fontSize: 16 }}>${t.subtotal}</span></span>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                                  <span style={{ color: 'var(--ink-3)' }}>Tax %</span>
+                                  <input value={poTaxRate} onChange={(e) => setPoTaxRate(e.target.value)} placeholder="0"
+                                    className="mono" style={{ ...inpStyle, width: 64, padding: '2px 6px', fontSize: 12, textAlign: 'right' }}/>
+                                </span>
+                                <span><span style={{ color: 'var(--ink-3)' }}>Grand · </span><span style={{ fontWeight: 600, fontSize: 16 }}>${t.grandTotal}</span></span>
+                              </>
+                            );
+                          })() : (
+                            <><span style={{ color: 'var(--ink-3)' }}>Sub total · </span><span style={{ fontWeight: 600, fontSize: 16 }}>${totalEscrowAmount}</span></>
+                          )}
                         </div>
                         <Btn variant="ghost" icon={IconPlus} onClick={addItem}>Add line</Btn>
                       </div>
