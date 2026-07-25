@@ -2562,6 +2562,35 @@ export default function App() {
     );
   };
 
+  // ▼▼▼ PO_BUILDOUT ▼▼▼ read-only PO totals block. Shows Subtotal/Tax/Grand when the doc
+  // carries real tax data (post-4c POs with tax > 0); falls back to a single Total line for
+  // pre-4c POs (no poData.totals) and zero-tax POs. fallbackTotal = the PO's on-chain total.
+  const POTotalsBlock = ({ totals, fallbackTotal, tightBorder }: { totals?: import('./utils/poDocument').POTotals; fallbackTotal: string; tightBorder?: boolean }) => {
+    const borderCol = tightBorder ? 'rgba(180,140,60,0.15)' : 'rgba(180,140,60,0.2)';
+    const hasTax = FEATURES.poBuildout && !!totals && parseFloat(totals.taxTotal || '0') > 0;
+    if (!hasTax) {
+      return (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12, paddingTop: 12, borderTop: `1px dashed ${borderCol}` }}>
+          <div className="mono" style={{ fontSize: 13 }}>
+            <span style={{ color: 'var(--ink-3)' }}>Total · </span>
+            <span style={{ fontWeight: 600, fontSize: 16 }}>${(totals && totals.grandTotal) || fallbackTotal}</span>
+          </div>
+        </div>
+      );
+    }
+    const t = totals as import('./utils/poDocument').POTotals;
+    return (
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px dashed ${borderCol}` }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+          <div className="mono" style={{ fontSize: 12, color: 'var(--ink-3)' }}>Subtotal · <span style={{ color: 'var(--ink)', fontWeight: 500 }}>${t.subtotal}</span></div>
+          <div className="mono" style={{ fontSize: 12, color: 'var(--ink-3)' }}>Tax · <span style={{ color: 'var(--ink)', fontWeight: 500 }}>${t.taxTotal}</span></div>
+          <div className="mono" style={{ fontSize: 13, marginTop: 2 }}><span style={{ color: 'var(--ink-3)' }}>Grand total · </span><span style={{ fontWeight: 600, fontSize: 16 }}>${t.grandTotal}</span></div>
+        </div>
+      </div>
+    );
+  };
+  // ▲▲▲ PO_BUILDOUT ▲▲▲
+
   // ── Reusable PO detail tabs (Overview / Profile / Inventory) ──
   // Called from Sell · Action and Sell · Financing > PO Financing right pane.
   // Caller is responsible for passing the IPFS-loaded PO + tab state.
@@ -2671,12 +2700,7 @@ export default function App() {
               </>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12, paddingTop: 12, borderTop: '1px dashed rgba(180,140,60,0.2)' }}>
-              <div className="mono" style={{ fontSize: 13 }}>
-                <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
-                <span style={{ fontWeight: 600, fontSize: 16 }}>${chainPO?.total ?? '0'}</span>
-              </div>
-            </div>
+            <POTotalsBlock totals={viewedPO.totals} fallbackTotal={chainPO?.total ?? '0'}/>
           </>
         )}
 
@@ -14457,15 +14481,8 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           </div>
                         </div>
 
-                        <div style={{
-                          display: 'flex', justifyContent: 'flex-end',
-                          paddingTop: 10, marginBottom: 14,
-                          borderTop: '1px dashed rgba(180,140,60,0.15)',
-                        }}>
-                          <div className="mono" style={{ fontSize: 13 }}>
-                            <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
-                            <span style={{ fontWeight: 600, fontSize: 18 }}>${overviewSelectedPO.total}</span>
-                          </div>
+                        <div style={{ marginBottom: 14 }}>
+                          <POTotalsBlock totals={overviewViewedPOData?.totals} fallbackTotal={overviewSelectedPO.total} tightBorder/>
                         </div>
                       </>
                     )}
@@ -15118,15 +15135,8 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           </div>
                         </div>
 
-                        <div style={{
-                          display: 'flex', justifyContent: 'flex-end',
-                          paddingTop: 10, marginBottom: 14,
-                          borderTop: '1px dashed rgba(180,140,60,0.15)',
-                        }}>
-                          <div className="mono" style={{ fontSize: 13 }}>
-                            <span style={{ color: 'var(--ink-3)' }}>Sub total · </span>
-                            <span style={{ fontWeight: 600, fontSize: 18 }}>${vOvwSelectedPO.total}</span>
-                          </div>
+                        <div style={{ marginBottom: 14 }}>
+                          <POTotalsBlock totals={vOvwViewedPOData?.totals} fallbackTotal={vOvwSelectedPO.total} tightBorder/>
                         </div>
                       </>
                     )}
