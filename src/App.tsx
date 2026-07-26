@@ -142,7 +142,8 @@ interface POData { poName: string; description: string; department: string; paym
   fulfillment?: import('./utils/poDocument').POFulfillment;
 }
 interface SavedPO { id: string; poName: string; dateIssued: string; total: string; ipfsUri: string; status: 'open' | 'accepted' | 'funded' | 'claimed' | 'updated' | 'recalled' | 'superseded'; issuanceId: string; escrowSequence?: number; txHash: string; buyerAddress: string; vendorAddress: string; paymentTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; vendorUUID?: string; clawbackEnabled?: boolean; parentIssuanceId?: string; yieldOptIn?: boolean; metadata: any; }
-interface PublicProfile { company: string; name: string; jobTitle?: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity?: string; shippingState?: string; shippingZip?: string; shippingCountry?: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
+interface PublicProfile { company: string; name: string; jobTitle?: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity?: string; shippingState?: string; shippingZip?: string; shippingCountry?: string; duns?: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
+interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; duns?: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
 interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
 
@@ -2639,6 +2640,25 @@ export default function App() {
         {/* OVERVIEW TAB */}
         {currentTab === 'overview' && (
           <>
+            {FEATURES.poBuildout && (viewedPO.buyer || viewedPO.seller) && (
+              <>
+                <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  Parties
+                  <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 4, background: 'rgba(180, 140, 60, 0.12)', color: 'var(--ink-3)', letterSpacing: '0.06em' }}>AS ISSUED</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
+                  {([['Buyer', viewedPO.buyer], ['Seller', viewedPO.seller]] as Array<[string, import('./utils/poDocument').POParty | undefined]>).map(([role, p]) => (
+                    <div key={role} className="etched" style={{ padding: 14, borderRadius: 12 }}>
+                      <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>{role}</div>
+                      <div style={{ fontSize: 15, fontWeight: 600 }}>{(p && (p.company || p.contactName)) || '—'}</div>
+                      {p && p.contactName && p.company && <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>{p.contactName}</div>}
+                      {p && p.duns && <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>D-U-N-S {p.duns}</div>}
+                      {p && (p.email || p.phone) && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>{[p.email, p.phone].filter(Boolean).join(' · ')}</div>}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
               {[
                 { label: 'Department', v: viewedPO.department || '—' },
@@ -2719,7 +2739,10 @@ export default function App() {
             ).map(({ title, data, tone }) => (
               <div key={title} className="etched" style={{ padding: 16, borderRadius: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>{title}</div>
+                  <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {title}
+                    {FEATURES.poBuildout && <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 4, background: 'rgba(120, 170, 110, 0.15)', color: '#4a6a3a', letterSpacing: '0.06em' }}>LIVE</span>}
+                  </div>
                   {data.uniqueID && <Chip tone={tone}>{data.uniqueID}</Chip>}
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: '-0.01em', marginBottom: 2 }}>
@@ -2730,6 +2753,7 @@ export default function App() {
                 )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
                   {[
+                    { k: 'DUNS',             v: data.duns,                                           mono: true },
                     { k: 'Email',            v: data.email,                                          mono: false },
                     { k: 'Phone',            v: data.phone,                                          mono: false },
                     { k: 'Billing address',  v: data.address,                                        mono: false },
@@ -4237,6 +4261,8 @@ useEffect(() => {
     parentIssuanceId?: string; priorHistory?: Array<{ ts: number; status: string; by: string }>;
     createdBy?: { name?: string; email?: string; phone?: string };
     taxRate?: string;
+    buyer?: import('./utils/poDocument').POParty;
+    seller?: import('./utils/poDocument').POParty;
   }): { poData: POData; fullMetadata: any } => {
     // Stamp the single PO-level tax rate onto every line; buildPODoc's withLineTax
     // derives lineTax + computeTotals rolls up taxTotal/grandTotal into doc.totals.
@@ -4260,6 +4286,8 @@ useEffect(() => {
       priorHistory: args.priorHistory,
       by: 'buyer',
       createdBy: args.createdBy,
+      buyer: args.buyer,
+      seller: args.seller,
     });
     // poData = the durable encrypted-IPFS shape (POData superset). Keep items as the
     // app's Item[] (doc.items is a superset; extra keys are harmless in the encrypted doc).
@@ -4418,12 +4446,32 @@ useEffect(() => {
     let poData: POData;
     let fullMetadataPO: any | null = null;
     if (FEATURES.poBuildout) {
+      const _selSeller = linkedVendors.find(v => v.profileUUID === selectedVendorUUID);
       const built = buildViaPODoc({
         poName, desc, department, paymentTerms, deliveryTerms, escrowCurrency,
         items, attachments,
         buyerAddress: xrpl.Wallet.fromSeed(seed).classicAddress, vendorAddress: vendor,
         createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
         taxRate: poTaxRate,
+        buyer: {
+          address: xrpl.Wallet.fromSeed(seed).classicAddress,
+          company: buyerCompany.company || customerProfile.company || undefined,
+          contactName: buyerCompany.contactName || customerProfile.name || undefined,
+          email: buyerCompany.email || customerProfile.email || undefined,
+          phone: buyerCompany.phone || customerProfile.phone || undefined,
+          duns: buyerCompany.duns || customerProfile.duns || undefined,
+          postal: buyerCompany.postal || customerProfile.address || undefined,
+          logoCid: buyerCompany.logoCid || undefined,
+        },
+        seller: _selSeller ? {
+          address: _selSeller.classicAddress,
+          company: _selSeller.company || undefined,
+          contactName: _selSeller.name || undefined,
+          email: _selSeller.email || undefined,
+          phone: _selSeller.phone || undefined,
+          duns: _selSeller.duns || undefined,
+          postal: _selSeller.address || undefined,
+        } : { address: vendor },
       });
       poData = built.poData;
       fullMetadataPO = built.fullMetadata;
@@ -4589,6 +4637,7 @@ useEffect(() => {
     let poData: POData;
     let fullMetadataUpd: any | null = null;
     if (FEATURES.poBuildout) {
+      const _selSellerU = linkedVendors.find(v => v.classicAddress === selectedUpdatePO.vendorAddress);
       const built = buildViaPODoc({
         poName, desc, department, paymentTerms, deliveryTerms, escrowCurrency,
         items, attachments,
@@ -4597,6 +4646,25 @@ useEffect(() => {
         priorHistory: selectedUpdatePO.metadata?.history || [],
         createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
         taxRate: poTaxRate,
+        buyer: {
+          address: xrpl.Wallet.fromSeed(seed).classicAddress,
+          company: buyerCompany.company || customerProfile.company || undefined,
+          contactName: buyerCompany.contactName || customerProfile.name || undefined,
+          email: buyerCompany.email || customerProfile.email || undefined,
+          phone: buyerCompany.phone || customerProfile.phone || undefined,
+          duns: buyerCompany.duns || customerProfile.duns || undefined,
+          postal: buyerCompany.postal || customerProfile.address || undefined,
+          logoCid: buyerCompany.logoCid || undefined,
+        },
+        seller: _selSellerU ? {
+          address: _selSellerU.classicAddress,
+          company: _selSellerU.company || undefined,
+          contactName: _selSellerU.name || undefined,
+          email: _selSellerU.email || undefined,
+          phone: _selSellerU.phone || undefined,
+          duns: _selSellerU.duns || undefined,
+          postal: _selSellerU.address || undefined,
+        } : { address: selectedUpdatePO.vendorAddress },
       });
       poData = built.poData;
       fullMetadataUpd = built.fullMetadata;
@@ -5668,7 +5736,7 @@ const getUpdatablePOs = () => {
 
   const getProfileForAddress = (address: string): PublicProfile | null => {
     if (customerProfile.classicAddress === address) {
-      return { company: customerProfile.company, name: customerProfile.name, email: customerProfile.email, phone: customerProfile.phone, address: customerProfile.address, city: customerProfile.city, state: customerProfile.state, zip: customerProfile.zip, country: customerProfile.country, shippingAddress: customerProfile.shippingAddress, uniqueID: customerProfile.uniqueID, classicAddress: customerProfile.classicAddress, profileUUID: customerProfile.profileUUID, timestamp: Date.now(), walletHistory: customerProfile.walletHistory };
+      return { company: customerProfile.company, name: customerProfile.name, email: customerProfile.email, phone: customerProfile.phone, address: customerProfile.address, city: customerProfile.city, state: customerProfile.state, zip: customerProfile.zip, country: customerProfile.country, shippingAddress: customerProfile.shippingAddress, duns: customerProfile.duns || '', uniqueID: customerProfile.uniqueID, classicAddress: customerProfile.classicAddress, profileUUID: customerProfile.profileUUID, timestamp: Date.now(), walletHistory: customerProfile.walletHistory };
     }
     if (vendorProfile.classicAddress === address) {
       return { company: vendorProfile.company, name: vendorProfile.name, email: vendorProfile.email, phone: vendorProfile.phone, address: vendorProfile.address, city: vendorProfile.city, state: vendorProfile.state, zip: vendorProfile.zip, country: vendorProfile.country, shippingAddress: vendorProfile.shippingAddress, uniqueID: vendorProfile.uniqueID, classicAddress: vendorProfile.classicAddress, profileUUID: vendorProfile.profileUUID, timestamp: Date.now(), walletHistory: vendorProfile.walletHistory };
@@ -7699,7 +7767,7 @@ const getUpdatablePOs = () => {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '', jobTitle: parsed.jobTitle || '', shippingAddress: parsed.shippingAddress || '', shippingCity: parsed.shippingCity || '', shippingState: parsed.shippingState || '', shippingZip: parsed.shippingZip || '', shippingCountry: parsed.shippingCountry || '' });
+          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '', jobTitle: parsed.jobTitle || '', shippingAddress: parsed.shippingAddress || '', shippingCity: parsed.shippingCity || '', shippingState: parsed.shippingState || '', shippingCountry: parsed.shippingCountry || '', duns: parsed.duns || '' });
         } catch (e) {
           const newProfile = { company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: getOrGenerateUUID(`${key}UUID`), walletHistory: [], lastOnChainHash: '' };
           setProfile(newProfile); localStorage.setItem(key, JSON.stringify(newProfile));
@@ -8293,7 +8361,7 @@ const fetchSharedInventoryDoc = async (
       const customerHasNoCred = !customerCredStatus || !customerCredStatus.valid;
       if (customerProfile.lastOnChainHash && contentHash === customerProfile.lastOnChainHash && !customerHasNoCred) { console.log('No profile changes'); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile)); return; }
       if (true) {
-        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, shippingAddress: updatedProfile.shippingAddress, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
+        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, shippingAddress: updatedProfile.shippingAddress, duns: updatedProfile.duns || '', uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
         const client = await getXRPLClient();
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
         // Phase 1A: Use ECDH-derived key instead of manual password
@@ -8437,7 +8505,7 @@ const fetchSharedInventoryDoc = async (
       const vendorHasNoCred = !vendorCredStatus || !vendorCredStatus.valid;
       if (vendorProfile.lastOnChainHash && contentHash === vendorProfile.lastOnChainHash && !vendorHasNoCred) { console.log('No profile changes'); localStorage.setItem('vendorProfile', JSON.stringify(updatedProfile)); return; }
       if (true) {
-        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, shippingAddress: updatedProfile.shippingAddress, uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
+        const publicProfile: PublicProfile = { company: updatedProfile.company, name: updatedProfile.name, email: updatedProfile.email, phone: updatedProfile.phone, address: updatedProfile.address, city: updatedProfile.city, state: updatedProfile.state, zip: updatedProfile.zip, country: updatedProfile.country, shippingAddress: updatedProfile.shippingAddress, duns: updatedProfile.duns || '', uniqueID: updatedProfile.uniqueID, classicAddress: updatedProfile.classicAddress, profileUUID: updatedProfile.profileUUID, timestamp: Date.now(), walletHistory: updatedProfile.walletHistory };
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
         // Phase 1A: Use ECDH-derived key instead of manual password
         const ecdhKey = deriveSelfEncryptionKey(wallet);
@@ -15337,6 +15405,13 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       <input value={customerProfile.company} onChange={(e) => setCustomerProfile({ ...customerProfile, company: e.target.value })} placeholder="e.g. Vhay Industries LLC" style={inpStyle}/>
                     </Field>
                   </div>
+                  {/* ▼▼▼ PO_BUILDOUT ▼▼▼ D-U-N-S on the profile (flows to PO POParty via linked profile) */}
+                  {FEATURES.poBuildout && (
+                    <Field label="D-U-N-S number" full>
+                      <input value={customerProfile.duns || ''} onChange={(e) => setCustomerProfile({ ...customerProfile, duns: e.target.value })} placeholder="e.g. 15-048-3782" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)' }}/>
+                    </Field>
+                  )}
+                  {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
 
                   <Field label="Billing address" full>
                     <textarea value={customerProfile.address} onChange={(e) => setCustomerProfile({ ...customerProfile, address: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
@@ -15659,6 +15734,13 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       <input value={vendorProfile.company} onChange={(e) => setVendorProfile({ ...vendorProfile, company: e.target.value })} placeholder="e.g. Vhay Industries LLC" style={inpStyle}/>
                     </Field>
                   </div>
+                  {/* ▼▼▼ PO_BUILDOUT ▼▼▼ D-U-N-S on the profile (flows to PO POParty via linked profile) */}
+                  {FEATURES.poBuildout && (
+                    <Field label="D-U-N-S number" full>
+                      <input value={vendorProfile.duns || ''} onChange={(e) => setVendorProfile({ ...vendorProfile, duns: e.target.value })} placeholder="e.g. 15-048-3782" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)' }}/>
+                    </Field>
+                  )}
+                  {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
 
                   <Field label="Billing address" full>
                     <textarea value={vendorProfile.address} onChange={(e) => setVendorProfile({ ...vendorProfile, address: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
