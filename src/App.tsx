@@ -15287,7 +15287,18 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
           <Page
             tag="Profile · Workspace"
             title={customerProfile.company || 'Profile'}
-            subtitle="Your workspace, team, and platform settings.">
+            subtitle="Your workspace, team, and platform settings."
+            actions={
+              <div style={{ opacity: customerProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: customerProfile.shippingAddress.trim() ? 'auto' : 'none' }}
+                   title={customerProfile.shippingAddress.trim() ? undefined : 'Shipping address is required to save'}>
+                <Btn variant="primary" icon={customerSaving ? IconRefresh : IconCheck} onClick={async () => {
+                  if (customerSaving || !customerProfile.shippingAddress.trim()) return;
+                  setCustomerSaving(true);
+                  try { await saveCustomerProfile(); }
+                  finally { setCustomerSaving(false); }
+                }}>{customerSaving ? 'Saving…' : 'Save profile'}</Btn>
+              </div>
+            }>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
               {/* ——— Person card ——— */}
@@ -15344,7 +15355,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
               </Card>
 
               {/* ——— 3-COLUMN GRID: Organization | Wallet+Verification | Public Marketplace Listing ——— */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 320px', gap: 16, alignItems: 'start' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 320px', gap: 16, alignItems: 'stretch' }}>
 
               {/* — Organization — */}
               <Card layered label="Organization">
@@ -15378,22 +15389,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     <textarea value={customerProfile.shippingAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, shippingAddress: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
                   </Field>
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 12 }}>
-                    <div style={{ flex: 1 }}>
-                      {!customerProfile.shippingAddress.trim() && (
-                        <span style={{ color: 'oklch(0.55 0.22 25)', fontSize: 12 }}>Shipping address is required to save</span>
-                      )}
-                    </div>
-                    <div style={{ opacity: customerProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: customerProfile.shippingAddress.trim() ? 'auto' : 'none' }}>
-                      <Btn variant="primary" icon={customerSaving ? IconRefresh : IconCheck} onClick={async () => {
-                        if (customerSaving || !customerProfile.shippingAddress.trim()) return;
-                        setCustomerSaving(true);
-                        try { await saveCustomerProfile(); }
-                        finally { setCustomerSaving(false); }
-                      }}>{customerSaving ? 'Saving…' : 'Save profile'}</Btn>
-                    </div>
                   </div>
-                </div>
               </Card>
 
               {/* — Company Wallet + Verification column — */}
@@ -15606,7 +15602,18 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
           <Page
             tag="Profile · Workspace"
             title={vendorProfile.company || 'Profile'}
-            subtitle="Your workspace, team, and platform settings.">
+            subtitle="Your workspace, team, and platform settings."
+            actions={
+              <div style={{ opacity: vendorProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: vendorProfile.shippingAddress.trim() ? 'auto' : 'none' }}
+                   title={vendorProfile.shippingAddress.trim() ? undefined : 'Shipping address is required to save'}>
+                <Btn variant="primary" icon={vendorSaving ? IconRefresh : IconCheck} onClick={async () => {
+                  if (vendorSaving || !vendorProfile.shippingAddress.trim()) return;
+                  setVendorSaving(true);
+                  try { await saveVendorProfile(); }
+                  finally { setVendorSaving(false); }
+                }}>{vendorSaving ? 'Saving…' : 'Save profile'}</Btn>
+              </div>
+            }>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
               {/* ——— Person card (full width) ——— */}
@@ -15692,22 +15699,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     <textarea value={vendorProfile.shippingAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, shippingAddress: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
                   </Field>
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, gap: 12 }}>
-                    <div style={{ flex: 1 }}>
-                      {!vendorProfile.shippingAddress.trim() && (
-                        <span style={{ color: 'oklch(0.55 0.22 25)', fontSize: 12 }}>Shipping address is required to save</span>
-                      )}
-                    </div>
-                    <div style={{ opacity: vendorProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: vendorProfile.shippingAddress.trim() ? 'auto' : 'none' }}>
-                      <Btn variant="primary" icon={vendorSaving ? IconRefresh : IconCheck} onClick={async () => {
-                        if (vendorSaving || !vendorProfile.shippingAddress.trim()) return;
-                        setVendorSaving(true);
-                        try { await saveVendorProfile(); }
-                        finally { setVendorSaving(false); }
-                      }}>{vendorSaving ? 'Saving…' : 'Save profile'}</Btn>
-                    </div>
                   </div>
-                </div>
               </Card>
 
               {/* — Company Wallet + Verification column — */}
