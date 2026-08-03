@@ -142,8 +142,12 @@ interface POData { poName: string; description: string; department: string; paym
 }
 interface SavedPO { id: string; poName: string; dateIssued: string; total: string; ipfsUri: string; status: 'open' | 'accepted' | 'funded' | 'claimed' | 'updated' | 'recalled' | 'superseded'; issuanceId: string; escrowSequence?: number; txHash: string; buyerAddress: string; vendorAddress: string; paymentTerms: string; escrowCurrency?: 'XRP' | 'RLUSD'; vendorUUID?: string; clawbackEnabled?: boolean; parentIssuanceId?: string; yieldOptIn?: boolean; metadata: any; }
 interface PublicProfile { company: string; name: string; jobTitle?: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity?: string; shippingState?: string; shippingZip?: string; shippingCountry?: string; duns?: string; uniqueID: string; classicAddress: string; profileUUID: string; timestamp: number; expiresAt?: number; ipfsUri?: string; linkTxHash?: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; }
-interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; duns?: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
-interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
+// Named ship-to location on the buyer profile. Field names mirror POAddress
+// (src/utils/poDocument.ts) minus `raw`, so the PO snapshot is a plain field copy.
+// LOCAL-ONLY by design: deliberately omitted from every PublicProfile cherry-pick,
+// so site addresses are never pinned to IPFS or published via the DID.
+interface ShippingLocation { id: string; label: string; line1: string; city: string; state: string; zip: string; country: string; }
+interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; shippingLocations?: ShippingLocation[]; duns?: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1196,6 +1200,13 @@ export default function App() {
   const [ipfsUri, setIpfsUri] = useState('');
   const [savedPOs, setSavedPOs] = useState<SavedPO[]>([]);
   const [customerProfile, setCustomerProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
+  // Shipping address book: which row is expanded. '__primary__' = the virtual profile-derived row.
+  const [openShipLocId, setOpenShipLocId] = useState<string | null>(null);
+  // PO ship-to selection (shared by the create + update forks, like paymentTerms/deliveryTerms).
+  // '' = nothing chosen. On create that means poData.shipTo stays undefined; on update it means
+  // "keep the prior version's snapshot" (held in prefilledShipTo, set by prefillFromPO).
+  const [poShipToId, setPoShipToId] = useState<string>('');
+  const [prefilledShipTo, setPrefilledShipTo] = useState<import('./utils/poDocument').POAddress | undefined>(undefined);
   const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
   // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — public seller listing, isolated from Profile (removable)
   const [vendorListing, setVendorListing] = useState<StorefrontIdentity>({ name: '', country: '', website: '', description: '', contact: '', duns: '' });
@@ -2189,7 +2200,7 @@ export default function App() {
     if (!updateResult.includes('Successfully') || updateSubmitting) return;
     const t = setTimeout(() => {
       setUpdateResult('');
-      setPoName('');
+      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); // PO_BUILDOUT
       setDesc('');
       setDepartment('');
       setItems([]);
@@ -2558,6 +2569,30 @@ export default function App() {
   // ▼▼▼ PO_BUILDOUT ▼▼▼ read-only PO totals block. Shows Subtotal/Tax/Grand when the doc
   // carries real tax data (post-4c POs with tax > 0); falls back to a single Total line for
   // pre-4c POs (no poData.totals) and zero-tax POs. fallbackTotal = the PO's on-chain total.
+  // ▼▼▼ PO_BUILDOUT ▼▼▼ AS-ISSUED ship-to. Reads ONLY the immutable poData.shipTo snapshot —
+  // never the live profile or address book. One component for all read surfaces (same no-drift
+  // reason as POTotalsBlock). Returns null when the PO carries no shipTo, so pre-slice POs and
+  // flag-off renders are untouched.
+  const ShipToBlock = ({ shipTo }: { shipTo?: import('./utils/poDocument').POAddress }) => {
+    if (!FEATURES.poBuildout || !shipTo) return null;
+    const cityLine = [shipTo.city, shipTo.state, shipTo.zip].map(s => (s || '').trim()).filter(Boolean).join(' ');
+    const lines = [(shipTo.raw || shipTo.line1 || '').trim(), cityLine, (shipTo.country || '').trim()].filter(Boolean);
+    if (lines.length === 0 && !shipTo.label) return null;
+    return (
+      <>
+        <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+          Ship to
+          <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 4, background: 'rgba(180, 140, 60, 0.12)', color: 'var(--ink-3)', letterSpacing: '0.06em' }}>AS ISSUED</span>
+        </div>
+        <div className="etched" style={{ padding: 14, borderRadius: 12, marginBottom: 18 }}>
+          {shipTo.label && <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{shipTo.label}</div>}
+          {lines.map((l, i) => <div key={i} style={{ fontSize: 12, color: 'var(--ink-2)' }}>{l}</div>)}
+        </div>
+      </>
+    );
+  };
+  // ▲▲▲ PO_BUILDOUT ▲▲▲
+
   const POTotalsBlock = ({ totals, fallbackTotal, tightBorder }: { totals?: import('./utils/poDocument').POTotals; fallbackTotal: string; tightBorder?: boolean }) => {
     const borderCol = tightBorder ? 'rgba(180,140,60,0.15)' : 'rgba(180,140,60,0.2)';
     const hasTax = FEATURES.poBuildout && !!totals && parseFloat(totals.taxTotal || '0') > 0;
@@ -2651,6 +2686,7 @@ export default function App() {
                 </div>
               </>
             )}
+            <ShipToBlock shipTo={viewedPO.shipTo}/>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
               {[
                 { label: 'Department', v: viewedPO.department || '—' },
@@ -2749,7 +2785,7 @@ export default function App() {
                     { k: 'Email',            v: data.email,                                          mono: false },
                     { k: 'Phone',            v: data.phone,                                          mono: false },
                     { k: 'Billing address',  v: data.address,                                        mono: false },
-                    { k: 'Shipping address', v: data.shippingAddress || (data.address ? '—' : ''),   mono: false },
+                    { k: 'Corporate ship-to', v: data.shippingAddress || (data.address ? '—' : ''),   mono: false },
                     { k: 'Wallet',           v: data.classicAddress,                                 mono: true },
                     { k: 'ID',               v: data.uniqueID,                                       mono: true },
                   ].filter(r => r.v).map(r => (
@@ -4185,6 +4221,7 @@ useEffect(() => {
     let loadedDelTerms = 'FOB';
     let loadedItems: Item[] = [];
     let loadedTaxRate = ''; // PO_BUILDOUT: single PO-level rate, derived from first taxed line
+    let loadedShipTo: import('./utils/poDocument').POAddress | undefined = undefined; // PO_BUILDOUT
     let loadedAttachments: Attachment[] = [];
 
     if (po.ipfsUri) {
@@ -4210,6 +4247,7 @@ useEffect(() => {
               // (4c-minimal stamps the same rate on every line). Pre-4c POs have none → stays ''.
               const taxedLine = (poData.items || []).find(it => it.taxRate !== undefined && it.taxRate !== '');
               loadedTaxRate = taxedLine ? (taxedLine.taxRate as string) : '';
+              loadedShipTo = poData.shipTo; // PO_BUILDOUT: prior frozen address, carried forward
             }
           }
         }
@@ -4235,6 +4273,7 @@ useEffect(() => {
     setItems(loadedItems);
     setExistingAttachments(loadedAttachments);
     setPoTaxRate(loadedTaxRate); // PO_BUILDOUT
+    setPrefilledShipTo(loadedShipTo); setPoShipToId(''); // PO_BUILDOUT: '' = keep prior ship-to
     setVendor(po.vendorAddress || '');
     setSelectedVendorUUID(po.vendorUUID || '');
     setSelectedFiles(null);
@@ -4246,6 +4285,43 @@ useEffect(() => {
   // encrypted-IPFS doc (authoritative) and the local metadata cache can never diverge.
   // 4a: carries only fields that already exist in state; tax/addresses/terms/date land in
   // later slices. Escrow amount is NOT computed here — unchanged from today.
+  // ▼▼▼ PO_BUILDOUT ▼▼▼ ship-to option list: the virtual "Primary" row derived from the
+  // Organization shipping address (same derivation as the profile card) + the saved address
+  // book. Keyed by id, never by label, so duplicate labels can't resolve to the wrong address.
+  const shipToOptions: { value: string; label: string }[] = (() => {
+    const out: { value: string; label: string }[] = [];
+    if (customerProfile.shippingAddress.trim()) out.push({ value: '__primary__', label: 'Primary — from profile' });
+    (customerProfile.shippingLocations || []).forEach((l, i) => out.push({ value: l.id, label: l.label.trim() || `Location ${i + 1}` }));
+    return out;
+  })();
+  // Resolves a selection to a POAddress for the snapshot. Primary uses `raw` (the profile
+  // shipping address is a freeform textarea); book entries populate line1/city/state/zip.
+  const resolveShipTo = (id: string): import('./utils/poDocument').POAddress | undefined => {
+    if (!id) return undefined;
+    if (id === '__primary__') {
+      return { label: 'Primary', raw: customerProfile.shippingAddress, city: customerProfile.shippingCity, state: customerProfile.shippingState, zip: customerProfile.shippingZip, country: customerProfile.shippingCountry };
+    }
+    const l = (customerProfile.shippingLocations || []).find(x => x.id === id);
+    if (!l) return undefined;
+    return { label: l.label.trim() || undefined, line1: l.line1, city: l.city, state: l.state, zip: l.zip, country: l.country };
+  };
+  // Update fork: name the carried-forward snapshot in the control itself, sourced from the
+  // snapshot's own label — never matched back against the address book.
+  const shipToPlaceholder = (): string => prefilledShipTo
+    ? `Unchanged — ${prefilledShipTo.label || 'previous address'}`
+    : '—';
+  // The control itself carries "Unchanged — «label»" via shipToPlaceholder(); the hint just
+  // shows the address lines so the prefix isn't duplicated.
+  const shipToHint = (): string => prefilledShipTo
+    ? shipToSummary(prefilledShipTo)
+    : 'Choose a delivery location from your saved addresses';
+  const shipToSummary = (a?: import('./utils/poDocument').POAddress): string => {
+    if (!a) return '';
+    const cityLine = [a.city, a.state, a.zip].map(s => (s || '').trim()).filter(Boolean).join(' ');
+    return [(a.raw || a.line1 || '').trim(), cityLine, (a.country || '').trim()].filter(Boolean).join(' · ');
+  };
+  // ▲▲▲ PO_BUILDOUT ▲▲▲
+
   const buildViaPODoc = (args: {
     poName: string; desc: string; department: string; paymentTerms: string; deliveryTerms: string;
     escrowCurrency?: 'XRP' | 'RLUSD'; items: Item[]; attachments: Attachment[];
@@ -4253,6 +4329,7 @@ useEffect(() => {
     parentIssuanceId?: string; priorHistory?: Array<{ ts: number; status: string; by: string }>;
     createdBy?: { name?: string; email?: string; phone?: string };
     taxRate?: string;
+    shipTo?: import('./utils/poDocument').POAddress;
     buyer?: import('./utils/poDocument').POParty;
     seller?: import('./utils/poDocument').POParty;
   }): { poData: POData; fullMetadata: any } => {
@@ -4278,6 +4355,7 @@ useEffect(() => {
       priorHistory: args.priorHistory,
       by: 'buyer',
       createdBy: args.createdBy,
+      shipTo: args.shipTo,
       buyer: args.buyer,
       seller: args.seller,
     });
@@ -4379,6 +4457,17 @@ useEffect(() => {
       });
       return;
     }
+    // PO_BUILDOUT: flag-gated — with poBuildout off there is no Ship To field to satisfy.
+    // Create only; on update '' legitimately means "keep the prior snapshot".
+    if (FEATURES.poBuildout && !poShipToId) {
+      await openConfirm({
+        kind: 'info',
+        title: 'Ship To Required',
+        message: 'Select a Ship To location before creating the PO.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     if (!customerProfile.shippingAddress.trim()) {
       await openConfirm({
         kind: 'info',
@@ -4445,6 +4534,7 @@ useEffect(() => {
         buyerAddress: xrpl.Wallet.fromSeed(seed).classicAddress, vendorAddress: vendor,
         createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
         taxRate: poTaxRate,
+        shipTo: resolveShipTo(poShipToId),
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -4637,6 +4727,10 @@ useEffect(() => {
         priorHistory: selectedUpdatePO.metadata?.history || [],
         createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
         taxRate: poTaxRate,
+        // Untouched dropdown ('') = KEEP the prior version's frozen address. Carried as a
+        // snapshot, never reverse-looked-up by label/id — the source location may since have
+        // been renamed or deleted, and re-resolving it would break order-level immutability.
+        shipTo: poShipToId ? resolveShipTo(poShipToId) : prefilledShipTo,
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -7757,7 +7851,7 @@ const getUpdatablePOs = () => {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '', jobTitle: parsed.jobTitle || '', shippingAddress: parsed.shippingAddress || '', shippingCity: parsed.shippingCity || '', shippingState: parsed.shippingState || '', shippingCountry: parsed.shippingCountry || '', duns: parsed.duns || '' });
+          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '', jobTitle: parsed.jobTitle || '', shippingAddress: parsed.shippingAddress || '', shippingCity: parsed.shippingCity || '', shippingState: parsed.shippingState || '', shippingZip: parsed.shippingZip || '', shippingCountry: parsed.shippingCountry || '', duns: parsed.duns || '', shippingLocations: Array.isArray(parsed.shippingLocations) ? parsed.shippingLocations : [] });
         } catch (e) {
           const newProfile = { company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: getOrGenerateUUID(`${key}UUID`), walletHistory: [], lastOnChainHash: '' };
           setProfile(newProfile); localStorage.setItem(key, JSON.stringify(newProfile));
@@ -8582,7 +8676,10 @@ const fetchSharedInventoryDoc = async (
   };
 
   const hashProfileContent = async (profile: any): Promise<string> => {
-    const { ipfsUri, lastOnChainHash, ...contentOnly } = profile;
+    // shippingLocations is LOCAL-ONLY (absent from the PublicProfile cherry-picks, so
+    // never pinned). Exclude it from the gate hash — otherwise adding a location fires
+    // a mainnet DIDSet + re-pin whose published bytes are identical.
+    const { ipfsUri, lastOnChainHash, shippingLocations, profileVersion, ...contentOnly } = profile;
     const canonical = JSON.stringify(contentOnly, Object.keys(contentOnly).sort());
     const buffer = new TextEncoder().encode(canonical);
     const hash = await crypto.subtle.digest('SHA-256', buffer);
@@ -9075,7 +9172,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     setSelectedUpdatePO(null);
                     if (wasUpdate) {
                       setUpdateResult('');
-                      setPoName('');
+                      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); // PO_BUILDOUT
                       setDesc('');
                       setDepartment('');
                       setItems([]);
@@ -9211,6 +9308,21 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           ]}/>
                       </Field>
                     </div>
+                    {/* ▼▼▼ PO_BUILDOUT ▼▼▼ ship-to — order-level, snapshotted into poData.shipTo */}
+                    {FEATURES.poBuildout && (
+                      <div style={{ marginTop: 12 }}>
+                        <Field label="Ship to">
+                          <SelectBox value={poShipToId} onChange={setPoShipToId}
+                            placeholder={shipToPlaceholder()} options={shipToOptions}/>
+                        </Field>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                          {shipToOptions.length === 0
+                            ? 'No saved locations — add them in your Profile under Shipping Locations.'
+                            : (shipToSummary(resolveShipTo(poShipToId)) || shipToHint())}
+                        </div>
+                      </div>
+                    )}
+                    {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
 
                     {escrowCurrency === 'RLUSD' && (
                       <>
@@ -9989,6 +10101,21 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                             ]}/>
                         </Field>
                       </div>
+                      {/* ▼▼▼ PO_BUILDOUT ▼▼▼ ship-to — order-level, snapshotted into poData.shipTo */}
+                      {FEATURES.poBuildout && (
+                        <div style={{ marginTop: 12 }}>
+                          <Field label="Ship to">
+                            <SelectBox value={poShipToId} onChange={setPoShipToId}
+                              placeholder={shipToPlaceholder()} options={shipToOptions}/>
+                          </Field>
+                          <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                            {shipToOptions.length === 0
+                              ? 'No saved locations — add them in your Profile under Shipping Locations.'
+                              : (shipToSummary(resolveShipTo(poShipToId)) || shipToHint())}
+                          </div>
+                        </div>
+                      )}
+                      {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
                     </Card>
 
                     {/* 04 · Order request */}
@@ -10800,6 +10927,21 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                                 options={['DDP — Delivered Duty Paid', 'DAP — Delivered at Place', 'FOB — Free on Board', 'EXW — Ex Works', 'CIF — Cost, Insurance & Freight']}/>
                             </Field>
                           </div>
+                          {/* ▼▼▼ PO_BUILDOUT ▼▼▼ ship-to — order-level, snapshotted into poData.shipTo */}
+                          {FEATURES.poBuildout && (
+                            <div style={{ marginTop: 12 }}>
+                              <Field label="Ship to">
+                                <SelectBox value={poShipToId} onChange={setPoShipToId}
+                                  placeholder={shipToPlaceholder()} options={shipToOptions}/>
+                              </Field>
+                              <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                                {shipToOptions.length === 0
+                                  ? 'No saved locations — add them in your Profile under Shipping Locations.'
+                                  : (shipToSummary(resolveShipTo(poShipToId)) || shipToHint())}
+                              </div>
+                            </div>
+                          )}
+                          {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
                         </Card>
 
                         {/* 03 · Order request */}
@@ -10958,7 +11100,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                             setActionMode('view');
                             setSelectedUpdatePO(null);
                             setUpdateResult('');
-                            setPoName('');
+                            setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); // PO_BUILDOUT
                             setDesc('');
                             setDepartment('');
                             setItems([]);
@@ -14386,6 +14528,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       </div>
                     </div>
 
+                    <ShipToBlock shipTo={overviewViewedPOData?.shipTo}/>
                     {/* Terms grid */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
                       {[
@@ -15051,6 +15194,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       </div>
                     </div>
 
+                    <ShipToBlock shipTo={vOvwViewedPOData?.shipTo}/>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
                       {[
                         { k: 'Department',  v: vOvwViewedPOData?.department || '—', mono: false },
@@ -15290,7 +15434,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
             subtitle="Your workspace, team, and platform settings."
             actions={
               <div style={{ opacity: customerProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: customerProfile.shippingAddress.trim() ? 'auto' : 'none' }}
-                   title={customerProfile.shippingAddress.trim() ? undefined : 'Shipping address is required to save'}>
+                   title={customerProfile.shippingAddress.trim() ? undefined : 'Corporate ship-to is required to save'}>
                 <Btn variant="primary" icon={customerSaving ? IconRefresh : IconCheck} onClick={async () => {
                   if (customerSaving || !customerProfile.shippingAddress.trim()) return;
                   setCustomerSaving(true);
@@ -15385,7 +15529,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     <textarea value={customerProfile.address} onChange={(e) => setCustomerProfile({ ...customerProfile, address: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
                   </Field>
 
-                  <Field label="Shipping address" full>
+                  <Field label="Corporate ship-to" full>
                     <textarea value={customerProfile.shippingAddress} onChange={(e) => setCustomerProfile({ ...customerProfile, shippingAddress: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
                   </Field>
 
@@ -15484,15 +15628,116 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
 
               </div>
 
-              {/* — Shipping Locations (stub — activated by the shipping address-book slice) — */}
-              <Card layered label="Shipping Locations">
+              {/* — Shipping Locations (address book; snapshots into poData.shipTo at PO create) — */}
+              <Card layered label={`Shipping Locations${FEATURES.poBuildout ? ` · ${(customerProfile.shippingLocations || []).length + (customerProfile.shippingAddress.trim() ? 1 : 0)}` : ''}`}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>
                     Saved ship-to addresses will appear here. Add named delivery locations (warehouse, store, office) to choose from when creating a purchase order.
                   </div>
-                  <div style={{ padding: '18px 14px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px dashed rgba(180,140,60,0.25)', fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
-                    Coming soon
-                  </div>
+                  {/* ▼▼▼ PO_BUILDOUT ▼▼▼ shipping address book — snapshots into poData.shipTo at PO create */}
+                  {FEATURES.poBuildout ? (() => {
+                    const locs = customerProfile.shippingLocations || [];
+                    const writeLocs = (next: ShippingLocation[]) => setCustomerProfile({ ...customerProfile, shippingLocations: next });
+                    const patchLoc = (id: string, key: keyof ShippingLocation, v: string) => writeLocs(locs.map(l => l.id === id ? { ...l, [key]: v } : l));
+                    const addLoc = () => { const id = uuidv4(); writeLocs([...locs, { id, label: '', line1: '', city: '', state: '', zip: '', country: '' }]); setOpenShipLocId(id); };
+                    const rmLoc = (id: string) => { writeLocs(locs.filter(l => l.id !== id)); if (openShipLocId === id) setOpenShipLocId(null); };
+                    const toggleLoc = (id: string) => setOpenShipLocId(openShipLocId === id ? null : id);
+                    // Primary is a VIRTUAL row derived live from the Organization shipping address.
+                    // Deliberately NOT stored in shippingLocations: one source for the primary address,
+                    // no second copy to drift (the buyerCompany/Organization mistake). Selectable on a
+                    // PO like any other location, snapshotted the same way.
+                    const primaryCityLine = [customerProfile.shippingCity, customerProfile.shippingState, customerProfile.shippingZip].filter(s => s && s.trim()).join(' ');
+                    const primaryLines = [customerProfile.shippingAddress, primaryCityLine, customerProfile.shippingCountry].filter(s => s && s.trim());
+                    const hasPrimary = primaryLines.length > 0;
+                    const rowWrap: React.CSSProperties = { borderRadius: 10, border: '1px solid rgba(180,140,60,0.18)', overflow: 'hidden' };
+                    const rowHead: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', cursor: 'pointer', background: 'rgba(255, 248, 222, 0.45)' };
+                    const caretStyle: React.CSSProperties = { fontSize: 9, color: 'var(--ink-3)', width: 10, flexShrink: 0 };
+                    return (
+                      <>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 420, overflowY: 'auto', paddingRight: 2 }}>
+                          {!hasPrimary && locs.length === 0 && (
+                            <div style={{ padding: '14px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px dashed rgba(180,140,60,0.25)', fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
+                              No locations yet
+                            </div>
+                          )}
+                          {hasPrimary && (
+                            <div style={rowWrap}>
+                              <div style={rowHead} onClick={() => toggleLoc('__primary__')}>
+                                <span style={caretStyle}>{openShipLocId === '__primary__' ? '▾' : '▸'}</span>
+                                <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>Primary</span>
+                                <span className="mono" style={{ fontSize: 9, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>From profile</span>
+                              </div>
+                              {openShipLocId === '__primary__' && (
+                                <div style={{ padding: '10px 12px 12px', display: 'flex', flexDirection: 'column', gap: 3, borderTop: '1px solid rgba(180,140,60,0.12)' }}>
+                                  {primaryLines.map((line, n) => (
+                                    <div key={n} style={{ fontSize: 12.5 }}>{line}</div>
+                                  ))}
+                                  <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6, lineHeight: 1.4 }}>
+                                    Derived from the Organization shipping address — edit it there.
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {locs.map((loc, i) => (
+                            <div key={loc.id} style={rowWrap}>
+                              <div style={rowHead} onClick={() => toggleLoc(loc.id)}>
+                                <span style={caretStyle}>{openShipLocId === loc.id ? '▾' : '▸'}</span>
+                                <span style={{ fontSize: 13, fontWeight: 600, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {loc.label.trim() || `Location ${i + 1}`}
+                                </span>
+                                {[loc.city, loc.state].filter(s => s && s.trim()).length > 0 && (
+                                  <span style={{ fontSize: 11, color: 'var(--ink-3)', flexShrink: 0 }}>{[loc.city, loc.state].filter(s => s && s.trim()).join(', ')}</span>
+                                )}
+                                <button onClick={(e) => { e.stopPropagation(); rmLoc(loc.id); }} title="Remove location"
+                                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 15, lineHeight: 1, color: 'var(--ink-3)', padding: '0 2px', flexShrink: 0 }}>×</button>
+                              </div>
+                              {openShipLocId === loc.id && (
+                                <div style={{ padding: '10px 10px 12px', display: 'flex', flexDirection: 'column', gap: 8, borderTop: '1px solid rgba(180,140,60,0.12)' }}>
+                                  <Field label="Label" full>
+                                    <input value={loc.label} onChange={(e) => patchLoc(loc.id, 'label', e.target.value)} placeholder="e.g. Nevada Warehouse" style={inpStyle}/>
+                                  </Field>
+                                  <Field label="Street address" full>
+                                    <input value={loc.line1} onChange={(e) => patchLoc(loc.id, 'line1', e.target.value)} placeholder="e.g. 1200 Industrial Way" style={inpStyle}/>
+                                  </Field>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                                    <Field label="City" full>
+                                      <input value={loc.city} onChange={(e) => patchLoc(loc.id, 'city', e.target.value)} placeholder="City" style={inpStyle}/>
+                                    </Field>
+                                    <Field label="State" full>
+                                      <input value={loc.state} onChange={(e) => patchLoc(loc.id, 'state', e.target.value)} placeholder="State" style={inpStyle}/>
+                                    </Field>
+                                  </div>
+                                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                                    <Field label="ZIP" full>
+                                      <input value={loc.zip} onChange={(e) => patchLoc(loc.id, 'zip', e.target.value)} placeholder="ZIP" style={inpStyle}/>
+                                    </Field>
+                                    <Field label="Country" full>
+                                      <input value={loc.country} onChange={(e) => patchLoc(loc.id, 'country', e.target.value)} placeholder="Country" style={inpStyle}/>
+                                    </Field>
+                                  </div>
+                                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                                    <Btn onClick={() => setOpenShipLocId(null)}>Done</Btn>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <Btn onClick={addLoc}>+ Add location</Btn>
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', lineHeight: 1.4 }}>
+                          Stored with your profile on this device. Press Save profile to persist. Copied onto a PO when it's created, so later edits here never change past orders.
+                        </div>
+                      </>
+                    );
+                  })() : (
+                    <div style={{ padding: '18px 14px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px dashed rgba(180,140,60,0.25)', fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
+                      Coming soon
+                    </div>
+                  )}
+                  {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
                 </div>
               </Card>
 
@@ -15573,7 +15818,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           { k: 'Email', v: selectedLinkedVendor.email },
                           { k: 'Phone', v: selectedLinkedVendor.phone },
                           { k: 'Billing address', v: selectedLinkedVendor.address || [selectedLinkedVendor.city, selectedLinkedVendor.state, selectedLinkedVendor.zip, selectedLinkedVendor.country].filter(Boolean).join(', ') },
-                          { k: 'Shipping address', v: selectedLinkedVendor.shippingAddress || '—' },
+                          { k: 'Corporate ship-to', v: selectedLinkedVendor.shippingAddress || '—' },
                           { k: 'Wallet', v: selectedLinkedVendor.classicAddress, mono: true },
                         ].filter(r => r.v).map(r => (
                           <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
@@ -15605,7 +15850,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
             subtitle="Your workspace, team, and platform settings."
             actions={
               <div style={{ opacity: vendorProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: vendorProfile.shippingAddress.trim() ? 'auto' : 'none' }}
-                   title={vendorProfile.shippingAddress.trim() ? undefined : 'Shipping address is required to save'}>
+                   title={vendorProfile.shippingAddress.trim() ? undefined : 'Corporate ship-to is required to save'}>
                 <Btn variant="primary" icon={vendorSaving ? IconRefresh : IconCheck} onClick={async () => {
                   if (vendorSaving || !vendorProfile.shippingAddress.trim()) return;
                   setVendorSaving(true);
@@ -15695,7 +15940,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     <textarea value={vendorProfile.address} onChange={(e) => setVendorProfile({ ...vendorProfile, address: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
                   </Field>
 
-                  <Field label="Shipping address" full>
+                  <Field label="Corporate ship-to" full>
                     <textarea value={vendorProfile.shippingAddress} onChange={(e) => setVendorProfile({ ...vendorProfile, shippingAddress: e.target.value })} placeholder="88 Hudson St, Jersey City NJ 07302, United States" style={{ ...inpStyle, minHeight: 80, resize: 'vertical', lineHeight: 1.5 }}/>
                   </Field>
 
@@ -15894,7 +16139,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           { k: 'Email', v: selectedLinkedCustomer.email },
                           { k: 'Phone', v: selectedLinkedCustomer.phone },
                           { k: 'Billing address', v: selectedLinkedCustomer.address || [selectedLinkedCustomer.city, selectedLinkedCustomer.state, selectedLinkedCustomer.zip, selectedLinkedCustomer.country].filter(Boolean).join(', ') },
-                          { k: 'Shipping address', v: selectedLinkedCustomer.shippingAddress || '—' },
+                          { k: 'Corporate ship-to', v: selectedLinkedCustomer.shippingAddress || '—' },
                           { k: 'Wallet', v: selectedLinkedCustomer.classicAddress, mono: true },
                         ].filter(r => r.v).map(r => (
                           <div key={r.k} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
