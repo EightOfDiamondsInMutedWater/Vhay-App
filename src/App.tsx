@@ -8676,9 +8676,12 @@ const fetchSharedInventoryDoc = async (
   };
 
   const hashProfileContent = async (profile: any): Promise<string> => {
-    // shippingLocations is LOCAL-ONLY (absent from the PublicProfile cherry-picks, so
-    // never pinned). Exclude it from the gate hash — otherwise adding a location fires
-    // a mainnet DIDSet + re-pin whose published bytes are identical.
+    // Two deliberate exclusions from the gate hash — do not "clean up":
+    // • shippingLocations is LOCAL-ONLY (absent from the PublicProfile cherry-picks, so never
+    //   pinned). Including it would fire a DIDSet + re-pin whose published bytes are identical.
+    // • profileVersion made the skip branch UNREACHABLE: contentHash is computed while version
+    //   is N, then stored as lastOnChainHash alongside version N+1, so every later hash is
+    //   taken at N+1 and can never match. Excluding it makes "No profile changes" work.
     const { ipfsUri, lastOnChainHash, shippingLocations, profileVersion, ...contentOnly } = profile;
     const canonical = JSON.stringify(contentOnly, Object.keys(contentOnly).sort());
     const buffer = new TextEncoder().encode(canonical);
