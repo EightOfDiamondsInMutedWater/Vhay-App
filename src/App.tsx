@@ -554,6 +554,17 @@ const resolvePrice = (pricing: SharedPricing, qty: number): string => {
 };
 
 
+// PO_BUILDOUT: display-only date formatter. Parses the ISO parts by hand rather than
+// new Date('2026-08-21') — that string is treated as UTC midnight and renders as the
+// PREVIOUS day in any negative-offset timezone. Returns the input unchanged if it isn't
+// a parseable yyyy-mm-dd, so nothing is ever lost on unexpected input.
+const fmtPODate = (d?: string): string => {
+  if (!d) return '';
+  const [y, m, dd] = d.split('-').map(Number);
+  if (!y || !m || !dd) return d;
+  return new Date(y, m - 1, dd).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
 const buildLedgerMetadata = (poName: string, ipfsUri: string, status: string, buyerAddress?: string, vendorAddress?: string, total?: string, payTerms?: string, parentIssuanceId?: string, escrowCur?: string) => ({
   t: "SCPO",
   n: poName,
@@ -1207,6 +1218,10 @@ export default function App() {
   // "keep the prior version's snapshot" (held in prefilledShipTo, set by prefillFromPO).
   const [poShipToId, setPoShipToId] = useState<string>('');
   const [prefilledShipTo, setPrefilledShipTo] = useState<import('./utils/poDocument').POAddress | undefined>(undefined);
+  // Ordinary editable PO fields (like desc/paymentTerms) — no carry-forward state needed:
+  // prefillFromPO sets them directly, the user edits or leaves them, the caller passes state.
+  const [poDeliveryDate, setPoDeliveryDate] = useState('');
+  const [poNotes, setPoNotes] = useState('');
   // Legal terms: carried forward from the prior version on update (undefined = no prior snapshot,
   // e.g. a legacy PO, in which case the current profile template is stamped instead).
   const [prefilledLegalTerms, setPrefilledLegalTerms] = useState<string | undefined>(undefined);
@@ -2207,7 +2222,7 @@ export default function App() {
     if (!updateResult.includes('Successfully') || updateSubmitting) return;
     const t = setTimeout(() => {
       setUpdateResult('');
-      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); // PO_BUILDOUT
+      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); setPoDeliveryDate(''); setPoNotes(''); // PO_BUILDOUT
       setDesc('');
       setDepartment('');
       setItems([]);
@@ -2761,6 +2776,7 @@ export default function App() {
                 { label: 'Payment',    v: viewedPO.paymentTerms || '—' },
                 { label: 'Delivery',   v: viewedPO.deliveryTerms || '—' },
                 { label: 'Escrow ccy', v: viewedPO.escrowCurrency || 'XRP', mono: true },
+                ...(FEATURES.poBuildout && viewedPO.requestedDeliveryDate ? [{ label: 'Requested delivery', v: fmtPODate(viewedPO.requestedDeliveryDate) }] : []),
               ].map(f => (
                 <div key={f.label} className="etched" style={{ padding: 12, borderRadius: 12 }}>
                   <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.label}</div>
@@ -2773,6 +2789,12 @@ export default function App() {
               <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 18 }}>
                 <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
                 <div style={{ fontSize: 13, lineHeight: 1.5 }}>{viewedPO.description}</div>
+              </div>
+            )}
+            {FEATURES.poBuildout && viewedPO.notes && (
+              <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 18 }}>
+                <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Notes</div>
+                <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{viewedPO.notes}</div>
               </div>
             )}
 
@@ -4291,6 +4313,7 @@ useEffect(() => {
     let loadedTaxRate = ''; // PO_BUILDOUT: single PO-level rate, derived from first taxed line
     let loadedShipTo: import('./utils/poDocument').POAddress | undefined = undefined; // PO_BUILDOUT
     let loadedLegalTerms: string | undefined = undefined; // PO_BUILDOUT
+    let loadedDeliveryDate = ''; let loadedNotes = ''; // PO_BUILDOUT
     let loadedAttachments: Attachment[] = [];
 
     if (po.ipfsUri) {
@@ -4318,6 +4341,8 @@ useEffect(() => {
               loadedTaxRate = taxedLine ? (taxedLine.taxRate as string) : '';
               loadedShipTo = poData.shipTo; // PO_BUILDOUT: prior frozen address, carried forward
               loadedLegalTerms = poData.legalTerms; // PO_BUILDOUT: prior frozen terms
+              loadedDeliveryDate = poData.requestedDeliveryDate || ''; // PO_BUILDOUT
+              loadedNotes = poData.notes || ''; // PO_BUILDOUT
             }
           }
         }
@@ -4345,6 +4370,7 @@ useEffect(() => {
     setPoTaxRate(loadedTaxRate); // PO_BUILDOUT
     setPrefilledShipTo(loadedShipTo); setPoShipToId(''); // PO_BUILDOUT: '' = keep prior ship-to
     setPrefilledLegalTerms(loadedLegalTerms); setLegalTermsOpen(false); // PO_BUILDOUT
+    setPoDeliveryDate(loadedDeliveryDate); setPoNotes(loadedNotes); // PO_BUILDOUT
     setVendor(po.vendorAddress || '');
     setSelectedVendorUUID(po.vendorUUID || '');
     setSelectedFiles(null);
@@ -4402,6 +4428,8 @@ useEffect(() => {
     taxRate?: string;
     shipTo?: import('./utils/poDocument').POAddress;
     legalTerms?: string;
+    requestedDeliveryDate?: string;
+    notes?: string;
     buyer?: import('./utils/poDocument').POParty;
     seller?: import('./utils/poDocument').POParty;
   }): { poData: POData; fullMetadata: any } => {
@@ -4429,6 +4457,8 @@ useEffect(() => {
       createdBy: args.createdBy,
       shipTo: args.shipTo,
       legalTerms: args.legalTerms,
+      requestedDeliveryDate: args.requestedDeliveryDate,
+      notes: args.notes,
       buyer: args.buyer,
       seller: args.seller,
     });
@@ -4609,6 +4639,8 @@ useEffect(() => {
         taxRate: poTaxRate,
         shipTo: resolveShipTo(poShipToId),
         legalTerms: customerProfile.legalTerms || undefined,
+        requestedDeliveryDate: poDeliveryDate || undefined,
+        notes: poNotes || undefined,
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -4809,6 +4841,8 @@ useEffect(() => {
         // in which case the current profile template is stamped instead (deliberate: an old
         // PO gaining terms is better than one carrying none).
         legalTerms: prefilledLegalTerms !== undefined ? prefilledLegalTerms : (customerProfile.legalTerms || undefined),
+        requestedDeliveryDate: poDeliveryDate || undefined,
+        notes: poNotes || undefined,
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -9256,7 +9290,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     setSelectedUpdatePO(null);
                     if (wasUpdate) {
                       setUpdateResult('');
-                      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); // PO_BUILDOUT
+                      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); setPoDeliveryDate(''); setPoNotes(''); // PO_BUILDOUT
                       setDesc('');
                       setDepartment('');
                       setItems([]);
@@ -9405,6 +9439,18 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                             ? 'No saved locations — add them in your Profile under Shipping Locations.'
                             : (shipToSummary(resolveShipTo(poShipToId)) || shipToHint())}
                         </div>
+                      </div>
+                    )}
+                    {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
+                    {/* ▼▼▼ PO_BUILDOUT ▼▼▼ requested delivery + notes — order-level, snapshotted into poData */}
+                    {FEATURES.poBuildout && (
+                      <div style={{ display: 'grid', gridTemplateColumns: '190px 1fr', gap: 12, marginTop: 12 }}>
+                        <Field label="Requested delivery">
+                          <input type="date" value={poDeliveryDate} onChange={(e) => setPoDeliveryDate(e.target.value)} style={inpStyle}/>
+                        </Field>
+                        <Field label="Notes for seller">
+                          <textarea value={poNotes} onChange={(e) => setPoNotes(e.target.value)} placeholder="e.g. Deliver to dock 3 — call on arrival." style={{ ...inpStyle, minHeight: 44, resize: 'vertical', lineHeight: 1.5 }}/>
+                        </Field>
                       </div>
                     )}
                     {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
@@ -10199,6 +10245,18 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                               ? 'No saved locations — add them in your Profile under Shipping Locations.'
                               : (shipToSummary(resolveShipTo(poShipToId)) || shipToHint())}
                           </div>
+                        </div>
+                      )}
+                      {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
+                      {/* ▼▼▼ PO_BUILDOUT ▼▼▼ requested delivery + notes — order-level, snapshotted into poData */}
+                      {FEATURES.poBuildout && (
+                        <div style={{ display: 'grid', gridTemplateColumns: '190px 1fr', gap: 12, marginTop: 12 }}>
+                          <Field label="Requested delivery">
+                            <input type="date" value={poDeliveryDate} onChange={(e) => setPoDeliveryDate(e.target.value)} style={inpStyle}/>
+                          </Field>
+                          <Field label="Notes for seller">
+                            <textarea value={poNotes} onChange={(e) => setPoNotes(e.target.value)} placeholder="e.g. Deliver to dock 3 — call on arrival." style={{ ...inpStyle, minHeight: 44, resize: 'vertical', lineHeight: 1.5 }}/>
+                          </Field>
                         </div>
                       )}
                       {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
@@ -11029,6 +11087,18 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                             </div>
                           )}
                           {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
+                          {/* ▼▼▼ PO_BUILDOUT ▼▼▼ requested delivery + notes — order-level, snapshotted into poData */}
+                          {FEATURES.poBuildout && (
+                            <div style={{ display: 'grid', gridTemplateColumns: '190px 1fr', gap: 12, marginTop: 12 }}>
+                              <Field label="Requested delivery">
+                                <input type="date" value={poDeliveryDate} onChange={(e) => setPoDeliveryDate(e.target.value)} style={inpStyle}/>
+                              </Field>
+                              <Field label="Notes for seller">
+                                <textarea value={poNotes} onChange={(e) => setPoNotes(e.target.value)} placeholder="e.g. Deliver to dock 3 — call on arrival." style={{ ...inpStyle, minHeight: 44, resize: 'vertical', lineHeight: 1.5 }}/>
+                              </Field>
+                            </div>
+                          )}
+                          {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
                         </Card>
 
                         {/* 03 · Order request */}
@@ -11187,7 +11257,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                             setActionMode('view');
                             setSelectedUpdatePO(null);
                             setUpdateResult('');
-                            setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); // PO_BUILDOUT
+                            setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); setPoDeliveryDate(''); setPoNotes(''); // PO_BUILDOUT
                             setDesc('');
                             setDepartment('');
                             setItems([]);
@@ -14624,6 +14694,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         { k: 'Payment',     v: overviewSelectedPO.paymentTerms || overviewViewedPOData?.paymentTerms || '—', mono: false },
                         { k: 'Delivery',    v: overviewViewedPOData?.deliveryTerms || '—', mono: false },
                         { k: 'Escrow ccy',  v: overviewSelectedPO.escrowCurrency || 'XRP', mono: true },
+                        ...(FEATURES.poBuildout && overviewViewedPOData?.requestedDeliveryDate ? [{ k: 'Requested delivery', v: fmtPODate(overviewViewedPOData.requestedDeliveryDate), mono: false }] : []),
                       ].map(f => (
                         <div key={f.k} className="etched" style={{ padding: 10, borderRadius: 10 }}>
                           <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.k}</div>
@@ -14651,6 +14722,12 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 14 }}>
                             <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
                             <div style={{ fontSize: 13, lineHeight: 1.5 }}>{overviewViewedPOData.description}</div>
+                          </div>
+                        )}
+                        {FEATURES.poBuildout && overviewViewedPOData.notes && (
+                          <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 14 }}>
+                            <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Notes</div>
+                            <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{overviewViewedPOData.notes}</div>
                           </div>
                         )}
 
@@ -15290,6 +15367,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         { k: 'Payment',     v: vOvwSelectedPO.paymentTerms || vOvwViewedPOData?.paymentTerms || '—', mono: false },
                         { k: 'Delivery',    v: vOvwViewedPOData?.deliveryTerms || '—', mono: false },
                         { k: 'Escrow ccy',  v: vOvwSelectedPO.escrowCurrency || 'XRP', mono: true },
+                        ...(FEATURES.poBuildout && vOvwViewedPOData?.requestedDeliveryDate ? [{ k: 'Requested delivery', v: fmtPODate(vOvwViewedPOData.requestedDeliveryDate), mono: false }] : []),
                       ].map(f => (
                         <div key={f.k} className="etched" style={{ padding: 10, borderRadius: 10 }}>
                           <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{f.k}</div>
@@ -15315,6 +15393,12 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 14 }}>
                             <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Description</div>
                             <div style={{ fontSize: 13, lineHeight: 1.5 }}>{vOvwViewedPOData.description}</div>
+                          </div>
+                        )}
+                        {FEATURES.poBuildout && vOvwViewedPOData.notes && (
+                          <div className="etched" style={{ padding: 12, borderRadius: 12, marginBottom: 14 }}>
+                            <div style={{ fontSize: 10, color: 'var(--ink-3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>Notes</div>
+                            <div style={{ fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{vOvwViewedPOData.notes}</div>
                           </div>
                         )}
 
