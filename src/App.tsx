@@ -147,7 +147,7 @@ interface PublicProfile { company: string; name: string; jobTitle?: string; emai
 // LOCAL-ONLY by design: deliberately omitted from every PublicProfile cherry-pick,
 // so site addresses are never pinned to IPFS or published via the DID.
 interface ShippingLocation { id: string; label: string; line1: string; city: string; state: string; zip: string; country: string; }
-interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; shippingLocations?: ShippingLocation[]; duns?: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
+interface Profile { company: string; name: string; jobTitle: string; email: string; phone: string; address: string; city: string; state: string; zip: string; country: string; shippingAddress: string; shippingCity: string; shippingState: string; shippingZip: string; shippingCountry: string; shippingLocations?: ShippingLocation[]; legalTerms?: string; duns?: string; seed: string; classicAddress: string; uniqueID: string; profileUUID: string; walletHistory: string[]; lastUpdateSource?: { postedBy: string; timestamp: number }; lastOnChainHash?: string; ipfsUri?: string; profileVersion?: number; }
 interface ProfileLink { linkerUUID: string; linkeeUUID: string; linkerAddress: string; linkeeAddress: string; txHash: string; createdAt: number; }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1207,6 +1207,13 @@ export default function App() {
   // "keep the prior version's snapshot" (held in prefilledShipTo, set by prefillFromPO).
   const [poShipToId, setPoShipToId] = useState<string>('');
   const [prefilledShipTo, setPrefilledShipTo] = useState<import('./utils/poDocument').POAddress | undefined>(undefined);
+  // Legal terms: carried forward from the prior version on update (undefined = no prior snapshot,
+  // e.g. a legacy PO, in which case the current profile template is stamped instead).
+  const [prefilledLegalTerms, setPrefilledLegalTerms] = useState<string | undefined>(undefined);
+  // Disclosure state must live at component level: the block components are defined inside the
+  // component body, so they remount on every render and can't hold their own open/closed flag.
+  const [legalTermsOpen, setLegalTermsOpen] = useState(false);
+  const [legalTermsViewOpen, setLegalTermsViewOpen] = useState(false);
   const [vendorProfile, setVendorProfile] = useState<Profile>({ company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: '', walletHistory: [], lastOnChainHash: '' });
   // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — public seller listing, isolated from Profile (removable)
   const [vendorListing, setVendorListing] = useState<StorefrontIdentity>({ name: '', country: '', website: '', description: '', contact: '', duns: '' });
@@ -2200,7 +2207,7 @@ export default function App() {
     if (!updateResult.includes('Successfully') || updateSubmitting) return;
     const t = setTimeout(() => {
       setUpdateResult('');
-      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); // PO_BUILDOUT
+      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); // PO_BUILDOUT
       setDesc('');
       setDepartment('');
       setItems([]);
@@ -2593,6 +2600,59 @@ export default function App() {
   };
   // ▲▲▲ PO_BUILDOUT ▲▲▲
 
+  // ▼▼▼ PO_BUILDOUT ▼▼▼ Legal terms, write-side disclosure for the Create/Update Terms cards.
+  // Read-only by design — editable only in Profile. Shows exactly what will be stamped: the
+  // prior version's snapshot when updating, otherwise the current profile template.
+  const LegalTermsRow = () => {
+    if (!FEATURES.poBuildout) return null;
+    const carried = prefilledLegalTerms !== undefined;
+    const t = ((carried ? prefilledLegalTerms : customerProfile.legalTerms) || '').trim();
+    return (
+      <div style={{ marginTop: 12 }}>
+        <div onClick={() => setLegalTermsOpen(!legalTermsOpen)}
+             style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 10px', borderRadius: 10, border: '1px solid rgba(180,140,60,0.18)', background: 'rgba(255, 248, 222, 0.45)', cursor: 'pointer' }}>
+          <span style={{ fontSize: 9, color: 'var(--ink-3)', width: 10, flexShrink: 0 }}>{legalTermsOpen ? '▾' : '▸'}</span>
+          <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>Legal Terms</span>
+          <span className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', letterSpacing: '0.06em', textTransform: 'uppercase', flexShrink: 0 }}>
+            {t ? `${t.length} chars${carried ? ' · as issued' : ''}` : 'Not set'}
+          </span>
+        </div>
+        {legalTermsOpen && (
+          <div style={{ padding: '10px 12px 12px', borderRadius: 10, border: '1px solid rgba(180,140,60,0.12)', borderTop: 'none', marginTop: -4 }}>
+            {t
+              ? <div style={{ whiteSpace: 'pre-wrap', fontSize: 11.5, color: 'var(--ink-2)', lineHeight: 1.5, maxHeight: 220, overflowY: 'auto' }}>{t}</div>
+              : <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>No legal terms saved. Add them in your Profile under Legal Terms.</div>}
+            <div style={{ fontSize: 10.5, color: 'var(--ink-3)', marginTop: 8, lineHeight: 1.4 }}>
+              {carried
+                ? 'Carried forward from the prior version — editing your Profile template does not change terms already issued.'
+                : 'Read-only here — edit in Profile. Copied onto the PO when it is created.'}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+  // Read-side: the immutable poData.legalTerms snapshot. Collapsed by default given the length.
+  const LegalTermsBlock = ({ legalTerms }: { legalTerms?: string }) => {
+    if (!FEATURES.poBuildout || !legalTerms || !legalTerms.trim()) return null;
+    return (
+      <div style={{ marginBottom: 18 }}>
+        <div onClick={() => setLegalTermsViewOpen(!legalTermsViewOpen)}
+             style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
+          <span style={{ fontSize: 9, color: 'var(--ink-3)', width: 10, flexShrink: 0 }}>{legalTermsViewOpen ? '▾' : '▸'}</span>
+          <span className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)' }}>Legal terms</span>
+          <span style={{ fontSize: 9, padding: '1px 6px', borderRadius: 4, background: 'rgba(180, 140, 60, 0.12)', color: 'var(--ink-3)', letterSpacing: '0.06em' }}>AS ISSUED</span>
+        </div>
+        {legalTermsViewOpen && (
+          <div className="etched" style={{ padding: 14, borderRadius: 12, whiteSpace: 'pre-wrap', fontSize: 11.5, color: 'var(--ink-2)', lineHeight: 1.5, maxHeight: 280, overflowY: 'auto' }}>
+            {legalTerms.trim()}
+          </div>
+        )}
+      </div>
+    );
+  };
+  // ▲▲▲ PO_BUILDOUT ▲▲▲
+
   const POTotalsBlock = ({ totals, fallbackTotal, tightBorder }: { totals?: import('./utils/poDocument').POTotals; fallbackTotal: string; tightBorder?: boolean }) => {
     const borderCol = tightBorder ? 'rgba(180,140,60,0.15)' : 'rgba(180,140,60,0.2)';
     const hasTax = FEATURES.poBuildout && !!totals && parseFloat(totals.taxTotal || '0') > 0;
@@ -2680,6 +2740,13 @@ export default function App() {
                       <div style={{ fontSize: 15, fontWeight: 600 }}>{(p && (p.company || p.contactName)) || '—'}</div>
                       {p && p.contactName && p.company && <div style={{ fontSize: 12, color: 'var(--ink-2)' }}>{p.contactName}</div>}
                       {p && p.duns && <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>D-U-N-S {p.duns}</div>}
+                      {/* postal is already frozen at create (POParty.*.postal from customerProfile.address /
+                          the linked seller profile) — this renders the existing snapshot, no new data. */}
+                      {p && p.postal && (
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
+                          <span className="mono" style={{ fontSize: 9, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{role === 'Buyer' ? 'Bill to' : 'Remit to'}</span>{' '}{p.postal}
+                        </div>
+                      )}
                       {p && (p.email || p.phone) && <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>{[p.email, p.phone].filter(Boolean).join(' · ')}</div>}
                     </div>
                   ))}
@@ -2687,6 +2754,7 @@ export default function App() {
               </>
             )}
             <ShipToBlock shipTo={viewedPO.shipTo}/>
+            <LegalTermsBlock legalTerms={viewedPO.legalTerms}/>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 18 }}>
               {[
                 { label: 'Department', v: viewedPO.department || '—' },
@@ -4222,6 +4290,7 @@ useEffect(() => {
     let loadedItems: Item[] = [];
     let loadedTaxRate = ''; // PO_BUILDOUT: single PO-level rate, derived from first taxed line
     let loadedShipTo: import('./utils/poDocument').POAddress | undefined = undefined; // PO_BUILDOUT
+    let loadedLegalTerms: string | undefined = undefined; // PO_BUILDOUT
     let loadedAttachments: Attachment[] = [];
 
     if (po.ipfsUri) {
@@ -4248,6 +4317,7 @@ useEffect(() => {
               const taxedLine = (poData.items || []).find(it => it.taxRate !== undefined && it.taxRate !== '');
               loadedTaxRate = taxedLine ? (taxedLine.taxRate as string) : '';
               loadedShipTo = poData.shipTo; // PO_BUILDOUT: prior frozen address, carried forward
+              loadedLegalTerms = poData.legalTerms; // PO_BUILDOUT: prior frozen terms
             }
           }
         }
@@ -4274,6 +4344,7 @@ useEffect(() => {
     setExistingAttachments(loadedAttachments);
     setPoTaxRate(loadedTaxRate); // PO_BUILDOUT
     setPrefilledShipTo(loadedShipTo); setPoShipToId(''); // PO_BUILDOUT: '' = keep prior ship-to
+    setPrefilledLegalTerms(loadedLegalTerms); setLegalTermsOpen(false); // PO_BUILDOUT
     setVendor(po.vendorAddress || '');
     setSelectedVendorUUID(po.vendorUUID || '');
     setSelectedFiles(null);
@@ -4330,6 +4401,7 @@ useEffect(() => {
     createdBy?: { name?: string; email?: string; phone?: string };
     taxRate?: string;
     shipTo?: import('./utils/poDocument').POAddress;
+    legalTerms?: string;
     buyer?: import('./utils/poDocument').POParty;
     seller?: import('./utils/poDocument').POParty;
   }): { poData: POData; fullMetadata: any } => {
@@ -4356,6 +4428,7 @@ useEffect(() => {
       by: 'buyer',
       createdBy: args.createdBy,
       shipTo: args.shipTo,
+      legalTerms: args.legalTerms,
       buyer: args.buyer,
       seller: args.seller,
     });
@@ -4535,6 +4608,7 @@ useEffect(() => {
         createdBy: { name: customerProfile.name || undefined, email: customerProfile.email || undefined, phone: customerProfile.phone || undefined },
         taxRate: poTaxRate,
         shipTo: resolveShipTo(poShipToId),
+        legalTerms: customerProfile.legalTerms || undefined,
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -4731,6 +4805,10 @@ useEffect(() => {
         // snapshot, never reverse-looked-up by label/id — the source location may since have
         // been renamed or deleted, and re-resolving it would break order-level immutability.
         shipTo: poShipToId ? resolveShipTo(poShipToId) : prefilledShipTo,
+        // Carry forward the prior version's terms. undefined = legacy PO with no snapshot,
+        // in which case the current profile template is stamped instead (deliberate: an old
+        // PO gaining terms is better than one carrying none).
+        legalTerms: prefilledLegalTerms !== undefined ? prefilledLegalTerms : (customerProfile.legalTerms || undefined),
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -7851,7 +7929,7 @@ const getUpdatablePOs = () => {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '', jobTitle: parsed.jobTitle || '', shippingAddress: parsed.shippingAddress || '', shippingCity: parsed.shippingCity || '', shippingState: parsed.shippingState || '', shippingZip: parsed.shippingZip || '', shippingCountry: parsed.shippingCountry || '', duns: parsed.duns || '', shippingLocations: Array.isArray(parsed.shippingLocations) ? parsed.shippingLocations : [] });
+          setProfile({ ...parsed, walletHistory: parsed.walletHistory || [], lastOnChainHash: parsed.lastOnChainHash || '', email: parsed.email || '', phone: parsed.phone || '', jobTitle: parsed.jobTitle || '', shippingAddress: parsed.shippingAddress || '', shippingCity: parsed.shippingCity || '', shippingState: parsed.shippingState || '', shippingZip: parsed.shippingZip || '', shippingCountry: parsed.shippingCountry || '', duns: parsed.duns || '', shippingLocations: Array.isArray(parsed.shippingLocations) ? parsed.shippingLocations : [], legalTerms: parsed.legalTerms || '' });
         } catch (e) {
           const newProfile = { company: '', name: '', jobTitle: '', email: '', phone: '', address: '', city: '', state: '', zip: '', country: '', shippingAddress: '', shippingCity: '', shippingState: '', shippingZip: '', shippingCountry: '', seed: '', classicAddress: '', uniqueID: '', profileUUID: getOrGenerateUUID(`${key}UUID`), walletHistory: [], lastOnChainHash: '' };
           setProfile(newProfile); localStorage.setItem(key, JSON.stringify(newProfile));
@@ -8682,7 +8760,10 @@ const fetchSharedInventoryDoc = async (
     // • profileVersion made the skip branch UNREACHABLE: contentHash is computed while version
     //   is N, then stored as lastOnChainHash alongside version N+1, so every later hash is
     //   taken at N+1 and can never match. Excluding it makes "No profile changes" work.
-    const { ipfsUri, lastOnChainHash, shippingLocations, profileVersion, ...contentOnly } = profile;
+    // • legalTerms is the LOCAL-ONLY template. The terms that matter are the ones snapshotted
+    //   into poData.legalTerms per PO (the seller reads them from the encrypted PO doc), so the
+    //   profile copy is never pinned and must not gate a publish.
+    const { ipfsUri, lastOnChainHash, shippingLocations, legalTerms, profileVersion, ...contentOnly } = profile;
     const canonical = JSON.stringify(contentOnly, Object.keys(contentOnly).sort());
     const buffer = new TextEncoder().encode(canonical);
     const hash = await crypto.subtle.digest('SHA-256', buffer);
@@ -9175,7 +9256,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     setSelectedUpdatePO(null);
                     if (wasUpdate) {
                       setUpdateResult('');
-                      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); // PO_BUILDOUT
+                      setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); // PO_BUILDOUT
                       setDesc('');
                       setDepartment('');
                       setItems([]);
@@ -9311,6 +9392,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           ]}/>
                       </Field>
                     </div>
+                    <LegalTermsRow/>
                     {/* ▼▼▼ PO_BUILDOUT ▼▼▼ ship-to — order-level, snapshotted into poData.shipTo */}
                     {FEATURES.poBuildout && (
                       <div style={{ marginTop: 12 }}>
@@ -10104,6 +10186,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                             ]}/>
                         </Field>
                       </div>
+                      <LegalTermsRow/>
                       {/* ▼▼▼ PO_BUILDOUT ▼▼▼ ship-to — order-level, snapshotted into poData.shipTo */}
                       {FEATURES.poBuildout && (
                         <div style={{ marginTop: 12 }}>
@@ -10930,6 +11013,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                                 options={['DDP — Delivered Duty Paid', 'DAP — Delivered at Place', 'FOB — Free on Board', 'EXW — Ex Works', 'CIF — Cost, Insurance & Freight']}/>
                             </Field>
                           </div>
+                          <LegalTermsRow/>
                           {/* ▼▼▼ PO_BUILDOUT ▼▼▼ ship-to — order-level, snapshotted into poData.shipTo */}
                           {FEATURES.poBuildout && (
                             <div style={{ marginTop: 12 }}>
@@ -11103,7 +11187,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                             setActionMode('view');
                             setSelectedUpdatePO(null);
                             setUpdateResult('');
-                            setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); // PO_BUILDOUT
+                            setPoName(''); setPoShipToId(''); setPrefilledShipTo(undefined); setPrefilledLegalTerms(undefined); // PO_BUILDOUT
                             setDesc('');
                             setDepartment('');
                             setItems([]);
@@ -14532,6 +14616,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     </div>
 
                     <ShipToBlock shipTo={overviewViewedPOData?.shipTo}/>
+                    <LegalTermsBlock legalTerms={overviewViewedPOData?.legalTerms}/>
                     {/* Terms grid */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
                       {[
@@ -15198,6 +15283,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     </div>
 
                     <ShipToBlock shipTo={vOvwViewedPOData?.shipTo}/>
+                    <LegalTermsBlock legalTerms={vOvwViewedPOData?.legalTerms}/>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 14 }}>
                       {[
                         { k: 'Department',  v: vOvwViewedPOData?.department || '—', mono: false },
@@ -15842,6 +15928,35 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                   )}
                 </div>
               </Card>
+
+              {/* ▼▼▼ PO_BUILDOUT ▼▼▼ Legal Terms — the buyer's T&Cs template. LOCAL-ONLY (never
+                  pinned, excluded from the gate hash); snapshotted into poData.legalTerms per PO,
+                  where the seller reads it from the encrypted PO doc. Buyer-only: sellers don't
+                  issue POs. ——— */}
+              {FEATURES.poBuildout && (
+                <Card layered
+                  label={<>
+                    <div className="mono" style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-3)', marginBottom: 6 }}>
+                      Contract defaults · {(customerProfile.legalTerms || '').trim().length ? `${(customerProfile.legalTerms || '').length} characters` : 'not set'}
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 600 }}>Legal Terms</div>
+                  </>}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)', lineHeight: 1.45 }}>
+                      Your standard terms and conditions. Copied onto every purchase order you create, and visible to the seller on that order. Read-only on the Create tab — this is the only place to edit them. Editing here never changes terms already issued on an existing PO.
+                    </div>
+                    <textarea
+                      value={customerProfile.legalTerms || ''}
+                      onChange={(e) => setCustomerProfile({ ...customerProfile, legalTerms: e.target.value })}
+                      placeholder="Paste your standard purchase order terms and conditions here."
+                      style={{ ...inpStyle, minHeight: 200, resize: 'vertical', lineHeight: 1.55, fontSize: 12.5 }}/>
+                    <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                      Stored on this device with your profile — press Save profile to persist. Not published to your public profile.
+                    </div>
+                  </div>
+                </Card>
+              )}
+              {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
 
             </div>
           </Page>
