@@ -32,7 +32,7 @@ import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHe
 // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3
 import type { StorefrontIdentity } from './utils/marketplaceStorefront';
 // // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10
-import { buildPODoc, computeTotals } from './utils/poDocument';
+import { buildPODoc, computeTotals, derivePONumber } from './utils/poDocument';
 // ▲▲▲ PO_BUILDOUT ▲▲▲
 import { buildStorefront } from './utils/marketplaceStorefront';
 import { MarketplaceTab } from './components/MarketplaceTab';
@@ -558,6 +558,45 @@ const resolvePrice = (pricing: SharedPricing, qty: number): string => {
 // new Date('2026-08-21') — that string is treated as UTC midnight and renders as the
 // PREVIOUS day in any negative-offset timezone. Returns the input unchanged if it isn't
 // a parseable yyyy-mm-dd, so nothing is ever lost on unexpected input.
+// Local-date ISO (yyyy-mm-dd). NOT toISOString() — that's UTC, so an evening create in a
+// negative-offset zone would stamp tomorrow's date.
+const todayISO = (): string => {
+  const d = new Date();
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+};
+const isoOf = (d: Date): string =>
+  d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+// Tolerant: poDate is ISO on POs created after this slice; legacy POs only have
+// SavedPO.dateIssued, which is toLocaleDateString() output (M/D/YYYY in en-US).
+const parsePODate = (s?: string): Date | undefined => {
+  if (!s) return undefined;
+  const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+  const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (us) return new Date(Number(us[3]), Number(us[1]) - 1, Number(us[2]));
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? undefined : d;
+};
+
+// PO_BUILDOUT: the human-readable PO number. Stored on poData from v2 onward, frozen at the
+// value derived from the ROOT issuance id — so a superseding PO keeps v1's number and the
+// v1/v2 chip carries the revision. For v1 and for legacy POs there's nothing stored, so it
+// derives from the PO's own issuance id, which IS the chain root. Deterministic: no extra pin,
+// no poData mutation, and every existing PO gets a number retroactively.
+// Returns '' rather than letting derivePONumber's date default fire — that default is
+// new Date(), which would make the number change every day.
+const poNumberFor = (doc?: POData | null, chainPO?: SavedPO | null): string => {
+  if (doc && doc.poNumber) return doc.poNumber;
+  if (!chainPO || !chainPO.issuanceId) return '';
+  const d = parsePODate((doc && doc.poDate) || chainPO.dateIssued);
+  if (!d) return '';
+  // Buyer id from the PO's OWN snapshot, never the live profile — a rename must not
+  // retroactively renumber an existing PO. Legacy POs have no snapshot, so they render
+  // un-namespaced (PO-20260712-0641C743); no live fallback, since in seller mode the live
+  // profile is the wrong party entirely.
+  return derivePONumber(chainPO.issuanceId, d, doc && doc.buyer ? doc.buyer.uniqueID : undefined);
+};
+
 const fmtPODate = (d?: string): string => {
   if (!d) return '';
   const [y, m, dd] = d.split('-').map(Number);
@@ -1225,6 +1264,11 @@ export default function App() {
   // Legal terms: carried forward from the prior version on update (undefined = no prior snapshot,
   // e.g. a legacy PO, in which case the current profile template is stamped instead).
   const [prefilledLegalTerms, setPrefilledLegalTerms] = useState<string | undefined>(undefined);
+  // PO_BUILDOUT: the PO number + order date carried across versions, so a superseding PO keeps
+  // v1's number (procurement practice: PO-1234 rev 2 is still PO-1234; the v1/v2 chip carries
+  // the revision). Computed once in prefillFromPO, then stored in poData from v2 onward.
+  const [prefilledPoDate, setPrefilledPoDate] = useState<string | undefined>(undefined);
+  const [prefilledPoNumber, setPrefilledPoNumber] = useState<string | undefined>(undefined);
   // Disclosure state must live at component level: the block components are defined inside the
   // component body, so they remount on every render and can't hold their own open/closed flag.
   const [legalTermsOpen, setLegalTermsOpen] = useState(false);
@@ -4314,6 +4358,8 @@ useEffect(() => {
     let loadedShipTo: import('./utils/poDocument').POAddress | undefined = undefined; // PO_BUILDOUT
     let loadedLegalTerms: string | undefined = undefined; // PO_BUILDOUT
     let loadedDeliveryDate = ''; let loadedNotes = ''; // PO_BUILDOUT
+    let loadedPoDate: string | undefined = undefined; let loadedPoNumber: string | undefined = undefined; // PO_BUILDOUT
+    let loadedBuyerId: string | undefined = undefined; // PO_BUILDOUT: prior version's snapshot buyer id
     let loadedAttachments: Attachment[] = [];
 
     if (po.ipfsUri) {
@@ -4343,6 +4389,8 @@ useEffect(() => {
               loadedLegalTerms = poData.legalTerms; // PO_BUILDOUT: prior frozen terms
               loadedDeliveryDate = poData.requestedDeliveryDate || ''; // PO_BUILDOUT
               loadedNotes = poData.notes || ''; // PO_BUILDOUT
+              loadedPoDate = poData.poDate; loadedPoNumber = poData.poNumber; // PO_BUILDOUT
+              loadedBuyerId = poData.buyer ? poData.buyer.uniqueID : undefined; // PO_BUILDOUT
             }
           }
         }
@@ -4371,6 +4419,14 @@ useEffect(() => {
     setPrefilledShipTo(loadedShipTo); setPoShipToId(''); // PO_BUILDOUT: '' = keep prior ship-to
     setPrefilledLegalTerms(loadedLegalTerms); setLegalTermsOpen(false); // PO_BUILDOUT
     setPoDeliveryDate(loadedDeliveryDate); setPoNotes(loadedNotes); // PO_BUILDOUT
+    // PO_BUILDOUT: freeze the number + order date onto the superseding version. Inherit if the
+    // prior version already carries them; otherwise derive from THIS version's issuance id,
+    // which is the chain root when updating v1. From here the value is stored, not re-derived.
+    const pnDate = parsePODate(loadedPoDate || po.dateIssued);
+    setPrefilledPoDate(loadedPoDate || (pnDate ? isoOf(pnDate) : todayISO()));
+    // buyerId from the PRIOR VERSION's snapshot, not the live profile: the number freezes here,
+    // so a later rename must not change it. Legacy priors carry no buyer block → no prefix.
+    setPrefilledPoNumber(loadedPoNumber || (pnDate ? derivePONumber(po.issuanceId, pnDate, loadedBuyerId) : undefined));
     setVendor(po.vendorAddress || '');
     setSelectedVendorUUID(po.vendorUUID || '');
     setSelectedFiles(null);
@@ -4430,6 +4486,8 @@ useEffect(() => {
     legalTerms?: string;
     requestedDeliveryDate?: string;
     notes?: string;
+    poDate?: string;
+    poNumber?: string;
     buyer?: import('./utils/poDocument').POParty;
     seller?: import('./utils/poDocument').POParty;
   }): { poData: POData; fullMetadata: any } => {
@@ -4459,6 +4517,8 @@ useEffect(() => {
       legalTerms: args.legalTerms,
       requestedDeliveryDate: args.requestedDeliveryDate,
       notes: args.notes,
+      poDate: args.poDate,
+      poNumber: args.poNumber,
       buyer: args.buyer,
       seller: args.seller,
     });
@@ -4641,6 +4701,7 @@ useEffect(() => {
         legalTerms: customerProfile.legalTerms || undefined,
         requestedDeliveryDate: poDeliveryDate || undefined,
         notes: poNotes || undefined,
+        poDate: todayISO(), // PO_BUILDOUT: frozen order date; poNumber derives at render for v1
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -4648,6 +4709,7 @@ useEffect(() => {
           email: customerProfile.email || undefined,
           phone: customerProfile.phone || undefined,
           duns: customerProfile.duns || undefined,
+          uniqueID: customerProfile.uniqueID || undefined,
           postal: customerProfile.address || undefined,
         },
         seller: _selSeller ? {
@@ -4843,6 +4905,10 @@ useEffect(() => {
         legalTerms: prefilledLegalTerms !== undefined ? prefilledLegalTerms : (customerProfile.legalTerms || undefined),
         requestedDeliveryDate: poDeliveryDate || undefined,
         notes: poNotes || undefined,
+        // PO_BUILDOUT: carry both forward. poDate stays the ORIGINAL order date (a revision
+        // does not change when the order was placed), and poNumber freezes at the value computed
+        // in prefillFromPO from the root issuance id — so v2, v3… all share v1's number.
+        poDate: prefilledPoDate, poNumber: prefilledPoNumber,
         buyer: {
           address: xrpl.Wallet.fromSeed(seed).classicAddress,
           company: customerProfile.company || undefined,
@@ -4850,6 +4916,7 @@ useEffect(() => {
           email: customerProfile.email || undefined,
           phone: customerProfile.phone || undefined,
           duns: customerProfile.duns || undefined,
+          uniqueID: customerProfile.uniqueID || undefined,
           postal: customerProfile.address || undefined,
         },
         seller: _selSellerU ? {
@@ -9812,6 +9879,15 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         Draft · unsaved
                       </div>
                       <div style={{ fontSize: 15, fontWeight: 600 }}>Purchase Order Value</div>
+                      {/* ▼▼▼ PO_BUILDOUT ▼▼▼ draft PO number. No issuance id pre-mint, so
+                          derivePONumber's suffix falls back to PENDING — the real number appears
+                          once the mint assigns an id. On update it's the carried-forward value. */}
+                      {FEATURES.poBuildout && (
+                        <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)', marginTop: 4, letterSpacing: '0.04em' }}>
+                          {prefilledPoNumber || derivePONumber('', new Date(), customerProfile.uniqueID)}
+                        </div>
+                      )}
+                      {/* ▲▲▲ PO_BUILDOUT ▲▲▲ */}
                     </>
                   }>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13 }}>
@@ -10821,7 +10897,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           {selectedOpenPO.poName}
                         </h2>
                         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>
-                          {supplierName(selectedOpenPO)} · {selectedOpenPO.dateIssued} · {(customerScpoActionViewedPO?.items?.length ?? 0)} line{(customerScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {selectedOpenPO.paymentTerms || '—'}
+                          {supplierName(selectedOpenPO)} · {selectedOpenPO.dateIssued}{FEATURES.poBuildout && poNumberFor(customerScpoActionViewedPO, selectedOpenPO) ? <> · <span className="mono">{poNumberFor(customerScpoActionViewedPO, selectedOpenPO)}</span></> : null} · {(customerScpoActionViewedPO?.items?.length ?? 0)} line{(customerScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {selectedOpenPO.paymentTerms || '—'}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right', flexShrink: 0 }}>
@@ -11551,7 +11627,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           {activePO.poName}
                         </h2>
                         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>
-                          {buyerName(activePO)} · {activePO.dateIssued} · {(vendorScpoActionViewedPO?.items?.length ?? 0)} line{(vendorScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {activePO.paymentTerms || '—'}
+                          {buyerName(activePO)} · {activePO.dateIssued}{FEATURES.poBuildout && poNumberFor(vendorScpoActionViewedPO, activePO) ? <> · <span className="mono">{poNumberFor(vendorScpoActionViewedPO, activePO)}</span></> : null} · {(vendorScpoActionViewedPO?.items?.length ?? 0)} line{(vendorScpoActionViewedPO?.items?.length ?? 0) === 1 ? '' : 's'} · {activePO.paymentTerms || '—'}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right', flexShrink: 0 }}>
@@ -14657,6 +14733,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
                           {selectedVendor?.company || selectedVendor?.name || overviewSelectedPO.vendorAddress.slice(0, 10) + '…'}
                           {' · '}{overviewSelectedPO.dateIssued}
+                          {FEATURES.poBuildout && poNumberFor(overviewViewedPOData, overviewSelectedPO) ? <>{' · '}<span className="mono">{poNumberFor(overviewViewedPOData, overviewSelectedPO)}</span></> : null}
                           {' · '}{overviewSelectedPO.paymentTerms || '—'}
                         </div>
                       </div>
@@ -15331,6 +15408,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 4 }}>
                           {selectedBuyer?.company || selectedBuyer?.name || vOvwSelectedPO.buyerAddress.slice(0, 10) + '…'}
                           {' · '}{vOvwSelectedPO.dateIssued}
+                          {FEATURES.poBuildout && poNumberFor(vOvwViewedPOData, vOvwSelectedPO) ? <>{' · '}<span className="mono">{poNumberFor(vOvwViewedPOData, vOvwSelectedPO)}</span></> : null}
                           {' · '}{vOvwSelectedPO.paymentTerms || '—'}
                         </div>
                       </div>

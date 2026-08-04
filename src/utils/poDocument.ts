@@ -37,6 +37,7 @@ export interface POParty {
   email?: string;
   phone?: string;
   duns?: string;               // buyer AND seller DUNS ride here
+  uniqueID?: string;           // buyer's own id; namespaces the PO number (snapshot, not live)
   postal?: string;             // free-text postal block (matches profile.address textarea)
   logoCid?: string;            // letterhead logo, IPFS CID (buyer)
 }
@@ -162,14 +163,23 @@ export function computeTotals(input: ComputeTotalsInput): POTotals {
 
 /** Stateless, collision-free human PO number derived from the on-chain MPT
  *  issuance id. Format: PO-YYYYMMDD-<last 6 hex, upper>. No counter, no backend. */
-export function derivePONumber(issuanceId: string, date?: Date): string {
+export function derivePONumber(issuanceId: string, date?: Date, buyerId?: string): string {
   const d = date || new Date();
   const ymd =
     d.getFullYear() +
     ('0' + (d.getMonth() + 1)).slice(-2) +
     ('0' + d.getDate()).slice(-2);
-  const suffix = (issuanceId || '').slice(-6).toUpperCase();
-  return 'PO-' + ymd + '-' + (suffix || 'PENDING');
+  // First 8 hex chars = the 32-bit sequence number; the trailing 40 are the issuer's
+  // AccountID, identical for every MPT that account ever mints. Slicing the tail gave
+  // every PO from a buyer the same suffix — the entropy is all at the front.
+  const suffix = (issuanceId || '').slice(0, 8).toUpperCase();
+  // Namespace by the buyer's own id so a seller can tell whose order it is at a glance, and so
+  // two buyers' low sequence numbers can't produce the same label. Sanitized: the field is
+  // free text. NOT a uniqueness guarantee across buyers (two could type the same id) — the
+  // globally unique key is the issuance id. Uniqueness WITHIN a buyer is absolute: the sequence
+  // number is ledger-enforced, monotonic, and never reused.
+  const ns = (buyerId || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+  return 'PO-' + (ns ? ns + '-' : '') + ymd + '-' + (suffix || 'PENDING');
 }
 
 export interface BuildPODocInput {
