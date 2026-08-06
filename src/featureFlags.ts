@@ -11,7 +11,7 @@ export const FEATURES = {
   marketplace: true,
   // ▲▲▲ MARKETPLACE ▲▲▲
   // ▼▼▼ PO_BUILDOUT ▼▼▼ Task 5.2 Tier 3 #10 — dark-launched; flip to true when the PO build-out ships
-  poBuildout: false,
+  poBuildout: true,
   // ▲▲▲ PO_BUILDOUT ▲▲▲
   // Phase 6 — gated off for the demo:
   escrowYield: false,
