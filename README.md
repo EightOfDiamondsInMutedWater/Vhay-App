@@ -14,6 +14,7 @@ Vhay turns the procure-to-pay cycle into native ledger instruments. A buyer issu
 - **Escrow-backed settlement.** The buyer locks payment — a USD-pegged trust-line token (RLUSD or a demo stablecoin) or XRP — into an escrow whose release is bound by a crypto-condition derived from the PO's token ID. Funds unlock to the vendor only against that fulfillment.
 - **Permissioned counterparties.** Participants hold tiered credentials (Basic / Verified / Institutional) issued by the platform and are admitted to a permissioned domain; uncredentialed accounts can't transact.
 - **On-ledger identity.** Each profile is anchored by a DID.
+- **Supplier marketplace.** Buyers browse listed products across suppliers and raise a purchase order directly from a listing.
 - **Tokenized inventory.** Vendors mint inventory as Multi-Purpose Tokens, custodied in a dedicated warehouse account kept separate from their transacting wallet.
 
 ## XRPL standards leveraged
@@ -30,48 +31,23 @@ Vhay turns the procure-to-pay cycle into native ledger instruments. A buyer issu
 
 On-chain activity is attributed via **XRPL Source Tag `2606160012`**, assigned by XRPL Commons for the Make Waves Challenge (T&Cs sections 5 and 7).
 
-Every transaction the app submits carries this Source Tag. It is injected at the transaction-building chokepoint (`autofillTagged` in `src/utils/xrplHelpers.ts`) before signing, so it attaches to 100% of on-chain activity — PO creation, recall, and update; escrow create/finish; inventory minting and burns; MPT authorize/destroy; DID and credential operations; and platform fee payments. The value is configurable via the `REACT_APP_SOURCE_TAG` environment variable (default `2606160012`).
+Every transaction the app submits carries this Source Tag. It is injected at the transaction-building chokepoint (`autofillTagged` in `src/utils/xrplHelpers.ts`) before signing, so it attaches to 100% of on-chain activity — PO creation, recall, and update; escrow create/finish; inventory minting and burns; MPT authorize/destroy; DID and credential operations; and platform fee payments.
 
 ## Tech stack
 
 - **Frontend:** React + TypeScript single-page app
-- **Ledger:** [xrpl.js](https://github.com/XRPLF/xrpl.js) against the XRP Ledger (devnet for development, mainnet for production)
+- **Ledger:** [xrpl.js](https://github.com/XRPLF/xrpl.js) against the XRP Ledger
 - **Document storage:** IPFS via Pinata / Filebase
 - No application backend — the client interacts with the ledger directly
 
-## Quickstart
+## Deployment
 
-```bash
-git clone https://github.com/EightOfDiamondsInMutedWater/SC.PO_MVP_11.25.25.git
-cd SC.PO_MVP_11.25.25
-npm install
-cp .env.example .env    # fill in your values — use devnet for local development
-npm start
-```
-
-### Environment variables
-
-Create a `.env` (never commit it). Variable names:
-
-```
-REACT_APP_XRPL_NODES=           # XRPL endpoint, e.g. wss://s.devnet.rippletest.net:51233
-REACT_APP_COMPANY_WALLET=       # platform/company wallet address (r...)
-REACT_APP_COMPANY_SEED=         # platform wallet seed — DEVNET throwaway for local dev only
-REACT_APP_RLUSD_ISSUER=         # settlement-token issuer address (r...)
-REACT_APP_DOMAIN_ID=            # permissioned domain ID
-REACT_APP_PINATA_API_KEY=       # Pinata IPFS key
-REACT_APP_FILEBASE_RPC_TOKEN=   # Filebase token
-REACT_APP_FILEBASE_BUCKET=      # Filebase bucket
-```
-
-> Use devnet, throwaway values for local development. Never commit real seeds or API keys.
+Vhay runs as a static single-page app on Vercel, configured entirely through environment variables at build time. There is no application backend — the client signs and submits transactions to the XRP Ledger directly.
 
 ## Status
 
-Active development. Currently running on XRPL devnet; mainnet deployment in progress.
+**Live on XRPL Mainnet** at [vhay.app](https://vhay.app). Under active development.
 
 ## License
 
-Released under the [MIT License](./LICENSE).
-
-
+Released under the [PolyForm Shield License 1.0.0](./LICENSE). You may read, evaluate, and use this software for any purpose except to build a product that competes with Vhay.
