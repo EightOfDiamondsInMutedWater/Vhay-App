@@ -42,5 +42,14 @@ const lower = w.sign({ ...proof.buildProofTx(w.classicAddress),
   Memos:[{ Memo:{ MemoData: Buffer.from(proof.PROOF_MEMO,'utf8').toString('hex') } }] });
 check('lowercase hex memo readable', proof.readProofMemo(codec.decode(lower.tx_blob)) === proof.PROOF_MEMO);
 
+
+// --- drift guard: the tier hex must match every other copy in the repo ---
+const fs = require('fs');
+const grab = (f, re) => { const m = fs.readFileSync(f, 'utf8').match(re); return m && m[1]; };
+const inHelpers = grab('src/utils/xrplHelpers.ts', /SCPO_BASIC_HEX\s*=\s*'([0-9A-Fa-f]+)'/);
+const inScript  = grab('scripts/issue-credentials.cjs', /SCPO_BASIC_HEX\s*=\s*'([0-9A-Fa-f]+)'/);
+check('hex matches xrplHelpers.ts', inHelpers === proof.SCPO_BASIC_HEX, inHelpers);
+check('hex matches issue-credentials.cjs', inScript === proof.SCPO_BASIC_HEX, inScript);
+
 console.log(failures === 0 ? '\nALL PASS' : '\n' + failures + ' FAILURE(S)');
 process.exit(failures === 0 ? 0 : 1);

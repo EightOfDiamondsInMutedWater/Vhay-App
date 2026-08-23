@@ -2,6 +2,10 @@
 // Single source of truth for the credential-proof contract.
 const PROOF_MEMO = 'vhay-credential-request';
 
+// hex('SCPO_BASIC'). MUST stay byte-identical to SCPO_BASIC_HEX in src/utils/xrplHelpers.ts
+// and scripts/issue-credentials.cjs. Asserted by scripts/proof-roundtrip.js.
+const SCPO_BASIC_HEX = '5343504F5F4241534943';
+
 function buildProofTx(address) {
   return {
     TransactionType: 'AccountSet',
@@ -27,4 +31,4 @@ function readProofMemo(decodedTx) {
   return null;
 }
 
-module.exports = { PROOF_MEMO, buildProofTx, readProofMemo };
+module.exports = { PROOF_MEMO, SCPO_BASIC_HEX, buildProofTx, readProofMemo };
