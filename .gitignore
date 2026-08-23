@@ -29,3 +29,6 @@ yarn-error.log*
 # Keep API keys secret
 .env
 .env.local
+
+# Vercel
+.vercel
