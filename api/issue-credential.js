@@ -10,6 +10,7 @@ const proofLib = require('../src/shared/credentialProof');
 const ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const SOURCE_TAG = 2606160012;
 const EXPIRATION_DAYS = 365;
+const RENEWAL_WINDOW_MS = 30 * 86400 * 1000; // item 16a — renew within 30 days of expiry
 const RIPPLE_EPOCH = 946684800;
 const ALLOWED_TX_TYPES = new Set(['AccountSet', 'SignIn']);
 
@@ -67,15 +68,36 @@ module.exports = async (req, res) => {
       throw e;
     }
 
-    // 4. Idempotent: already credentialed is success, accepted or not.
+    // 4. Idempotent: already credentialed is success, accepted or not —
+    //    UNLESS the credential is at or near expiry, in which case revoke and reissue (item 16a).
     const existing = objects.find(
       (c) => c.Issuer === company.classicAddress && c.CredentialType === proofLib.SCPO_BASIC_HEX
     );
+    let renewing = false;
     if (existing) {
-      return res.status(200).json({
-        ok: true, subject, alreadyCredentialed: true,
-        accepted: Boolean(existing.Flags & 0x00010000),
-      });
+      const expSec = typeof existing.Expiration === 'number' ? existing.Expiration : null;
+      const expiresAtMs = expSec === null ? null : (expSec + RIPPLE_EPOCH) * 1000;
+      const dueForRenewal = expiresAtMs !== null && Date.now() > expiresAtMs - RENEWAL_WINDOW_MS;
+      if (!dueForRenewal) {
+        return res.status(200).json({
+          ok: true, subject, alreadyCredentialed: true,
+          accepted: Boolean(existing.Flags & 0x00010000),
+        });
+      }
+      console.log('[issue-credential] RENEWING ' + subject +
+        ' expires=' + new Date(expiresAtMs).toISOString());
+      const del = await client.submitAndWait(await client.autofill({
+        TransactionType: 'CredentialDelete',
+        Account: company.classicAddress,
+        Subject: subject,
+        CredentialType: proofLib.SCPO_BASIC_HEX,
+        SourceTag: SOURCE_TAG,
+      }), { wallet: company });
+      const delCode = del.result.meta && del.result.meta.TransactionResult;
+      if (delCode !== 'tesSUCCESS') {
+        return fail(res, 502, 'RENEW_REVOKE_FAILED', { txResult: delCode });
+      }
+      renewing = true;
     }
 
     // 5. Issue.
@@ -90,7 +112,7 @@ module.exports = async (req, res) => {
     const result = await client.submitAndWait(await client.autofill(tx), { wallet: company });
     const code = result.result.meta && result.result.meta.TransactionResult;
     if (code !== 'tesSUCCESS') {
-      return fail(res, 502, 'ISSUE_FAILED', { txResult: code });
+      return fail(res, 502, renewing ? 'RENEW_REVOKED_NOT_REISSUED' : 'ISSUE_FAILED', { txResult: code });
     }
     return res.status(200).json({
       ok: true, subject, alreadyCredentialed: false, accepted: false,
