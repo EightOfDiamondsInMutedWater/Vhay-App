@@ -2,8 +2,13 @@ import * as xrpl from 'xrpl';
 
 // ── Source Tag (Make Waves Challenge attribution, T&Cs §5/§7) ──────────────
 // Read from env so hosted can set REACT_APP_SOURCE_TAG (Task 4.3); falls back
-// to the registered tag. Tagged at the autofill chokepoint (pre-sign), so the
-// SourceTag is included in the signed tx. Covers ALL submit paths.
+// to the registered tag. Tagged pre-sign at TWO chokepoints: autofillTagged (for
+// direct client.autofill callers) and submitQueued (which uses submitAndWait's own
+// autofill and therefore never passed through autofillTagged).
+// ⚠ The previous version of this comment claimed "Covers ALL submit paths" and was
+// FALSE — submitQueued's 7 call sites went out untagged. Measured on mainnet 8/30/26:
+// CredentialAccept 1F7F7128… SourceTag=ABSENT while DIDSet/AccountSet from the same
+// save carried 2606160012. Do not add a third submit path without tagging it here.
 export const SOURCE_TAG = Number(process.env.REACT_APP_SOURCE_TAG ?? 2606160012) || 0;
 export const withSourceTag = <T extends Record<string, any>>(tx: T): T =>
   SOURCE_TAG ? ({ ...tx, SourceTag: SOURCE_TAG } as T) : tx;
@@ -390,7 +395,7 @@ export const submitQueued = async (
           await sleep(delay);
         }
         const client = await getXRPLClient();
-        const tx = await client.submitAndWait(transaction as any, {
+        const tx = await client.submitAndWait(withSourceTag(transaction) as any, {
           autofill: true,
           wallet,
         });
