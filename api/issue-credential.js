@@ -80,7 +80,7 @@ module.exports = async (req, res) => {
       const dueForRenewal = expiresAtMs !== null && Date.now() > expiresAtMs - RENEWAL_WINDOW_MS;
       if (!dueForRenewal) {
         return res.status(200).json({
-          ok: true, subject, alreadyCredentialed: true,
+          ok: true, subject, issuer: company.classicAddress, alreadyCredentialed: true,
           accepted: Boolean(existing.Flags & 0x00010000),
         });
       }
@@ -115,7 +115,7 @@ module.exports = async (req, res) => {
       return fail(res, 502, renewing ? 'RENEW_REVOKED_NOT_REISSUED' : 'ISSUE_FAILED', { txResult: code });
     }
     return res.status(200).json({
-      ok: true, subject, alreadyCredentialed: false, accepted: false,
+      ok: true, subject, issuer: company.classicAddress, alreadyCredentialed: false, accepted: false,
       txHash: result.result.hash,
     });
   } catch (e) {
