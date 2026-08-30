@@ -15,7 +15,7 @@ import * as cc from 'five-bells-condition';
 import { 
   getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO,
   deployPermissionedDomain, issueCredential, acceptCredential,
-  validateCredential, canCreatePO, revokeCredential, checkAndRenewCredential, isRLUSDConfigured, canUseRLUSDEscrow, setupRLUSDTrustLine, getRLUSDBalance, getRLUSDCurrency,
+  validateCredential, canCreatePO, revokeCredential, isRLUSDConfigured, canUseRLUSDEscrow, setupRLUSDTrustLine, getRLUSDBalance, getRLUSDCurrency,
  scanFeeEntries,
   scanLinkedProfiles,
   submitBlobQueued,
@@ -28,6 +28,9 @@ import type { FeeEntry, ProfileLinkOnChain, AuditLogEntry } from './utils/xrplHe
 import { exportAsJSON, exportAsCSV, export1099CSV } from './utils/exportHelpers';
 import type { SCPOExportBundle, NinetyNineRow } from './utils/exportHelpers';
 import { buildMemo, parseMemo, parseLegacyRefMemo, SCPO_ACTIONS } from './utils/memoHelpers';
+// Shared with api/issue-credential.js — single source of truth for the credential-proof
+// contract. Do NOT inline the memo or the tx shape here; drift is what this module prevents.
+import { buildProofTx } from './shared/credentialProof';
 import { pinJSONToBoth, pinEncryptedToBoth, pinFileToBoth } from './utils/ipfsHelpers';
 // ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3
 import type { StorefrontIdentity } from './utils/marketplaceStorefront';
@@ -1226,6 +1229,11 @@ export default function App() {
   const [taxCustomEnd, setTaxCustomEnd] = useState('');
   const [customerCredStatus, setCustomerCredStatus] = useState<{ valid: boolean; tier?: string } | null>(null);
   const [vendorCredStatus, setVendorCredStatus] = useState<{ valid: boolean; tier?: string } | null>(null);
+  // Why the last credential attempt failed. SEPARATE from credStatus: that is ledger truth read
+  // back by validateCredential, which cannot report a reason for something that never happened.
+  // null = no attempt made, or the last attempt succeeded.
+  const [customerCredError, setCustomerCredError] = useState<string | null>(null);
+  const [vendorCredError, setVendorCredError] = useState<string | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   const [feeEntries, setFeeEntries] = useState<FeeEntry[]>([]);
   const [feeEntriesLoading, setFeeEntriesLoading] = useState(false);
@@ -8600,6 +8608,50 @@ const fetchSharedInventoryDoc = async (
       return { uri: null, didDocument: null, data: null, raw: null };
     }
   };
+  // ── Credential issuance (Tier 4.2 item 12) ─────────────────────────────────
+  // Replaces the client-side checkAndRenewCredential. The issuer seed lives ONLY in
+  // /api/issue-credential; this signs a proof of wallet control, the server derives the
+  // subject FROM THE SIGNATURE (never from the body), and the user's own wallet sends
+  // CredentialAccept. Renewal returns the SAME shape as a first issue, so `accepted` is
+  // the only field that branches — there is no renewal case to handle here.
+  // `client` is typed any deliberately: it is vestigial inside acceptCredential (item 16)
+  // and getXRPLClient's return type is not asserted at this call site.
+  const ensureCredential = async (
+    client: any,
+    wallet: xrpl.Wallet
+  ): Promise<{ ok: boolean; code?: string }> => {
+    let data: any = null;
+    try {
+      const signed = wallet.sign(buildProofTx(wallet.classicAddress) as any);
+      const resp = await fetch('/api/issue-credential', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proof: signed.tx_blob }),
+      });
+      // The rate limit is enforced at the Vercel edge and does NOT return JSON.
+      // Check it before parsing, or the parse throws and masks the real cause.
+      if (resp.status === 429) return { ok: false, code: 'RATE_LIMITED' };
+      try { data = await resp.json(); } catch (parseErr) { data = null; }
+      if (!resp.ok || !data || data.ok !== true) {
+        return { ok: false, code: (data && data.code) || 'HTTP_' + resp.status };
+      }
+    } catch (netErr: any) {
+      console.log('[ensureCredential] request failed:', netErr && netErr.message);
+      return { ok: false, code: 'NETWORK_ERROR' };
+    }
+    if (data.accepted === true) return { ok: true };
+    // Accept against the issuer the SERVER actually signed with, never a local env var —
+    // two independent sources for one address is the drift this deliberately avoids.
+    if (!data.issuer) return { ok: false, code: 'NO_ISSUER_IN_RESPONSE' };
+    try {
+      await acceptCredential(client, wallet, data.issuer);
+    } catch (acceptErr: any) {
+      console.log('[ensureCredential] accept failed:', acceptErr && acceptErr.message);
+      return { ok: false, code: 'ACCEPT_FAILED' };
+    }
+    return { ok: true };
+  };
+
   const saveCustomerProfile = async () => {
     try {
       let updatedProfile = { ...customerProfile };
@@ -8651,13 +8703,16 @@ const fetchSharedInventoryDoc = async (
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
 
         // Phase 1B: Issue, renew, or skip credential
-        if (process.env.REACT_APP_DOMAIN_ID && process.env.REACT_APP_COMPANY_SEED) {
+        // Wrapped defensively: an escape here would hit the outer catch and skip
+        // setCustomerProfile below, losing the save. The profile saves regardless.
+        if (process.env.REACT_APP_DOMAIN_ID) {
           try {
-            const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
-            const credResult = await checkAndRenewCredential(client, platformWallet, wallet);
-            console.log(`✅ Credential status: ${credResult}`);
+            const credOutcome = await ensureCredential(client, wallet);
+            setCustomerCredError(credOutcome.ok ? null : (credOutcome.code || 'UNKNOWN'));
+            console.log(credOutcome.ok ? '✅ Credential active' : ('⚠ Credential not active: ' + credOutcome.code));
           } catch (credErr: any) {
-            console.log('Credential check skipped (non-critical):', credErr.message);
+            setCustomerCredError('UNEXPECTED');
+            console.log('Credential step threw unexpectedly:', credErr && credErr.message);
           }
         }
 
@@ -8804,13 +8859,16 @@ const fetchSharedInventoryDoc = async (
         } catch (e) { console.log('AccountSet Domain fallback skipped (non-critical):', e); }
 
         // Phase 1B: Issue, renew, or skip credential
-        if (process.env.REACT_APP_DOMAIN_ID && process.env.REACT_APP_COMPANY_SEED) {
+        // Wrapped defensively: an escape here would hit the outer catch and skip
+        // setVendorProfile below, losing the save. The profile saves regardless.
+        if (process.env.REACT_APP_DOMAIN_ID) {
           try {
-            const platformWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED!);
-            const credResult = await checkAndRenewCredential(client, platformWallet, wallet);
-            console.log(`✅ Credential status: ${credResult}`);
+            const credOutcome = await ensureCredential(client, wallet);
+            setVendorCredError(credOutcome.ok ? null : (credOutcome.code || 'UNKNOWN'));
+            console.log(credOutcome.ok ? '✅ Credential active' : ('⚠ Credential not active: ' + credOutcome.code));
           } catch (credErr: any) {
-            console.log('Credential check skipped (non-critical):', credErr.message);
+            setVendorCredError('UNEXPECTED');
+            console.log('Credential step threw unexpectedly:', credErr && credErr.message);
           }
         }
 
