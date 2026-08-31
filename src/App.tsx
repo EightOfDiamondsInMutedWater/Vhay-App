@@ -5302,6 +5302,13 @@ useEffect(() => {
             const aprResult = await adapter.getCurrentAPR();
             const apr = yieldIntentAPR > 0 ? yieldIntentAPR : aprResult.apr;
             // No second YIELD_OPT_IN memo here — the canonical one was written at PO creation.
+            // ⚠ UNGUARDED fromSeed — reachable ONLY because FEATURES.escrowYield is false.
+            // The toggle's onChange checks the flag and returns before yieldOptIn can be set,
+            // so no YIELD_OPT_IN memo is ever written and this branch is dead in production.
+            // ⚠ IF YOU FLIP escrowYield TO TRUE: production has NO client-side company seed
+            // (removed 8/30/26), so this becomes fromSeed('') and THROWS. It is swallowed by
+            // the catch below — escrow still funds, yield silently never happens. Guard it,
+            // or move the deposit server-side. Finding #6, investigated 8/31/26.
             const companyWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED || '');
             await adapter.depositPrincipal(po.total, positionId, companyWallet);
             const newPosition: YieldPosition = {
@@ -5420,6 +5427,10 @@ useEffect(() => {
       const adapter = yieldPartnerRegistry.get(position.partnerId);
       if (adapter) {
         setResult('Withdrawing yield position before claim...');
+        // ⚠ UNGUARDED fromSeed below — dead in production for the same reason as the
+        // fundEscrow site: FEATURES.escrowYield is false, so no positions exist to claim.
+        // ⚠ IF FLIPPED ON: fromSeed('') throws, the catch absorbs it, the claim proceeds,
+        // and the position is left status:'accruing' with its escrow gone. Finding #6.
         try {
           const companyWallet = xrpl.Wallet.fromSeed(process.env.REACT_APP_COMPANY_SEED || '');
           const withdrawResult = await adapter.withdrawPrincipal(
@@ -8664,6 +8675,9 @@ const fetchSharedInventoryDoc = async (
     if (code === 'ISSUER_NOT_CONFIGURED' || code === 'ISSUER_SEED_INVALID') {
       return 'Credentialing is temporarily unavailable. This is on our side — nothing for you to fix. Please try again later.';
     }
+    if (code === 'SEED_ADDRESS_MISMATCH') {
+      return 'The seed on this profile does not belong to the wallet address shown. Correct one of them before requesting a credential.';
+    }
     if (code === 'NO_LOCAL_SEED') {
       return 'Add and save your wallet address and seed on this profile before requesting a credential.';
     }
@@ -8713,6 +8727,14 @@ const fetchSharedInventoryDoc = async (
     try {
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(profile.seed);
+      // The seed signs; the address is only displayed. If they disagree the credential
+      // would go to the SEED's wallet, not the one on screen — silently, and on mainnet.
+      // Pre-existing in the save path too, but the button is where one click can do it.
+      if (wallet.classicAddress !== profile.classicAddress) {
+        setErr('SEED_ADDRESS_MISMATCH');
+        setCredRetryBusy(false);
+        return;
+      }
       const credOutcome = await ensureCredential(client, wallet);
       setErr(credOutcome.ok ? null : (credOutcome.code || 'UNKNOWN'));
       try {
