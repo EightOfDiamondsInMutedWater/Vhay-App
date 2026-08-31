@@ -1234,6 +1234,7 @@ export default function App() {
   // null = no attempt made, or the last attempt succeeded.
   const [customerCredError, setCustomerCredError] = useState<string | null>(null);
   const [vendorCredError, setVendorCredError] = useState<string | null>(null);
+  const [credRetryBusy, setCredRetryBusy] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [feeEntries, setFeeEntries] = useState<FeeEntry[]>([]);
   const [feeEntriesLoading, setFeeEntriesLoading] = useState(false);
@@ -8649,7 +8650,81 @@ const fetchSharedInventoryDoc = async (
       console.log('[ensureCredential] accept failed:', acceptErr && acceptErr.message);
       return { ok: false, code: 'ACCEPT_FAILED' };
     }
-    return { ok: true };
+      return { ok: true };
+  };
+
+  // Maps a credential failure code to copy a user can act on. Codes come from two
+  // places: api/issue-credential.js fail(res, status, CODE) — 15 codes as of 8/31/26 —
+  // and ensureCredential itself (RATE_LIMITED, NETWORK_ERROR, NO_ISSUER_IN_RESPONSE,
+  // ACCEPT_FAILED, HTTP_<status>). The call sites also emit UNKNOWN and UNEXPECTED.
+  // Unmapped codes hit the diagnostic default ON PURPOSE: a code added to the
+  // endpoint later must render something actionable, never an empty box.
+  const credErrorCopy = (code: string | null): string => {
+    if (!code) return '';
+    if (code === 'ISSUER_NOT_CONFIGURED' || code === 'ISSUER_SEED_INVALID') {
+      return 'Credentialing is temporarily unavailable. This is on our side — nothing for you to fix. Please try again later.';
+    }
+    if (code === 'NO_LOCAL_SEED') {
+      return 'Add and save your wallet address and seed on this profile before requesting a credential.';
+    }
+    if (code === 'SUBJECT_NOT_FUNDED') {
+      return 'This wallet is not on the XRP Ledger yet. Fund it with at least 1.2 XRP, then try again.';
+    }
+    if (code === 'ACCEPT_FAILED') {
+      return 'The credential was issued, but this wallet could not accept it — usually not enough XRP to cover the reserve. Fund this wallet to at least 1.2 XRP and try again. You cannot create a purchase order until this succeeds.';
+    }
+    if (code === 'RENEW_REVOKED_NOT_REISSUED' || code === 'RENEW_REVOKE_FAILED' || code === 'ISSUE_FAILED') {
+      return 'The ledger did not complete the credential. Please try again.';
+    }
+    if (code === 'RATE_LIMITED') {
+      return 'Too many attempts. Wait a minute, then try again.';
+    }
+    if (code === 'NETWORK_ERROR') {
+      return 'Could not reach the credentialing service. Check your connection and try again.';
+    }
+    if (code === 'SUBJECT_IS_ISSUER') {
+      return 'This wallet cannot credential itself. Use a different wallet.';
+    }
+    if (code.indexOf('PROOF_') === 0 || code === 'NO_ISSUER_IN_RESPONSE' || code === 'METHOD_NOT_ALLOWED') {
+      return 'Something went wrong on our side. Please report code ' + code + '.';
+    }
+    return 'Credentialing failed (code ' + code + '). Please try again.';
+  };
+
+  // Retry credentialing WITHOUT re-running the profile save. saveCustomerProfile
+  // re-pins to Pinata and writes DIDSet + AccountSet + a profileVersion bump; a
+  // credential retry needs none of that. This mirrors only what matters: client,
+  // wallet, ensureCredential, then the SAME validateCredential refresh the save
+  // path does — without that refresh a successful retry leaves the card still
+  // reading "Not credentialed".
+  // fromSeed is guarded: unlike the save path there is no upstream
+  // isValidSeedForSigning check in render scope, and fromSeed('') throws.
+  const retryCredential = async (which: 'customer' | 'vendor') => {
+    const profile = which === 'vendor' ? vendorProfile : customerProfile;
+    const setErr = which === 'vendor' ? setVendorCredError : setCustomerCredError;
+    const setStatus = which === 'vendor' ? setVendorCredStatus : setCustomerCredStatus;
+    const domainId = process.env.REACT_APP_DOMAIN_ID;
+    if (!domainId) { setErr('UNEXPECTED'); return; }
+    if (!profile.classicAddress || !isValidSeedForSigning(profile.seed)) {
+      setErr('NO_LOCAL_SEED');
+      return;
+    }
+    setCredRetryBusy(true);
+    try {
+      const client = await getXRPLClient();
+      const wallet = xrpl.Wallet.fromSeed(profile.seed);
+      const credOutcome = await ensureCredential(client, wallet);
+      setErr(credOutcome.ok ? null : (credOutcome.code || 'UNKNOWN'));
+      try {
+        const result = await validateCredential(profile.classicAddress, domainId);
+        setStatus(result);
+      } catch { setStatus(null); }
+    } catch (e: any) {
+      setErr('UNEXPECTED');
+      console.log('[retryCredential] threw:', e && e.message);
+    } finally {
+      setCredRetryBusy(false);
+    }
   };
 
   const saveCustomerProfile = async () => {
@@ -15927,6 +16002,26 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         </div>
                       </div>
                     )}
+                    {!customerCredStatus?.valid && (
+                      <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(180,140,60,0.06)', border: '1px solid rgba(180,140,60,0.28)' }}>
+                        <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.45 0.14 75)', marginBottom: 4 }}>
+                          Not credentialed
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
+                          {customerCredError
+                            ? credErrorCopy(customerCredError)
+                            : 'A credential is required before you can create a purchase order. Request one now — it is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => retryCredential('customer')}
+                          disabled={credRetryBusy}
+                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: credRetryBusy ? 'default' : 'pointer', opacity: credRetryBusy ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
+                        >
+                          {credRetryBusy ? 'Requesting…' : 'Get credentialed'}
+                        </button>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div style={{ padding: '14px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px dashed rgba(180,140,60,0.25)', fontSize: 12, color: 'var(--ink-3)', textAlign: 'center' }}>
@@ -16365,6 +16460,26 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <div style={{ fontSize: 11, color: 'var(--ink-2)' }}>
                           Re-issues automatically on change.
                         </div>
+                      </div>
+                    )}
+                    {!vendorCredStatus?.valid && (
+                      <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(180,140,60,0.06)', border: '1px solid rgba(180,140,60,0.28)' }}>
+                        <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.45 0.14 75)', marginBottom: 4 }}>
+                          Not credentialed
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
+                          {vendorCredError
+                            ? credErrorCopy(vendorCredError)
+                            : 'A credential is required before buyers can transact with your storefront. Request one now — it is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => retryCredential('vendor')}
+                          disabled={credRetryBusy}
+                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: credRetryBusy ? 'default' : 'pointer', opacity: credRetryBusy ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
+                        >
+                          {credRetryBusy ? 'Requesting…' : 'Get credentialed'}
+                        </button>
                       </div>
                     )}
                   </>
