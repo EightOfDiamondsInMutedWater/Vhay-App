@@ -1235,6 +1235,15 @@ export default function App() {
   const [customerCredError, setCustomerCredError] = useState<string | null>(null);
   const [vendorCredError, setVendorCredError] = useState<string | null>(null);
   const [credRetryBusy, setCredRetryBusy] = useState(false);
+  // Cooldown after a FAILED credential request. UX only — the real gate is the Vercel WAF
+  // rule (20 req/60s per IP). This stops a user hammering a persistent error into a 429
+  // and locking out their whole office, which shares one egress IP.
+  const [credCooldownLeft, setCredCooldownLeft] = useState(0);
+  React.useEffect(() => {
+    if (credCooldownLeft <= 0) return;
+    const id = setTimeout(() => setCredCooldownLeft(s => s - 1), 1000);
+    return () => clearTimeout(id);
+  }, [credCooldownLeft]);
   const [adminPassword, setAdminPassword] = useState('');
   const [feeEntries, setFeeEntries] = useState<FeeEntry[]>([]);
   const [feeEntriesLoading, setFeeEntriesLoading] = useState(false);
@@ -8737,6 +8746,10 @@ const fetchSharedInventoryDoc = async (
       }
       const credOutcome = await ensureCredential(client, wallet);
       setErr(credOutcome.ok ? null : (credOutcome.code || 'UNKNOWN'));
+      // Only on failures that actually reached the network. NO_LOCAL_SEED and
+      // SEED_ADDRESS_MISMATCH return before the fetch — cooling those down would punish
+      // a user for a typo they can fix instantly.
+      if (!credOutcome.ok) setCredCooldownLeft(10);
       try {
         const result = await validateCredential(profile.classicAddress, domainId);
         setStatus(result);
@@ -8913,7 +8926,7 @@ const fetchSharedInventoryDoc = async (
   };
   // ▲▲▲ MARKETPLACE ▲▲▲
   
-    const saveVendorProfile = async () => {
+  const saveVendorProfile = async () => {
     try {
       let updatedProfile = { ...vendorProfile };
       if (!updatedProfile.classicAddress?.trim() || !isValidSeedForSigning(updatedProfile.seed)) {
@@ -16073,10 +16086,10 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <button
                           type="button"
                           onClick={() => retryCredential('customer')}
-                          disabled={credRetryBusy}
-                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: credRetryBusy ? 'default' : 'pointer', opacity: credRetryBusy ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
+                          disabled={credRetryBusy || credCooldownLeft > 0}
+                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
                         >
-                          {credRetryBusy ? 'Requesting…' : 'Get credentialed'}
+                          {credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
                         </button>
                       </div>
                     )}
@@ -16533,10 +16546,10 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <button
                           type="button"
                           onClick={() => retryCredential('vendor')}
-                          disabled={credRetryBusy}
-                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: credRetryBusy ? 'default' : 'pointer', opacity: credRetryBusy ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
+                          disabled={credRetryBusy || credCooldownLeft > 0}
+                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
                         >
-                          {credRetryBusy ? 'Requesting…' : 'Get credentialed'}
+                          {credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
                         </button>
                       </div>
                     )}
