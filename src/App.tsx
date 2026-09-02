@@ -8761,6 +8761,24 @@ const fetchSharedInventoryDoc = async (
         });
         return;
       }
+      // The seed signs every transaction; the address is what the UI displays and what
+      // validateCredential reads. If they disagree, this save credentials, pins and DID-anchors
+      // the SEED's wallet while the Verification card reports on the ADDRESS — the card reads
+      // green and PO creation then refuses, with no cause shown. Costs 0.2 XRP of company
+      // headroom per occurrence once COMPANY_SEED is live in production.
+      // MUST run after isValidSeedForSigning above: fromSeed on an invalid seed throws.
+      // Linked counterparties are unaffected — they live in publicProfiles and carry no seed.
+      let seedOwner = '';
+      try { seedOwner = xrpl.Wallet.fromSeed(updatedProfile.seed.trim()).classicAddress; } catch { seedOwner = ''; }
+      if (seedOwner !== updatedProfile.classicAddress.trim()) {
+        await openConfirm({
+          kind: 'info',
+          title: 'Wallet Mismatch',
+          message: 'The seed phrase saved on this profile does not control the wallet address shown. Correct one of them before saving — otherwise transactions would be signed by a different wallet than the one displayed.',
+          confirmLabel: 'OK',
+        });
+        return;
+      }
       const contentHash = await hashProfileContent(updatedProfile);
       const customerHasNoCred = !customerCredStatus || !customerCredStatus.valid;
       if (customerProfile.lastOnChainHash && contentHash === customerProfile.lastOnChainHash && !customerHasNoCred) { console.log('No profile changes'); localStorage.setItem('customerProfile', JSON.stringify(updatedProfile)); return; }
@@ -8895,7 +8913,7 @@ const fetchSharedInventoryDoc = async (
   };
   // ▲▲▲ MARKETPLACE ▲▲▲
   
-  const saveVendorProfile = async () => {
+    const saveVendorProfile = async () => {
     try {
       let updatedProfile = { ...vendorProfile };
       if (!updatedProfile.classicAddress?.trim() || !isValidSeedForSigning(updatedProfile.seed)) {
@@ -8903,6 +8921,24 @@ const fetchSharedInventoryDoc = async (
           kind: 'info',
           title: 'Wallet Details Required',
           message: 'Please enter and save your wallet address and seed before saving profile details.',
+          confirmLabel: 'OK',
+        });
+        return;
+      }
+      // The seed signs every transaction; the address is what the UI displays and what
+      // validateCredential reads. If they disagree, this save credentials, pins and DID-anchors
+      // the SEED's wallet while the Verification card reports on the ADDRESS — the card reads
+      // green and PO creation then refuses, with no cause shown. Costs 0.2 XRP of company
+      // headroom per occurrence once COMPANY_SEED is live in production.
+      // MUST run after isValidSeedForSigning above: fromSeed on an invalid seed throws.
+      // Linked counterparties are unaffected — they live in publicProfiles and carry no seed.
+      let seedOwner = '';
+      try { seedOwner = xrpl.Wallet.fromSeed(updatedProfile.seed.trim()).classicAddress; } catch { seedOwner = ''; }
+      if (seedOwner !== updatedProfile.classicAddress.trim()) {
+        await openConfirm({
+          kind: 'info',
+          title: 'Wallet Mismatch',
+          message: 'The seed phrase saved on this profile does not control the wallet address shown. Correct one of them before saving — otherwise transactions would be signed by a different wallet than the one displayed.',
           confirmLabel: 'OK',
         });
         return;
