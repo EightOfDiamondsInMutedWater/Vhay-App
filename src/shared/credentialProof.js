@@ -31,4 +31,16 @@ function readProofMemo(decodedTx) {
   return null;
 }
 
-module.exports = { PROOF_MEMO, SCPO_BASIC_HEX, buildProofTx, readProofMemo };
+// Issuers whose SCPO_BASIC credentials are accepted as proof of standing.
+// COMPANY owns the permissioned domain and issues all three tiers; its seed is
+// deployed nowhere. DEDICATED_ISSUER is accepted by the domain for SCPO_BASIC
+// only and is the value of COMPANY_SEED in Vercel.
+// ⚠ Addresses are public. Asserted by scripts/proof-roundtrip.js.
+const COMPANY_ISSUER = 'raqWMfK3FcPVXd5Q468WgthvpvorEmCJV3';
+const DEDICATED_ISSUER = 'rhUaQmNPjsX52773rzFeApXA6vpjgiLkPJ';
+const ACCEPTED_ISSUERS = [COMPANY_ISSUER, DEDICATED_ISSUER];
+
+module.exports = {
+  PROOF_MEMO, SCPO_BASIC_HEX, buildProofTx, readProofMemo,
+  COMPANY_ISSUER, DEDICATED_ISSUER, ACCEPTED_ISSUERS,
+};

@@ -51,5 +51,12 @@ const inScript  = grab('scripts/issue-credentials.cjs', /SCPO_BASIC_HEX\s*=\s*'(
 check('hex matches xrplHelpers.ts', inHelpers === proof.SCPO_BASIC_HEX, inHelpers);
 check('hex matches issue-credentials.cjs', inScript === proof.SCPO_BASIC_HEX, inScript);
 
+// --- drift guard: issuer addresses must match scripts/update-domain-issuer.cjs ---
+const domOwner = grab('scripts/update-domain-issuer.cjs', /OWNER\s*=\s*["']([1-9A-HJ-NP-Za-km-z]+)["']/);
+const domIssuer = grab('scripts/update-domain-issuer.cjs', /NEW_ISSUER\s*=\s*["']([1-9A-HJ-NP-Za-km-z]+)["']/);
+check('company issuer matches domain script', domOwner === proof.COMPANY_ISSUER, domOwner);
+check('dedicated issuer matches domain script', domIssuer === proof.DEDICATED_ISSUER, domIssuer);
+check('accepted issuers has both, no extras', Array.isArray(proof.ACCEPTED_ISSUERS) && proof.ACCEPTED_ISSUERS.length === 2 && proof.ACCEPTED_ISSUERS.includes(proof.COMPANY_ISSUER) && proof.ACCEPTED_ISSUERS.includes(proof.DEDICATED_ISSUER), String(proof.ACCEPTED_ISSUERS.length));
+
 console.log(failures === 0 ? '\nALL PASS' : '\n' + failures + ' FAILURE(S)');
 process.exit(failures === 0 ? 0 : 1);
