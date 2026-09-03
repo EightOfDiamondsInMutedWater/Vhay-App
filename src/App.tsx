@@ -2448,9 +2448,7 @@ export default function App() {
         requestedAt:     new Date().toISOString(),
         version:         1,
       };
-      const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-      if (!pinataApiKey) throw new Error('Pinata API key missing');
-      const termsCID = await pinJSONToBoth(termsDoc, pinataApiKey);
+      const termsCID = await pinJSONToBoth(termsDoc, wallet);
       const ipfsCID = termsCID.replace('ipfs://', '');
 
       // Write FINANCE_REQUEST memo on-chain
@@ -3064,9 +3062,6 @@ export default function App() {
       const lineAmt    = liveCollateralValuation.lendableValue.toFixed(2);
 
       // Pin terms document to IPFS
-      const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-      if (!pinataApiKey) throw new Error('Pinata API key missing');
-
       const termsDoc = {
         pledgeId,
         vendorAddress:   wallet.classicAddress,
@@ -3086,7 +3081,7 @@ export default function App() {
         createdAt: new Date().toISOString(),
         version:   1,
       };
-      const termsCID = await pinJSONToBoth(termsDoc, pinataApiKey);
+      const termsCID = await pinJSONToBoth(termsDoc, wallet);
       const ipfsCID  = termsCID.replace('ipfs://', '');
 
       // Write COLLATERAL_PLEDGE memo on-chain as 1-drop payment to company wallet
@@ -4691,7 +4686,7 @@ useEffect(() => {
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
         try {
-          const uri = await uploadFileToIPFS(file);
+          const uri = await uploadFileToIPFS(file, wallet);
           attachments.push({ name: file.name, uri });
         } catch (err: any) {
           await openConfirm({
@@ -4749,7 +4744,8 @@ useEffect(() => {
     try {
       setResult('Encrypting and uploading PO data to IPFS...');
       const password = getPOEncryptionKey(selectedVendorUUID)!;
-      const ipfsUri = await uploadEncryptedToIPFS(poData, password);
+      const pinWallet = xrpl.Wallet.fromSeed(seed);
+      const ipfsUri = await uploadEncryptedToIPFS(poData, password, pinWallet);
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(seed);
       const ledgerResponse = await client.request({ command: 'ledger_current' });
@@ -4883,11 +4879,12 @@ useEffect(() => {
       return;
     }
     let attachments: Attachment[] = [...existingAttachments];
+    const pinWallet = xrpl.Wallet.fromSeed(seed || customerProfile.seed);
     if (selectedFiles && selectedFiles.length > 0) {
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
         try {
-          const uri = await uploadFileToIPFS(file);
+          const uri = await uploadFileToIPFS(file, pinWallet);
           attachments.push({ name: file.name, uri });
         } catch (err: any) {
           await openConfirm({
@@ -4955,7 +4952,7 @@ useEffect(() => {
     // ▲▲▲ PO_BUILDOUT ▲▲▲
     try {
       setUpdateResult('Encrypting and uploading updated PO...');
-      const ipfsUri = await uploadEncryptedToIPFS(poData, password);
+      const ipfsUri = await uploadEncryptedToIPFS(poData, password, pinWallet);
       const client = await getXRPLClient();
       const wallet = xrpl.Wallet.fromSeed(seed || customerProfile.seed);
       const ledgerResponse = await client.request({ command: 'ledger_current' });
@@ -7079,21 +7076,21 @@ const getUpdatablePOs = () => {
 
       // Upload document attachments first
       const pricingAttachment = invPricingFile
-        ? { name: invPricingFile.name, uri: await uploadFileToIPFS(invPricingFile) }
+        ? { name: invPricingFile.name, uri: await uploadFileToIPFS(invPricingFile, wallet) }
         : undefined;
       const designAttachment = invDesignFile
-        ? { name: invDesignFile.name, uri: await uploadFileToIPFS(invDesignFile) }
+        ? { name: invDesignFile.name, uri: await uploadFileToIPFS(invDesignFile, wallet) }
         : undefined;
       const bomAttachment = invBomFile
-        ? { name: invBomFile.name, uri: await uploadFileToIPFS(invBomFile) }
+        ? { name: invBomFile.name, uri: await uploadFileToIPFS(invBomFile, wallet) }
         : undefined;
       const usageAttachment = invUsageFile
-        ? { name: invUsageFile.name, uri: await uploadFileToIPFS(invUsageFile) }
+        ? { name: invUsageFile.name, uri: await uploadFileToIPFS(invUsageFile, wallet) }
         : undefined;
 
       // Task 3.8 — product image upload
       const imageAttachment = invImageFile
-        ? { name: invImageFile.name, uri: await uploadFileToIPFS(invImageFile) }
+        ? { name: invImageFile.name, uri: await uploadFileToIPFS(invImageFile, wallet) }
         : undefined;
 
       const vendorDoc: VendorInventoryDoc = {
@@ -7800,7 +7797,7 @@ const getUpdatablePOs = () => {
         : [];
       setEditPricingResult('Step 1/3: Uploading updated data to IPFS...');
       const editedImageAttachment = editImageFile
-        ? { name: editImageFile.name, uri: await uploadFileToIPFS(editImageFile) }
+        ? { name: editImageFile.name, uri: await uploadFileToIPFS(editImageFile, wallet) }
         : inventoryDetailDoc!.attachments?.productImage;
       const updatedVendorDoc: VendorInventoryDoc = {
         ...inventoryDetailDoc!,
@@ -8396,7 +8393,7 @@ const uploadVendorInventoryDoc = async (
   // Only this wallet can reproduce this key
   const encryptionKey = deriveSelfEncryptionKey(wallet);
 
-  const ipfsUri = await uploadEncryptedToIPFS(doc, encryptionKey);
+  const ipfsUri = await uploadEncryptedToIPFS(doc, encryptionKey, wallet);
 
   console.log(`✅ Vendor inventory doc uploaded: ${ipfsUri}`);
   return ipfsUri;
@@ -8425,7 +8422,7 @@ const uploadSharedInventoryDoc = async (
   //   const decryptionKey = deriveSharedSecret(vendorPubKey, vendorPubKey)
   const encryptionKey = deriveSharedSecret(vendorWallet.publicKey, vendorWallet.publicKey);
 
-  const ipfsUri = await uploadEncryptedToIPFS(doc, encryptionKey);
+  const ipfsUri = await uploadEncryptedToIPFS(doc, encryptionKey, vendorWallet);
 
   console.log(`✅ Shared inventory doc uploaded: ${ipfsUri}`);
   return ipfsUri;
@@ -8801,7 +8798,7 @@ const fetchSharedInventoryDoc = async (
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
         // Phase 1A: Use ECDH-derived key instead of manual password
         const ecdhKey = deriveSelfEncryptionKey(wallet);
-        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, ecdhKey);
+        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, ecdhKey, wallet)
         
         // Phase 1A: Use DIDSet instead of AccountSet for profile anchoring
         const previousIpfsUri = updatedProfile.ipfsUri || undefined;
@@ -8887,9 +8884,7 @@ const fetchSharedInventoryDoc = async (
     const storefrontIdentity = { ...vendorListing, name: vendorProfile.company || vendorListing.name || '', duns: vendorProfile.duns || vendorListing.duns || '' };
     const doc = buildStorefront(vendorAddress, storefrontIdentity, publicItems);
     // ▲▲▲ MARKETPLACE ▲▲▲
-    const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-    if (!pinataApiKey) throw new Error('Pinata API key missing');
-    const cid = await pinJSONToBoth(doc, pinataApiKey);
+    const cid = await pinJSONToBoth(doc, wallet);
     try { localStorage.setItem('vhay_vendor_storefront_cid', cid); } catch (e) { /* ignore */ }
     setVendorStorefrontCid(cid);
     return cid;
@@ -8968,7 +8963,7 @@ const fetchSharedInventoryDoc = async (
         const wallet = xrpl.Wallet.fromSeed(updatedProfile.seed);
         // Phase 1A: Use ECDH-derived key instead of manual password
         const ecdhKey = deriveSelfEncryptionKey(wallet);
-        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, ecdhKey);
+        const newIpfsUri = await uploadEncryptedProfileToPinata(publicProfile, ecdhKey, wallet)
         
         // Phase 1A: Use DIDSet instead of AccountSet for profile anchoring
         const previousIpfsUri = updatedProfile.ipfsUri || undefined;
@@ -9032,16 +9027,19 @@ const fetchSharedInventoryDoc = async (
     } catch (err: any) { alert('Failed to post update on-chain: ' + (err.message || String(err))); }
   };
 
-  const uploadEncryptedProfileToPinata = async (profile: PublicProfile, password: string) => {
+  // Rewired 9/3/26 — was the ONLY site posting directly to api.pinata.cloud.
+  // Now routes through /api/pin, which also gives the encrypted profile the
+  // Filebase redundancy it has never had. kind='profile': this runs on FIRST
+  // SAVE, before the wallet has a credential, so it must not be credential-gated.
+  const uploadEncryptedProfileToPinata = async (
+    profile: PublicProfile,
+    password: string,
+    wallet: xrpl.Wallet
+  ) => {
     if (!password) throw new Error('Password required');
     const profileData = { ...profile };
     const encrypted = CryptoJS.AES.encrypt(JSON.stringify(profileData), password).toString();
-    const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-    if (!pinataApiKey) throw new Error('Pinata API key missing');
-    const response = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${pinataApiKey}` }, body: JSON.stringify({ encryptedData: encrypted }) });
-    if (!response.ok) throw new Error('Pinata upload failed');
-    const result = await response.json();
-    return `ipfs://${result.IpfsHash}`;
+    return pinEncryptedToBoth(encrypted, wallet);
   };
 
   const fetchAndDecryptProfileFromIPFS = async (uri: string, password: string): Promise<PublicProfile> => {
@@ -9293,17 +9291,13 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
     } catch (err) { console.error('Account info query failed:', err); return null; }
   };
 
-  const uploadFileToIPFS = async (file: File): Promise<string> => {
-    const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-    if (!pinataApiKey) throw new Error('Pinata API key missing');
-    return pinFileToBoth(file, pinataApiKey);
+  const uploadFileToIPFS = async (file: File, wallet: xrpl.Wallet): Promise<string> => {
+    return pinFileToBoth(file, wallet);
   };
 
-  const uploadEncryptedToIPFS = async (data: any, password: string) => {
+  const uploadEncryptedToIPFS = async (data: any, password: string, wallet: xrpl.Wallet) => {
     const encrypted = CryptoJS.AES.encrypt(JSON.stringify(data), password).toString();
-    const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-    if (!pinataApiKey) throw new Error('Pinata API key missing');
-    return pinEncryptedToBoth(encrypted, pinataApiKey);
+    return pinJSONToBoth({ encryptedData: encrypted }, wallet, 'document');
   };
   const getPOEncryptionKey = (vendorUUID: string): string | null => {
     // Check linked profiles first
@@ -9313,11 +9307,6 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
     if (customerProfile.profileUUID === vendorUUID && customerProfile.classicAddress) return CryptoJS.SHA256(customerProfile.classicAddress).toString();
     if (vendorProfile.profileUUID === vendorUUID && vendorProfile.classicAddress) return CryptoJS.SHA256(vendorProfile.classicAddress).toString();
     return null;
-  };
-  const uploadToIPFS = async (data: any) => {
-    const pinataApiKey = process.env.REACT_APP_PINATA_API_KEY;
-    if (!pinataApiKey) throw new Error('Pinata API key missing');
-    return pinJSONToBoth(data, pinataApiKey);
   };
 
   const fetchFromIPFS = async (uri: string): Promise<any> => {
@@ -22204,7 +22193,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         setEditPricingResult('Step 1/3: Uploading updated data to IPFS...');
                         // Task 3.8 — upload replacement image if provided, otherwise keep existing
                         const editedImageAttachment = editImageFile
-                          ? { name: editImageFile.name, uri: await uploadFileToIPFS(editImageFile) }
+                          ? { name: editImageFile.name, uri: await uploadFileToIPFS(editImageFile, wallet) }
                           : inventoryDetailDoc!.attachments?.productImage;
                         const updatedVendorDoc: VendorInventoryDoc = {
                           ...inventoryDetailDoc!,

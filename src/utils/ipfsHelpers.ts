@@ -1,160 +1,142 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// SC.PO IPFS Helpers — Dual Pinning (Pinata + Filebase)
+// Vhay IPFS Helpers — server-proxied dual pinning via /api/pin
 //
-// Strategy:
-//   1. Upload to Pinata (primary) — get CID
-//   2. Upload to Filebase RPC (secondary) — get CID
-//   3. Verify CIDs match (content-addressed — they always will)
-//   4. Return ipfs:// URI using Pinata CID
-//   5. If Filebase fails — log warning, continue with Pinata only (non-fatal)
+// Rewritten 9/3/26 (item 4 step 1). Previously this file read
+// REACT_APP_FILEBASE_RPC_TOKEN directly and callers passed in a Pinata JWT, so
+// both credentials were inlined into the public bundle at vhay.app.
 //
-// All existing upload functions route through pinJSONToBoth or pinFileToBoth.
-// Callers receive the same ipfs:// URI as before — dual pinning is invisible.
+// Now:
+//   1. Sign a proof of wallet control with the caller's wallet
+//   2. POST it to /api/pin together with the payload
+//   3. The SERVER holds both tokens: Pinata (fatal) + Filebase (non-fatal)
+//   4. Return the ipfs:// URI the server reports
+//
+// ⚠ NO PINNING CREDENTIAL IS READ IN THIS FILE ANY MORE, and none may ever be
+// reintroduced. Anything named REACT_APP_* is publicly readable in the bundle.
+//
+// ⚠ `kind` defaults to 'document' — the STRICTER gate (valid proof AND an
+// accepted, unexpired SCPO_BASIC). A forgotten argument therefore fails CLOSED
+// with NOT_CREDENTIALED, rather than silently opening an uncredentialed path.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PINATA_API = 'https://api.pinata.cloud/pinning';
-const FILEBASE_RPC = 'https://rpc.filebase.io/api/v0/add';
+import type { Wallet } from 'xrpl';
+import { buildProofTx } from '../shared/credentialProof';
 
-// ── Internal: pin JSON to Filebase via RPC API ────────────────────────────────
+const PIN_API = '/api/pin';
 
-const pinJSONToFilebase = async (data: object): Promise<string | null> => {
-  const token = process.env.REACT_APP_FILEBASE_RPC_TOKEN;
-  if (!token) {
-    console.warn('[IPFS] Filebase RPC token not configured — skipping secondary pin');
-    return null;
-  }
-  try {
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-    const formData = new FormData();
-    formData.append('file', blob, 'data.json');
-    const response = await fetch(FILEBASE_RPC, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
-    });
-    if (!response.ok) {
-      const errText = await response.text();
-      console.warn(`[IPFS] Filebase pin failed (${response.status}): ${errText}`);
-      return null;
-    }
-    const result = await response.json();
-    return result.Hash ? `ipfs://${result.Hash}` : null;
-  } catch (err) {
-    console.warn('[IPFS] Filebase pin exception (non-fatal):', err);
-    return null;
-  }
+// Mirrors MAX_BYTES in api/pin.js. The endpoint returns 413 PAYLOAD_TOO_LARGE
+// above this; enforcing it here gives the user a clear rejection before paying
+// for a base64 encode and an upload. Largest object ever pinned is 1.9 MB.
+export const MAX_PIN_BYTES = 3 * 1024 * 1024;
+
+export type PinKind = 'profile' | 'document';
+
+const signProof = (wallet: Wallet): string => {
+  const signed = wallet.sign(buildProofTx(wallet.classicAddress) as any);
+  return signed.tx_blob;
 };
 
-// ── Internal: pin File to Filebase via RPC API ────────────────────────────────
+// ── Internal: the single POST every public helper routes through ─────────────
 
-const pinFileToFilebase = async (file: File): Promise<string | null> => {
-  const token = process.env.REACT_APP_FILEBASE_RPC_TOKEN;
-  if (!token) {
-    console.warn('[IPFS] Filebase RPC token not configured — skipping secondary pin');
-    return null;
+const postToPin = async (
+  wallet: Wallet,
+  kind: PinKind,
+  payload: { json?: object; base64?: string; filename?: string },
+  label: string
+): Promise<string> => {
+  if (!wallet || !wallet.classicAddress) {
+    throw new Error(`${label} failed: no wallet available to sign the pin request`);
   }
+
+  let resp: Response | null = null;
   try {
-    const formData = new FormData();
-    formData.append('file', file, file.name);
-    const response = await fetch(FILEBASE_RPC, {
+    resp = await fetch(PIN_API, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proof: signProof(wallet), kind, ...payload }),
     });
-    if (!response.ok) {
-      const errText = await response.text();
-      console.warn(`[IPFS] Filebase file pin failed (${response.status}): ${errText}`);
-      return null;
-    }
-    const result = await response.json();
-    return result.Hash ? `ipfs://${result.Hash}` : null;
-  } catch (err) {
-    console.warn('[IPFS] Filebase file pin exception (non-fatal):', err);
-    return null;
+  } catch (netErr: any) {
+    throw new Error(`${label} failed: network error — ${netErr && netErr.message}`);
   }
+  if (!resp) throw new Error(`${label} failed: no response`);
+
+  // The rate limit is enforced at the Vercel edge and does NOT return JSON.
+  // Check it BEFORE parsing, or the parse throws and masks the real cause.
+  if (resp.status === 429) {
+    throw new Error(`${label} failed: rate limited (429). Wait a moment and try again.`);
+  }
+
+  let data: any = null;
+  try { data = await resp.json(); } catch (parseErr) { data = null; }
+
+  if (!resp.ok || !data || data.ok !== true) {
+    const code = (data && data.code) || 'HTTP_' + resp.status;
+    throw new Error(`${label} failed: ${code}`);
+  }
+  if (!data.uri) throw new Error(`${label} failed: PIN_NO_URI`);
+
+  // The endpoint reports per-backend status, so a Filebase failure is no longer
+  // invisible. A Pinata failure is fatal server-side and never reaches here.
+  if (data.filebase === 'ok') {
+    console.log('[IPFS] ✅ Dual pin confirmed — CIDs match:', data.cid);
+  } else if (data.filebase === 'mismatch') {
+    console.warn('[IPFS] ⚠️ CID mismatch between Pinata and Filebase:', {
+      pinata: data.cid,
+      filebase: data.filebaseCid,
+    });
+  } else {
+    console.warn(
+      `[IPFS] ⚠️ Filebase pin ${data.filebase} — pinned to Pinata only, redundancy lost for ${data.cid}`
+    );
+  }
+
+  return data.uri;
 };
 
-// ── Public: pin JSON to both services ────────────────────────────────────────
+// ── Public: pin JSON ─────────────────────────────────────────────────────────
 
 export const pinJSONToBoth = async (
   data: object,
-  pinataApiKey: string
-): Promise<string> => {
-  // Primary: Pinata
-  const pinataResponse = await fetch(`${PINATA_API}/pinJSONToIPFS`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${pinataApiKey}`,
-    },
-    body: JSON.stringify(data),
-  });
-  if (!pinataResponse.ok) {
-    const errText = await pinataResponse.text();
-    throw new Error(`Pinata upload failed: ${errText}`);
-  }
-  const pinataResult = await pinataResponse.json();
-  const primaryUri = `ipfs://${pinataResult.IpfsHash}`;
+  wallet: Wallet,
+  kind: PinKind = 'document'
+): Promise<string> => postToPin(wallet, kind, { json: data }, 'IPFS pin');
 
-  // Secondary: Filebase (non-fatal)
-  const secondaryUri = await pinJSONToFilebase(data);
-  if (secondaryUri) {
-    if (secondaryUri === primaryUri) {
-      console.log('[IPFS] ✅ Dual pin confirmed — CIDs match:', pinataResult.IpfsHash);
-    } else {
-      // This should never happen with identical content — log if it does
-      console.warn('[IPFS] ⚠️ CID mismatch between Pinata and Filebase:', {
-        pinata: primaryUri,
-        filebase: secondaryUri,
-      });
-    }
-  }
-
-  return primaryUri;
-};
-
-// ── Public: pin encrypted JSON to both services ───────────────────────────────
+// ── Public: pin encrypted profile JSON ───────────────────────────────────────
+// Always kind 'profile' — this runs on first save, BEFORE the wallet has a
+// credential. Gating it on a credential would deadlock first-run onboarding.
 
 export const pinEncryptedToBoth = async (
   encryptedData: string,
-  pinataApiKey: string
-): Promise<string> => {
-  return pinJSONToBoth({ encryptedData }, pinataApiKey);
-};
+  wallet: Wallet
+): Promise<string> =>
+  postToPin(wallet, 'profile', { json: { encryptedData } }, 'Encrypted profile pin');
 
-// ── Public: pin File to both services ────────────────────────────────────────
+// ── Public: pin a File ───────────────────────────────────────────────────────
+
+const fileToBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const r = String(reader.result || '');
+      const comma = r.indexOf(',');
+      if (comma === -1) { reject(new Error('could not read file')); return; }
+      resolve(r.slice(comma + 1));
+    };
+    reader.onerror = () => reject(reader.error || new Error('could not read file'));
+    reader.readAsDataURL(file);
+  });
 
 export const pinFileToBoth = async (
   file: File,
-  pinataApiKey: string
+  wallet: Wallet,
+  kind: PinKind = 'document'
 ): Promise<string> => {
-  // Primary: Pinata
-  const formData = new FormData();
-  formData.append('file', file);
-  const pinataResponse = await fetch(`${PINATA_API}/pinFileToIPFS`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${pinataApiKey}` },
-    body: formData,
-  });
-  if (!pinataResponse.ok) {
-    const errText = await pinataResponse.text();
-    throw new Error(`Pinata file upload failed: ${errText}`);
+  if (file.size > MAX_PIN_BYTES) {
+    const mb = (file.size / (1024 * 1024)).toFixed(1);
+    throw new Error(
+      `File is too large to upload. The limit is 3 MB — "${file.name}" is ${mb} MB.`
+    );
   }
-  const pinataResult = await pinataResponse.json();
-  const primaryUri = `ipfs://${pinataResult.IpfsHash}`;
-
-  // Secondary: Filebase (non-fatal)
-  const secondaryUri = await pinFileToFilebase(file);
-  if (secondaryUri) {
-    if (secondaryUri === primaryUri) {
-      console.log('[IPFS] ✅ Dual file pin confirmed — CIDs match:', pinataResult.IpfsHash);
-    } else {
-      console.warn('[IPFS] ⚠️ File CID mismatch:', {
-        pinata: primaryUri,
-        filebase: secondaryUri,
-      });
-    }
-  }
-
-  return primaryUri;
+  const base64 = await fileToBase64(file);
+  return postToPin(wallet, kind, { base64, filename: file.name }, 'File pin');
 };
