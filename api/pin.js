@@ -8,7 +8,35 @@ const codec = require('ripple-binary-codec');
 const { verifySignature } = require('verify-xrpl-signature');
 const proofLib = require('../src/shared/credentialProof');
 
-const ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
+// A single public node behind Vercel's shared egress IPs stalls under contention:
+// 500 TimeoutError on server_info during connect(), production 9/3/26 20:27:44.
+// XRPL_ENDPOINT (a dedicated node) takes priority when set; otherwise rotate.
+// ⚠ Never default to devnet here — a wrong-network fallback fails silently.
+const ENDPOINTS = process.env.XRPL_ENDPOINT
+  ? [process.env.XRPL_ENDPOINT]
+  : ['wss://xrplcluster.com', 'wss://s1.ripple.com', 'wss://s2.ripple.com'];
+const CONNECT_TIMEOUT_MS = 8000;
+const CONNECT_BACKOFF_MS = 1000;
+
+// Connect with per-node failover. Worst case ~27s, inside the function ceiling.
+// Serverless containers freeze between invocations, so NO client is cached here.
+const connectWithFailover = async () => {
+  let lastError = null;
+  for (let i = 0; i < ENDPOINTS.length; i++) {
+    const url = ENDPOINTS[i];
+    const c = new xrpl.Client(url, { connectionTimeout: CONNECT_TIMEOUT_MS });
+    try {
+      if (i > 0) await new Promise((r) => setTimeout(r, CONNECT_BACKOFF_MS * i));
+      await c.connect();
+      return c;
+    } catch (e) {
+      lastError = e;
+      console.warn('[pin] connect failed on ' + url + ': ' + (e && e.message));
+      try { if (c.isConnected()) await c.disconnect(); } catch (e2) {}
+    }
+  }
+  throw new Error('all XRPL endpoints failed: ' + (lastError && lastError.message));
+};
 const PINATA_FILE = 'https://api.pinata.cloud/pinning/pinFileToIPFS';
 const FILEBASE_RPC = 'https://rpc.filebase.io/api/v0/add';
 const ALLOWED_TX_TYPES = new Set(['AccountSet', 'SignIn']);
@@ -70,8 +98,7 @@ module.exports = async (req, res) => {
 
   let client;
   try {
-    client = new xrpl.Client(ENDPOINT, { connectionTimeout: 15000 });
-    await client.connect();
+    client = await connectWithFailover();
 
     if (kind === 'document') {
       // Document pins require an accepted, unexpired SCPO_BASIC from a trusted issuer.
