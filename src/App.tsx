@@ -8444,8 +8444,8 @@ const fetchVendorInventoryDoc = async (
   const encryptionKey = deriveSelfEncryptionKey(wallet);
   const hash = uri.replace('ipfs://', '');
   const gateways = [
+    `https://gateway.pinata.cloud/ipfs/${hash}`,
     `https://dweb.link/ipfs/${hash}`,
-    `https://w3s.link/ipfs/${hash}`,
     `https://ipfs.io/ipfs/${hash}`,
   ];
 
@@ -8493,8 +8493,8 @@ const fetchSharedInventoryDoc = async (
   const encryptionKey = deriveSharedSecret(vendorPubKey, vendorPubKey);
   const hash = uri.replace('ipfs://', '');
   const gateways = [
+    `https://gateway.pinata.cloud/ipfs/${hash}`,
     `https://dweb.link/ipfs/${hash}`,
-    `https://w3s.link/ipfs/${hash}`,
     `https://ipfs.io/ipfs/${hash}`,
   ];
 
