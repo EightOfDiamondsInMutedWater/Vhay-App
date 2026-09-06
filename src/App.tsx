@@ -4337,7 +4337,7 @@ useEffect(() => {
     setViewedPO(null);
     setPoLoadError(null);
     const hash = uri.replace('ipfs://', '');
-    const gateways = [`https://gateway.pinata.cloud/ipfs/${hash}`];
+    const gateways = [`https://rose-near-hyena-327.mypinata.cloud/ipfs/${hash}`, `https://gateway.pinata.cloud/ipfs/${hash}`];
     let encryptedData;
     for (const gatewayUrl of gateways) {
       try {
@@ -8444,6 +8444,7 @@ const fetchVendorInventoryDoc = async (
   const encryptionKey = deriveSelfEncryptionKey(wallet);
   const hash = uri.replace('ipfs://', '');
   const gateways = [
+    `https://rose-near-hyena-327.mypinata.cloud/ipfs/${hash}`,
     `https://gateway.pinata.cloud/ipfs/${hash}`,
     `https://dweb.link/ipfs/${hash}`,
     `https://ipfs.io/ipfs/${hash}`,
@@ -8493,6 +8494,7 @@ const fetchSharedInventoryDoc = async (
   const encryptionKey = deriveSharedSecret(vendorPubKey, vendorPubKey);
   const hash = uri.replace('ipfs://', '');
   const gateways = [
+    `https://rose-near-hyena-327.mypinata.cloud/ipfs/${hash}`,
     `https://gateway.pinata.cloud/ipfs/${hash}`,
     `https://dweb.link/ipfs/${hash}`,
     `https://ipfs.io/ipfs/${hash}`,
@@ -9044,7 +9046,7 @@ const fetchSharedInventoryDoc = async (
 
   const fetchAndDecryptProfileFromIPFS = async (uri: string, password: string): Promise<PublicProfile> => {
     const hash = uri.replace('ipfs://', '');
-    const gateways = [`https://gateway.pinata.cloud/ipfs/${hash}`];
+    const gateways = [`https://rose-near-hyena-327.mypinata.cloud/ipfs/${hash}`, `https://gateway.pinata.cloud/ipfs/${hash}`];
     for (const gatewayUrl of gateways) {
       for (let retry = 0; retry < 3; retry++) {
         try {
@@ -9387,6 +9389,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
   };
 // ── Task 3.8 — gateway-aware IPFS URL resolver ───────────────────────────
   const IPFS_GATEWAYS = [
+    (h: string) => `https://rose-near-hyena-327.mypinata.cloud/ipfs/${h}`,
     (h: string) => `https://dweb.link/ipfs/${h}`,
     (h: string) => `https://w3s.link/ipfs/${h}`,
     (h: string) => `https://ipfs.io/ipfs/${h}`,

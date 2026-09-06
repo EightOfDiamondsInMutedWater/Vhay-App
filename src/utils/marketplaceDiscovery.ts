@@ -26,7 +26,7 @@ export const discoverVendors = async (): Promise<string[]> => {
 const ipfsToGateway = (uri: string): string => {
   if (!uri) return '';
   const cid = uri.indexOf('ipfs://') === 0 ? uri.slice('ipfs://'.length) : uri;
-  return 'https://gateway.pinata.cloud/ipfs/' + cid;
+  return 'https://rose-near-hyena-327.mypinata.cloud/ipfs/' + cid;
 };
 
 // Read one vendor's public storefront: DID → "s" pointer → fetch JSON.

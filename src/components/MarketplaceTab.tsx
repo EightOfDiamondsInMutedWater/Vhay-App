@@ -16,6 +16,7 @@ type Props = {
 
 // Gateway list mirrors App's ProductImage (dweb → w3s → ipfs.io), with fallback.
 const IMG_GATEWAYS = [
+  (h: string) => `https://rose-near-hyena-327.mypinata.cloud/ipfs/${h}`,
   (h: string) => `https://dweb.link/ipfs/${h}`,
   (h: string) => `https://w3s.link/ipfs/${h}`,
   (h: string) => `https://ipfs.io/ipfs/${h}`,
