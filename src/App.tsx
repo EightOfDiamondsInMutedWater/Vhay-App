@@ -3812,6 +3812,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
               const client = await getXRPLClient();
               const issuanceResp = await client.request({
                 command: 'ledger_entry',
+                api_version: 1, // PILOT 9/8/26 - v1 pin, deprecated compat
                 mpt_issuance: issuanceId,
                 ledger_index: 'validated'
               });
