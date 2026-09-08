@@ -3787,6 +3787,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       }
      } else if (currentMode === 'vendor' && vendorProfile.classicAddress) {
       const vendorPOList: SavedPO[] = [];
+      const recallCache = new Map<string, Set<string>>();
       
       // Check authorized MPTs the vendor already holds
       // Scan for claimed PO receipts once for all POs
@@ -3859,7 +3860,8 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
           // Check if this PO was recalled by the buyer
           if (issuanceId && posBuyerAddr) {
             try {
-              const buyerRecalls = await getRecalledPOIds(posBuyerAddr);
+              let buyerRecalls = recallCache.get(posBuyerAddr);
+              if (!buyerRecalls) { buyerRecalls = await getRecalledPOIds(posBuyerAddr); if (buyerRecalls.size > 0) recallCache.set(posBuyerAddr, buyerRecalls); }
               if (buyerRecalls.has(issuanceId)) continue;
             } catch (e) { /* skip */ }
           }
@@ -3905,7 +3907,8 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         const customerAddr = profilesToScan[uuid]?.classicAddress;
         if (!customerAddr) continue;
         try {
-          const buyerRecalledIds = await getRecalledPOIds(customerAddr);
+          let buyerRecalledIds = recallCache.get(customerAddr);
+          if (!buyerRecalledIds) { buyerRecalledIds = await getRecalledPOIds(customerAddr); if (buyerRecalledIds.size > 0) recallCache.set(customerAddr, buyerRecalledIds); }
           const buyerMPTs = await getBuyerPOs(customerAddr);
           for (const mpt of buyerMPTs as any[]) {
         let meta: any = {};
