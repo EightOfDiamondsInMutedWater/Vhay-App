@@ -3825,7 +3825,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                   }
                 } catch (e) {}
               }
-            } catch (e: any) { console.log('Could not look up issuance metadata for', issuanceId, '| err:', e?.message, '| data:', JSON.stringify(e?.data || null)); }
+            } catch (e: any) { console.warn('Could not look up issuance metadata for', issuanceId, '-', e?.message); }
           }
           // Match escrow to THIS PO using crypto-condition derived from issuanceId
           let vendorPoStatus: SavedPO['status'] = 'accepted';
