@@ -671,6 +671,7 @@ const getRecalledPOIds = async (address: string): Promise<Set<string>> => {
     const resp = await client.request({
       command: 'account_tx',
       account: address,
+      api_version: 1, // PILOT 9/8/26 - deprecated compat pin, not a resolution
       ledger_index_min: -1,
       ledger_index_max: -1,
       limit: 400
