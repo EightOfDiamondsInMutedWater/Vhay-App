@@ -226,7 +226,9 @@ export const MarketplaceTab: React.FC<Props> = ({ resolveDID, onCreatePO, onLink
                 <span></span>
               </div>
 
-              {filtered.length === 0 ? (
+              {rows.length === 0 ? (
+                <div style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--ink-3)' }}>No suppliers have published products yet.</div>
+              ) : filtered.length === 0 ? (
                 <div style={{ padding: 40, textAlign: 'center', fontSize: 13, color: 'var(--ink-3)' }}>No products match your search.</div>
               ) : filtered.map((r) => {
                 const isActive = selectedKey === r.rowKey;
