@@ -8867,6 +8867,7 @@ const fetchSharedInventoryDoc = async (
     let sourceItems: InventoryItemV2[] = [];
     try { sourceItems = await fetchVendorInventoryV2(vendorAddress, wallet); }
     catch (invErr) { console.warn('[MARKETPLACE] inventory fetch for storefront failed, pinning identity-only:', invErr); }
+    if ((sourceItems || []).length === 0 && vendorStorefrontCid) { console.error('[MARKETPLACE] storefront NOT published: inventory read returned zero items but a prior storefront exists. Existing pointer preserved, cid=', vendorStorefrontCid); throw new Error('STOREFRONT_EMPTY_GUARD'); }
     // Denylist by status: exclude discontinued from the public marketplace; keep active,
     // out_of_stock, and any future status visible (seller-discoverability default).
     const publicItems = (sourceItems || []).filter((it) => it.status !== 'discontinued').map((it) => ({
