@@ -3807,7 +3807,8 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         } catch (e) {}
           const issuanceId = mpt.MPTokenIssuanceID || mpt.mpt_issuance_id || '';
           // If no metadata on the MPToken, look up the issuance object
-          if (!meta.n && issuanceId) {
+          let poTxHashFromNode = '';
+            if (!meta.n && issuanceId) {
             try {
               const client = await getXRPLClient();
               const issuanceResp = await client.request({
@@ -3817,6 +3818,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                 ledger_index: 'validated'
               });
               const issuanceNode = issuanceResp.result.node as any;
+              poTxHashFromNode = issuanceNode?.PreviousTxnID || '';
               if (issuanceNode?.MPTokenMetadata) {
                 try {
                   meta = JSON.parse(xrpl.convertHexToString(issuanceNode.MPTokenMetadata));
@@ -3862,7 +3864,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             } catch (e) { /* skip */ }
           }
           const poInfo2 = meta.dt ? null : await getPOCreationInfo(issuanceId);
-          const poTxHash2 = await getPOCreationTxHash(issuanceId);
+          const poTxHash2 = poTxHashFromNode;
           vendorPOList.push({
             id: issuanceId || Date.now().toString(),
             poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
