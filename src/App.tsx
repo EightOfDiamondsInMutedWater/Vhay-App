@@ -3921,7 +3921,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             if (vendorPOList.some(p => p.issuanceId === issuanceId)) continue;
             if (buyerRecalledIds.has(issuanceId)) continue;
             const poInfo3 = meta.dt ? null : await getPOCreationInfo(issuanceId);
-            const poTxHash3 = await getPOCreationTxHash(issuanceId);
+            const poTxHash3 = (mpt as any).PreviousTxnID || '';
             vendorPOList.push({
               id: issuanceId || Date.now().toString(),
               poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
