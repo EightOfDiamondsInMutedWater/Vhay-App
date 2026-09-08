@@ -3765,7 +3765,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         if (recalledPOIds.has(issuanceId)) continue;
 
         const poInfo1 = meta.dt ? null : await getPOCreationInfo(issuanceId);
-        const poTxHash1 = await getPOCreationTxHash(issuanceId);
+        const poTxHash1 = (mpt as any).PreviousTxnID || '';
           livePOs.push({
             id: issuanceId || Date.now().toString(),
             poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
