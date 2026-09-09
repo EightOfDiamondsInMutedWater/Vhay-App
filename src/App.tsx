@@ -6589,6 +6589,7 @@ const getUpdatablePOs = () => {
           ledger_index_max: -1,
           limit: 400,
           forward: true,
+          api_version: 1, // v1 compat pin - see Tier 6 removal condition
           ...(markerVal ? { marker: markerVal } : {}),
         });
         return {
