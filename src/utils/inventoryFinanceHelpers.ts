@@ -230,6 +230,7 @@ export const scanCreditLines = async (
       ledger_index_min: -1,
       ledger_index_max: -1,
       limit: 400,
+      api_version: 1, // v1 compat pin - see Tier 6 removal condition
     });
 
     const sortedTxs = [...(resp.result.transactions || [])].reverse();

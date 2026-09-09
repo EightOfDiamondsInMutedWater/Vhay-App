@@ -327,6 +327,7 @@ export const scanFinancingRequests = async (
       command: 'account_tx',
       account: vendorAddress,
       limit: 400,
+      api_version: 1, // v1 compat pin - see Tier 6 removal condition
     });
 
     // Sort oldest-first so FINANCE_REQUEST is always processed before

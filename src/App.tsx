@@ -634,7 +634,8 @@ const buildPOMetadata = (poName: string, description: string, department: string
       account: address,
       ledger_index_min: -1,
       ledger_index_max: -1,
-      limit: 400
+      limit: 400,
+      api_version: 1, // v1 compat pin - see Tier 6 removal condition
     });
     for (const tx of resp.result.transactions || []) {
       try {
