@@ -3682,6 +3682,7 @@ export default function App() {
 
 // Phase 5: Load POs live from XRPL (now a reusable function)
 const loadPOsFromLedger = async () => {
+console.trace('[LOADPO_TRACE] invoked');
   if (isLoadingPOs.current) {
     return;
   }
