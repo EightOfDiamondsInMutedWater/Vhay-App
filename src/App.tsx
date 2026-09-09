@@ -2029,6 +2029,7 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isLoadingPOs = useRef(false);
+  const lastPOLoadAt = useRef(0);
   const loadPOsVersion = useRef(0);
   const loadPOsFromLedgerRef = useRef<() => Promise<void>>(async () => {});
   const [hydrated, setHydrated] = useState(false);
@@ -4051,6 +4052,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     console.log(`✅ [loadPOsFromLedger] COMMITTING ${livePOs.length} POs. Version: ${thisVersion}/${loadPOsVersion.current}. Mode: ${currentMode}`);
     diffPOsForNotifications(livePOs);    
     diffPOsForNotifications(livePOs);
+    lastPOLoadAt.current = Date.now();
   } catch (err: any) {
     console.error('Failed to load POs from XRPL:', err.message);
   } finally {
@@ -4070,11 +4072,20 @@ useEffect(() => {
   let cancelled = false;
   const interval = setInterval(() => {
     if (cancelled) return;
+    if (document.visibilityState !== 'visible') return;
     loadPOsFromLedgerRef.current();
   }, 45000);
+  const onVisible = () => {
+    if (cancelled) return;
+    if (document.visibilityState !== 'visible') return;
+    if (Date.now() - lastPOLoadAt.current < 10000) return;
+    loadPOsFromLedgerRef.current();
+  };
+  document.addEventListener('visibilitychange', onVisible);
   return () => {
     cancelled = true;
     clearInterval(interval);
+    document.removeEventListener('visibilitychange', onVisible);
   };
 }, [autoRefreshEnabled]);
 // Auto-refresh linked profiles every 60 seconds via DID resolution
