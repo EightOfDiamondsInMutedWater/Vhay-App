@@ -11,7 +11,7 @@ Vhay turns the procure-to-pay cycle into native ledger instruments. A buyer issu
 ## How it works
 
 - **Purchase orders as tokens.** Each PO is minted as a Multi-Purpose Token carrying its terms and delivered to the vendor by direct Payment.
-- **Escrow-backed settlement.** The buyer locks payment — a USD-pegged trust-line token (RLUSD or a demo stablecoin) or XRP — into an escrow whose release is bound by a crypto-condition derived from the PO's token ID. Funds unlock to the vendor only against that fulfillment.
+- **Escrow-backed settlement.** The buyer locks payment — a USD-pegged trust-line token (currently a mainnet test stablecoin, RLUSD-ready) or XRP — into an escrow whose release is bound by a crypto-condition derived from the PO's token ID. Funds unlock to the vendor only against that fulfillment.
 - **Permissioned counterparties.** Participants hold tiered credentials (Basic / Verified / Institutional) issued by the platform and are admitted to a permissioned domain; uncredentialed accounts can't transact.
 - **On-ledger identity.** Each profile is anchored by a DID.
 - **Supplier marketplace.** Buyers browse listed products across suppliers and raise a purchase order directly from a listing.
@@ -37,12 +37,12 @@ Every transaction the app submits carries this Source Tag. It is injected at the
 
 - **Frontend:** React + TypeScript single-page app
 - **Ledger:** [xrpl.js](https://github.com/XRPLF/xrpl.js) against the XRP Ledger
-- **Document storage:** IPFS via Pinata / Filebase
-- No application backend — the client interacts with the ledger directly
+- **Document storage:** IPFS, dual-pinned to Pinata and Filebase via a server-side endpoint
+- **Backend:** two Vercel Functions (credential issuance, IPFS pinning) holding all server-side secrets; ledger transactions are signed and submitted client-side
 
 ## Deployment
 
-Vhay runs as a static single-page app on Vercel, configured entirely through environment variables at build time. There is no application backend — the client signs and submits transactions to the XRP Ledger directly.
+Vhay runs as a static single-page app on Vercel, configured entirely through environment variables at build time. Two Vercel Functions handle credential issuance and IPFS pinning, keeping those credentials server-side and out of the client bundle. All XRP Ledger transactions are signed and submitted by the client.
 
 ## Status
 
