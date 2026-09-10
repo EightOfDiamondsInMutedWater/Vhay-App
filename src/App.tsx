@@ -4078,7 +4078,7 @@ useEffect(() => {
   const onVisible = () => {
     if (cancelled) return;
     if (document.visibilityState !== 'visible') return;
-    if (Date.now() - lastPOLoadAt.current < 10000) return;
+    if (Date.now() - lastPOLoadAt.current < 30000) return;
     loadPOsFromLedgerRef.current();
   };
   document.addEventListener('visibilitychange', onVisible);
