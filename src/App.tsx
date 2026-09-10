@@ -4094,6 +4094,7 @@ useEffect(() => {
 useEffect(() => {
   if (!autoRefreshEnabled) return;
   const interval = setInterval(async () => {
+    if (document.visibilityState !== 'visible') return;
     const allUUIDs = mode === 'customer'
       ? customerLinkedVendorUUIDsRef.current
       : vendorLinkedCustomerUUIDsRef.current;
