@@ -662,6 +662,7 @@ export const scanYieldPositions = async (
     while (hasMore) {
       const response: AccountTxResponse = await client.request({
         command: 'account_tx',
+        api_version: 1,
         account: buyerAddress,
         limit: 400,
         marker,

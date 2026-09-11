@@ -998,6 +998,7 @@ export const scanAuditLog = async (
     const client = await getXRPLClient();
     const resp = await client.request({
       command: 'account_tx',
+      api_version: 1,
       account: walletAddress,
       ledger_index_min: -1,
       ledger_index_max: -1,
