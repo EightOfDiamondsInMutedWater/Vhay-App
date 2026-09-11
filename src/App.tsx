@@ -21,7 +21,6 @@ import {
   submitBlobQueued,
   scanAuditLog,
   getPOCreationDate,
-  getPOCreationInfo,
   getPOCreationTxHash,
 } from './utils/xrplHelpers';
 import type { FeeEntry, ProfileLinkOnChain, AuditLogEntry } from './utils/xrplHelpers';
@@ -3765,13 +3764,12 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
 
         // Skip recalled POs
         if (recalledPOIds.has(issuanceId)) continue;
-
-        const poInfo1 = meta.dt ? null : await getPOCreationInfo(issuanceId);
+        
         const poTxHash1 = (mpt as any).PreviousTxnID || '';
           livePOs.push({
             id: issuanceId || Date.now().toString(),
             poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
-            dateIssued: meta.dt || poInfo1?.date || new Date().toLocaleDateString(),
+            dateIssued: meta.dt || new Date().toLocaleDateString(),
             total: meta.amt || meta.total || meta.amount || '0',
             ipfsUri: meta.uri || '',
             status: poStatus,
@@ -3867,12 +3865,12 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
               if (buyerRecalls.has(issuanceId)) continue;
             } catch (e) { /* skip */ }
           }
-          const poInfo2 = meta.dt ? null : await getPOCreationInfo(issuanceId);
+          
           const poTxHash2 = poTxHashFromNode;
           vendorPOList.push({
             id: issuanceId || Date.now().toString(),
             poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
-            dateIssued: meta.dt || poInfo2?.date || new Date().toLocaleDateString(),
+            dateIssued: meta.dt || new Date().toLocaleDateString(),
             total: meta.amt || meta.total || meta.amount || '0',
             ipfsUri: meta.uri || '',
             status: vendorPoStatus,
@@ -3927,12 +3925,12 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             const issuanceId = mpt.MPTokenIssuanceID || mpt.mpt_issuance_id || '';
             if (vendorPOList.some(p => p.issuanceId === issuanceId)) continue;
             if (buyerRecalledIds.has(issuanceId)) continue;
-            const poInfo3 = meta.dt ? null : await getPOCreationInfo(issuanceId);
+            
             const poTxHash3 = (mpt as any).PreviousTxnID || '';
             vendorPOList.push({
               id: issuanceId || Date.now().toString(),
               poName: meta.n || 'PO #' + issuanceId.slice(0, 8),
-              dateIssued: meta.dt || poInfo3?.date || new Date().toLocaleDateString(),
+              dateIssued: meta.dt || new Date().toLocaleDateString(),
               total: meta.amt || meta.total || meta.amount || '0',
               ipfsUri: meta.uri || '',
               status: 'open',
