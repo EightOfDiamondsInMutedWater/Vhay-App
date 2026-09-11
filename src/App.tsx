@@ -4696,6 +4696,15 @@ useEffect(() => {
       feeLabel = `$${feeUsd.toFixed(2)} RLUSD`;
     } else {
       const xrpPriceUsd = await getXrpPriceUsd();
+      if (!Number.isFinite(xrpPriceUsd) || xrpPriceUsd <= 0 || xrpPriceUsd < 0.05 || xrpPriceUsd > 100) {
+        await openConfirm({
+          kind: 'info',
+          title: 'Price Unavailable',
+          message: 'Could not retrieve a reliable XRP price, so the PO creation fee cannot be calculated. Please try again in a moment, or switch the escrow currency to RLUSD.',
+          confirmLabel: 'OK',
+        });
+        return;
+      }
       const feeXrp = feeUsd / xrpPriceUsd;
       feeAmount = xrpl.xrpToDrops(feeXrp.toFixed(6));
       feeLabel = `$${feeUsd.toFixed(2)} USD (${feeXrp.toFixed(6)} XRP)`;
@@ -5211,6 +5220,15 @@ useEffect(() => {
     } else {
       // ── XRP path: existing behavior ──
       const xrpPriceUsd = await getXrpPriceUsd();
+      if (!Number.isFinite(xrpPriceUsd) || xrpPriceUsd <= 0 || xrpPriceUsd < 0.05 || xrpPriceUsd > 100) {
+        await openConfirm({
+          kind: 'info',
+          title: 'Price Unavailable',
+          message: 'Could not retrieve a reliable XRP price, so the escrow amount cannot be calculated. Please try again in a moment.',
+          confirmLabel: 'OK',
+        });
+        return;
+      }
       const xrpAmount = (totalNum / xrpPriceUsd).toFixed(6);
       escrowAmount = xrpl.xrpToDrops(xrpAmount);
       console.log(`Funding escrow: $${totalNum} USD = ${xrpAmount} XRP = ${escrowAmount} drops`);
@@ -5223,6 +5241,23 @@ useEffect(() => {
       const currentLedger = ledgerResponse.result.ledger_current_index;
       const closedLedgerResponse = await client.request({ command: 'ledger', ledger_index: 'closed' });
       const currentRippleTime = closedLedgerResponse.result.ledger.close_time;
+      if (currency !== 'RLUSD') {
+        const acctInfo: any = await client.request({ command: 'account_info', account: wallet.classicAddress, ledger_index: 'validated' });
+        const balXrp = Number(acctInfo.result.account_data.Balance) / 1000000;
+        const ownerCount = Number(acctInfo.result.account_data.OwnerCount) || 0;
+        const spendableXrp = balXrp - 1 - (0.2 * ownerCount);
+        const escrowXrp = Number(xrpl.dropsToXrp(escrowAmount));
+        const requiredXrp = escrowXrp + 0.2 + (escrowXrp * 0.0005) + 0.5;
+        if (!Number.isFinite(spendableXrp) || spendableXrp < requiredXrp) {
+          await openConfirm({
+            kind: 'info',
+            title: 'Insufficient XRP Balance',
+            message: `This PO needs about ${requiredXrp.toFixed(2)} XRP to fund (escrow ${escrowXrp.toFixed(2)}, plus reserve and fees). Your wallet has about ${spendableXrp.toFixed(2)} XRP available after the account reserve. Add XRP and try again.`,
+            confirmLabel: 'OK',
+          });
+          return;
+        }
+      }
       const daysParsed = parseInt(po.paymentTerms?.split(' ')[0]);
       const days = isNaN(daysParsed) ? 30 : daysParsed;
       console.log(`Escrow terms: ${days} days, paymentTerms: "${po.paymentTerms}"`);
