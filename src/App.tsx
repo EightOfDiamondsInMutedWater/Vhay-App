@@ -8287,6 +8287,21 @@ const getUpdatablePOs = () => {
 
   useEffect(() => { if (!hydrated) return; localStorage.setItem('activeTab', activeTab); }, [activeTab, hydrated]);
 
+  // Content-derived key for the audit-log effect. savedPOs and publicProfiles are rebuilt as new
+  // array/object references on every 45s loadPOsFromLedger tick even when byte-identical, which
+  // re-fired the audit scan (a full-history account_tx per own + counterparty wallet, ~600 quota
+  // units each) every tick and cleared the rendered log each time. Depending on a string derived
+  // from the CONTENTS re-scans when the inputs actually change and skips when they do not.
+  const auditScanKey = React.useMemo(() => {
+    const ids = savedPOs.map(p => p.issuanceId).filter(Boolean).sort().join(',');
+    const cps = Array.from(new Set(
+      [...customerLinkedVendorUUIDs, ...vendorLinkedCustomerUUIDs]
+        .map(uuid => publicProfiles[uuid]?.classicAddress)
+        .filter(Boolean)
+    )).sort().join(',');
+    return ids + '|' + cps;
+  }, [savedPOs, customerLinkedVendorUUIDs, vendorLinkedCustomerUUIDs, publicProfiles]);
+
   // ─── Yield loading effect (Phase 6A — customer-mode only, fires on Accounting OR Buy · Financing) ───
   useEffect(() => {
     const onAccounting = activeTab === 'accounting';
@@ -8363,7 +8378,7 @@ const getUpdatablePOs = () => {
 
     Promise.allSettled([...ownPromises, ...counterpartyPromises])
       .finally(() => setAuditLogLoading(false));
-  }, [activeTab, savedPOs, customerProfile?.classicAddress, vendorProfile?.classicAddress]);
+  }, [activeTab, auditScanKey, customerProfile?.classicAddress, vendorProfile?.classicAddress]);
   useEffect(() => { if (!hydrated) return; localStorage.setItem('createItems', JSON.stringify(items)); }, [items, hydrated]);
   // Persist publicProfiles on every change so resolved counterparty data (Company, Unique ID,
   // DID-resolved fields) survives reload. Previously only the manual-link path persisted this map;
