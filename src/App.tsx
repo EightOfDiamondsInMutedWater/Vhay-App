@@ -3710,6 +3710,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
 }
   try {
     let livePOs: SavedPO[] = [];
+    let scanFailed = false;
     if (currentMode === 'customer' && customerProfile.classicAddress) {
       const buyerMPTs = await getBuyerPOs(customerProfile.classicAddress);
       // Scan for claimed PO receipts once for all POs
@@ -3887,7 +3888,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             metadata: meta
           });
         }
-      } catch (e) { console.log('No authorized MPTs found'); }
+      } catch (e) { scanFailed = true; console.log('No authorized MPTs found'); }
       // Scan linked customers' issuances addressed to this vendor
       // Use pending data if available (passed directly from LinkScanner before React syncs state)
       // Use the most complete UUID list available — never downgrade to empty
@@ -3946,7 +3947,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
               metadata: meta
             });
           }
-        } catch (e) { console.log(`Failed to scan buyer ${customerAddr}:`, e); }
+        } catch (e) { scanFailed = true; console.log(`Failed to scan buyer ${customerAddr}:`, e); }
       }
       
       livePOs = vendorPOList;
@@ -3966,6 +3967,11 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     });
     // Keep recalled POs in savedPOs for history traversal, but mark them so tables filter them out
     // getLatestActivePOs already filters by status, so recalled POs won't show in active tables
+    if (scanFailed && livePOs.length === 0) {
+      console.log('[loadPOsFromLedger] ABANDONING COMMIT — scans failed and produced no POs');
+      isLoadingPOs.current = false;
+      return;
+    }
     if (thisVersion !== loadPOsVersion.current) {
       
       isLoadingPOs.current = false;
