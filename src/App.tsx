@@ -5910,7 +5910,6 @@ const getUpdatablePOs = () => {
 };
   const getPOHistory = (po: SavedPO | null): SavedPO[] => {
     if (!po) return [];
-    console.log(`getPOHistory: po=${po.poName}, parentIssuanceId=${po.parentIssuanceId}, savedPOs count=${savedPOs.length}`);
     const history: SavedPO[] = [];
     let current: SavedPO | undefined = po;
     let depth = 0;
