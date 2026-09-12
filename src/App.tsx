@@ -3633,6 +3633,7 @@ export default function App() {
 
   // Refresh financing status whenever vendor address is known
   useEffect(() => {
+    if (!FEATURES.poFinancing) return;
     if (vendorProfile.classicAddress) {
       refreshFinancingStatus();
     }
@@ -8306,6 +8307,7 @@ const getUpdatablePOs = () => {
     const onBuyFinancing = mode === 'customer' && activeTab === 'financing';
     if (!onAccounting && !onBuyFinancing) return;
     if (mode !== 'customer' || !customerProfile.classicAddress) return;
+    if (!FEATURES.escrowYield) return;
 
     setYieldLoading(true);
     scanYieldPositions(customerProfile.classicAddress).then(positions => {
