@@ -5334,30 +5334,36 @@ useEffect(() => {
       let yieldIntentOnChain = false;
       let yieldIntentPositionId = uuidv4();
       let yieldIntentAPR = 0;
-      try {
-        const client2 = await getXRPLClient();
-        const txHistory = await client2.request({
-          command: 'account_tx',
-          account: wallet.classicAddress,
-          limit: 200,
-        });
-        for (const txEntry of txHistory.result.transactions) {
-          const tx = txEntry.tx_json as any;
-          if (!tx?.Memos?.length) continue;
-          for (const memoWrapper of tx.Memos) {
-            const memo = parseMemo(memoWrapper.Memo);
-            if (!memo) continue;
-            if ((memo.a as string) === SCPO_ACTIONS.YIELD_OPT_IN && memo.r === po.issuanceId) {
-              yieldIntentOnChain = true;
-              yieldIntentPositionId = (memo.p as any).posId || yieldIntentPositionId;
-              yieldIntentAPR = (memo.p as any).apr || 0;
-              break;
+      // FEATURES.escrowYield is false, so the toggle at 9825 returns before yieldOptIn
+      // can be set, the YIELD_OPT_IN memo at 4844 is never written, and this scan walks
+      // up to 200 transactions on every fund to find a memo that cannot exist.
+      // Gated rather than pinned: the request is removed, not made to succeed.
+      if (FEATURES.escrowYield) {
+        try {
+          const client2 = await getXRPLClient();
+          const txHistory = await client2.request({
+            command: 'account_tx',
+            account: wallet.classicAddress,
+            limit: 200,
+          });
+          for (const txEntry of txHistory.result.transactions) {
+            const tx = txEntry.tx_json as any;
+            if (!tx?.Memos?.length) continue;
+            for (const memoWrapper of tx.Memos) {
+              const memo = parseMemo(memoWrapper.Memo);
+              if (!memo) continue;
+              if ((memo.a as string) === SCPO_ACTIONS.YIELD_OPT_IN && memo.r === po.issuanceId) {
+                yieldIntentOnChain = true;
+                yieldIntentPositionId = (memo.p as any).posId || yieldIntentPositionId;
+                yieldIntentAPR = (memo.p as any).apr || 0;
+                break;
+              }
             }
+            if (yieldIntentOnChain) break;
           }
-          if (yieldIntentOnChain) break;
+        } catch (scanErr) {
+          console.warn('[fundEscrow] Could not scan for yield intent memo:', scanErr);
         }
-      } catch (scanErr) {
-        console.warn('[fundEscrow] Could not scan for yield intent memo:', scanErr);
       }
       console.log('[fundEscrow] yield check — on-chain intent:', yieldIntentOnChain, '| currency:', currency);
       if (yieldIntentOnChain && currency === 'RLUSD') {
