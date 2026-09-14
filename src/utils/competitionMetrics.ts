@@ -81,11 +81,21 @@ export const computeCompetitionMetrics = async (companyWallet: string): Promise<
   const client = await getXRPLClient();
 
   // ── Pass 1: discover participants from the company wallet ──
+  // COMPETITION_METRICS 9/14/26 — discovery is now filtered on tagged + successful.
+  // It previously added every Account and Destination, which pulled in exchange and
+  // funding wallets carrying 4,000+ transactions each; Pass 2 then starved on those
+  // before reaching the real participants and dropped them silently. Measured 9/14:
+  // 18 discovered wide, 4 narrow, and the narrow set retains the buyer and seller.
   const participants = new Set<string>();
+  const companyTxs: any[] = [];
   if (companyWallet) participants.add(companyWallet);
   if (companyWallet) {
-    for (const tx of await fetchAllAccountTx(client, companyWallet)) {
+    companyTxs.push(...await fetchAllAccountTx(client, companyWallet));
+    for (const tx of companyTxs) {
       const t = tx.tx_json || tx.tx || {};
+      const m = tx.meta || tx.metaData || {};
+      if (t.SourceTag !== SOURCE_TAG) continue;
+      if ((m.TransactionResult || m.result) !== 'tesSUCCESS') continue;
       if (t.Account && t.Account !== companyWallet) participants.add(t.Account);
       if (t.Destination && t.Destination !== companyWallet) participants.add(t.Destination);
     }
@@ -103,7 +113,14 @@ export const computeCompetitionMetrics = async (companyWallet: string): Promise<
 
   for (const addr of Array.from(participants)) {
     let txs: any[] = [];
-    try { txs = await fetchAllAccountTx(client, addr); } catch { continue; }
+    if (addr === companyWallet && companyTxs.length > 0) {
+      txs = companyTxs; // COMPETITION_METRICS 9/14/26: reuse Pass 1's fetch instead of re-walking the same account
+    } else {
+      try { txs = await fetchAllAccountTx(client, addr); } catch (e: any) {
+        console.warn('[competitionMetrics] scan FAILED for ' + addr + ' — totals are incomplete:', e && e.message ? e.message : e);
+        continue;
+      }
+    }
     for (const tx of txs) {
       const t = tx.tx_json || tx.tx || {};
       const meta = tx.meta || tx.metaData || {};
