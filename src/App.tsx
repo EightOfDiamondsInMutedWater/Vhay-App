@@ -4008,17 +4008,38 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       const mergedById = new Map<string, SavedPO>();
       for (const po of livePOs) {
         const prevPO = prevById.get(po.issuanceId);
+        // A quota-failed issuance-metadata lookup (the catch at ~3833) does NOT skip
+        // the PO — it falls through and pushes it with meta = {}, so poName becomes
+        // 'PO #xxxxxxxx', total becomes '0', dateIssued becomes TODAY and ipfsUri ''.
+        // "Fresher" is not the same as "better": on a starved load the newer scan is
+        // strictly worse. Where prev carries real metadata and the new scan carries
+        // none, prefer prev's display fields. Status is NOT decided here — the rank
+        // comparison below still owns status and escrowSequence.
+        const scanDegraded = !!prevPO
+          && Object.keys(po.metadata || {}).length === 0
+          && Object.keys(prevPO.metadata || {}).length > 0;
+        const display = scanDegraded && prevPO ? {
+          poName: prevPO.poName,
+          dateIssued: prevPO.dateIssued,
+          total: prevPO.total,
+          ipfsUri: prevPO.ipfsUri,
+          paymentTerms: prevPO.paymentTerms,
+          buyerAddress: prevPO.buyerAddress,
+          escrowCurrency: prevPO.escrowCurrency,
+          metadata: prevPO.metadata,
+        } : {};
+        if (scanDegraded) console.log('[loadPOsFromLedger] DEGRADED SCAN — preserved prior metadata for', po.issuanceId);
         if (prevPO && statusRank[prevPO.status] > statusRank[po.status]) {
           // Backward transition — preserve prev's status + escrowSequence
           // (they go together; e.g. 'funded' carries a sequence, 'accepted' doesn't).
-          // Other fields use the fresher ledger-derived values.
           mergedById.set(po.issuanceId, {
             ...po,
+            ...display,
             status: prevPO.status,
             escrowSequence: prevPO.escrowSequence,
           });
         } else {
-          mergedById.set(po.issuanceId, po);
+          mergedById.set(po.issuanceId, { ...po, ...display });
         }
       }
       // Re-include any prev PO that fell out of the new ledger scan, filtered
