@@ -32,3 +32,6 @@ yarn-error.log*
 
 # Vercel
 .vercel
+
+# Local validation script — not part of the app
+vhay-arch-validation.sh
