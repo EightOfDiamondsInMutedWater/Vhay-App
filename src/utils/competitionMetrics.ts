@@ -64,15 +64,35 @@ const isIssuanceRef = (ref: string): boolean =>
   // PO/MPT issuance IDs are 48-hex chars; NFT IDs start '0008'; account refs start 'r'
   /^[0-9A-Fa-f]{48}$/.test(ref) && !ref.startsWith('r');
 
+// COMPETITION_METRICS 9/14/26 — the pool is never rested when this runs. The page load's
+// own scans exhaust the 10000/60s tier within a second of mount, and the 45s timer keeps
+// it exhausted, so this scan must survive a starved pool rather than wait for a clean one.
+// rippled reports its own retry interval; honouring it succeeded on every wallet when a
+// standalone probe used this shape against a pool at least as starved as production's.
+const sleepMs = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 const fetchAllAccountTx = async (client: any, account: string, maxPages = 20): Promise<any[]> => {
   const out: any[] = [];
   let marker: any; let pages = 0;
   do {
     const req: any = { command: 'account_tx', account, ledger_index_min: -1, ledger_index_max: -1, limit: 200 };
     if (marker) req.marker = marker;
-    const resp = await client.request(req);
+    let resp: any = null;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try { resp = await client.request(req); break; }
+      catch (e: any) {
+        const msg = (e && e.message) ? String(e.message) : '';
+        const m = /retry in ~(\d+)ms/.exec(msg);
+        if (!m) throw e; // not a rate limit — fail loudly rather than retry blind
+        const waitFor = parseInt(m[1], 10) + 750;
+        console.warn('[competitionMetrics] rate limited on ' + account + ' — waiting ' + waitFor + 'ms');
+        await sleepMs(waitFor);
+      }
+    }
+    if (!resp) throw new Error('rate limit retries exhausted for ' + account);
     out.push(...(resp.result?.transactions || []));
     marker = resp.result?.marker; pages += 1;
+    if (marker && pages < maxPages) await sleepMs(1200);
   } while (marker && pages < maxPages);
   return out;
 };
