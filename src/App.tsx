@@ -2393,7 +2393,11 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [confirmDialog]);
   const [isLoadingEditPO, setIsLoadingEditPO] = useState(false);
-  const [escrowCurrency, setEscrowCurrency] = useState<'XRP' | 'RLUSD'>(isRLUSDConfigured() ? 'RLUSD' : 'XRP');
+  // XRP is the default settlement currency 9/15/26 — a self-onboarded wallet has no trust line to the
+  // demo USD issuer, so an RLUSD create fee returns tecPATH_DRY with no explanation. Observed on the
+  // fresh-wallet run: the same PO succeeded immediately once the dropdown was switched to XRP. RLUSD
+  // remains selectable for wallets that hold the trust line; only the initial selection changed.
+  const [escrowCurrency, setEscrowCurrency] = useState<'XRP' | 'RLUSD'>('XRP');
   const linkedVendors = customerLinkedVendorUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
   const linkedCustomers = vendorLinkedCustomerUUIDs.map(uuid => publicProfiles[uuid]).filter(Boolean) as PublicProfile[];
 
