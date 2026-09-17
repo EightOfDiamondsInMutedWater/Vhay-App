@@ -13093,6 +13093,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           <div style={{ position: 'relative' }}>
                             <input
                               type={warehouseSeedRevealed ? 'text' : 'password'}
+                              autoComplete="off"
                               value={warehouseSetupSeedInput}
                               onChange={e => setWarehouseSetupSeedInput(e.target.value)}
                               placeholder="sXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
@@ -16102,7 +16103,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                   </Field>
                   <Field label="Seed phrase" full>
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <input type={customerSeedVisible ? 'text' : 'password'} value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} placeholder="Your XRPL wallet seed (keep secret)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
+                      <input type={customerSeedVisible ? 'text' : 'password'} autoComplete="off" value={customerProfile.seed} onChange={(e) => setCustomerProfile({ ...customerProfile, seed: e.target.value })} placeholder="Your XRPL wallet seed (keep secret)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
                       <button onClick={() => setCustomerSeedVisible(v => !v)} style={{ background: 'rgba(180,140,60,0.12)', border: '1px solid rgba(180,140,60,0.2)', color: 'var(--ink-2)', fontSize: 12, fontWeight: 600, padding: '0 14px', borderRadius: 10, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                         {customerSeedVisible ? 'Hide' : 'Reveal'}
                       </button>
@@ -16562,7 +16563,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                   </Field>
                   <Field label="Seed phrase" full>
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <input type={vendorSeedVisible ? 'text' : 'password'} value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} placeholder="Your XRPL wallet seed (keep secret)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
+                      <input type={vendorSeedVisible ? 'text' : 'password'} autoComplete="off" value={vendorProfile.seed} onChange={(e) => setVendorProfile({ ...vendorProfile, seed: e.target.value })} placeholder="Your XRPL wallet seed (keep secret)" style={{ ...inpStyle, fontFamily: 'var(--font-mono, ui-monospace, Menlo, monospace)', flex: 1 }}/>
                       <button onClick={() => setVendorSeedVisible(v => !v)} style={{ background: 'rgba(180,140,60,0.12)', border: '1px solid rgba(180,140,60,0.2)', color: 'var(--ink-2)', fontSize: 12, fontWeight: 600, padding: '0 14px', borderRadius: 10, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                         {vendorSeedVisible ? 'Hide' : 'Reveal'}
                       </button>
@@ -20928,6 +20929,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                 <input
                   type="password"
                   placeholder="Admin password"
+                  autoComplete="off"
                   value={adminPassword}
                   onChange={(e) => setAdminPassword(e.target.value)}
                   onKeyDown={(e) => {
