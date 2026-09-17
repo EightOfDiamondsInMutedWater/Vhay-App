@@ -3861,7 +3861,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                 vendorPoStatus = 'funded';
                 vendorEscrowSequence = (matchingEscrow as any).Sequence;
               }
-            } catch (e) { /* no escrows or lookup failed — stays accepted */ }
+            } catch (e: any) { console.warn('[loadPOs] ESCROW_LOOKUP_FAILED — funded PO may show as accepted:', issuanceId, '-', e?.message); }
           }
           // Check if this PO was recalled by the buyer
           if (issuanceId && posBuyerAddr) {
@@ -3869,7 +3869,9 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
               let buyerRecalls = recallCache.get(posBuyerAddr);
               if (!buyerRecalls) { buyerRecalls = await getRecalledPOIds(posBuyerAddr); if (buyerRecalls.size > 0) recallCache.set(posBuyerAddr, buyerRecalls); }
               if (buyerRecalls.has(issuanceId)) continue;
-            } catch (e) { /* skip */ }
+            } catch (e: any) { console.warn('[loadPOs] RECALL_LOOKUP_FAILED — PO may be recalled and is showing as accepted:', issuanceId, '-', e?.message); }
+          } else if (issuanceId) {
+            console.warn('[loadPOs] RECALL_CHECK_SKIPPED — no buyer address on PO, cannot verify recall status:', issuanceId);
           }
           
           const poTxHash2 = poTxHashFromNode;
