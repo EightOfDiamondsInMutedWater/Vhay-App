@@ -9430,7 +9430,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
   };
 
   const getXrpPriceUsd = async (): Promise<number> => {
-    try { const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ripple&vs_currencies=usd'); const data = await response.json(); return data.ripple.usd; } catch { return 0.5; }
+    try { const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ripple&vs_currencies=usd'); const data = await response.json(); return data.ripple.usd; } catch (e) { console.error('[getXrpPriceUsd] PRICE_FETCH_FAILED — returning 0 so callers guard:', e); return 0; }
   };
 
   // DID Status Badge — checks on-chain DID, not just local ipfsUri
