@@ -15986,7 +15986,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
           <Page
             tag="Profile · Workspace"
             title={customerProfile.company || 'Profile'}
-            subtitle="Your workspace, team, and platform settings."
+            subtitle="Your workspace, team, and settings. Saving publishes your profile and registers your DID on-chain — required before you can transact."
             actions={
               <div style={{ opacity: customerProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: customerProfile.shippingAddress.trim() ? 'auto' : 'none' }}
                    title={customerProfile.shippingAddress.trim() ? undefined : 'Corporate ship-to is required to save'}>
@@ -16181,7 +16181,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
                           {customerCredError
                             ? credErrorCopy(customerCredError)
-                            : 'A credential is required before you can create a purchase order. Request one now — it is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
+                            : 'Vhay could not confirm a credential for this wallet. If the network is busy this can show even when your credential is valid — reload the page first. If it still shows after a fresh load, request one below. It is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
                         </div>
                         <button
                           type="button"
@@ -16451,7 +16451,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
           <Page
             tag="Profile · Workspace"
             title={vendorProfile.company || 'Profile'}
-            subtitle="Your workspace, team, and platform settings."
+            subtitle="Your workspace, team, and settings. Saving publishes your profile and registers your DID on-chain — required before you can transact."
             actions={
               <div style={{ opacity: vendorProfile.shippingAddress.trim() ? 1 : 0.5, pointerEvents: vendorProfile.shippingAddress.trim() ? 'auto' : 'none' }}
                    title={vendorProfile.shippingAddress.trim() ? undefined : 'Corporate ship-to is required to save'}>
@@ -16641,7 +16641,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
                           {vendorCredError
                             ? credErrorCopy(vendorCredError)
-                            : 'A credential is required before buyers can transact with your storefront. Request one now — it is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
+                            : 'Vhay could not confirm a credential for this wallet. If the network is busy this can show even when your credential is valid — reload the page first. If it still shows after a fresh load, request one below. Buyers cannot transact with your storefront until it is active. It is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
                         </div>
                         <button
                           type="button"
