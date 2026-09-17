@@ -31,7 +31,26 @@ Vhay turns the procure-to-pay cycle into native ledger instruments. A buyer issu
 
 On-chain activity is attributed via **XRPL Source Tag `2606160012`**, assigned by XRPL Commons for the Make Waves Challenge (T&Cs sections 5 and 7).
 
-Every transaction the app submits carries this Source Tag. It is injected at the transaction-building chokepoint (`autofillTagged` in `src/utils/xrplHelpers.ts`) before signing, so it attaches to 100% of on-chain activity — PO creation, recall, and update; escrow create/finish; inventory minting and burns; MPT authorize/destroy; DID and credential operations; and platform fee payments.
+Every transaction the app submits carries this Source Tag. It is injected at the transaction-building chokepoint (`autofillTagged` in `src/utils/xrplHelpers.ts`) before signing, so it attaches to 100% of on-chain activity — PO acceptance, funding, claim, recall, and update; escrow create/finish; inventory minting and burns; MPT authorize/destroy; DID and credential operations; and platform fee payments.
+
+## Make Waves Challenge — Metrics summary
+
+Measured 17 September 2026 from public XRPL mainnet data. Basis: tesSUCCESS transactions carrying Source Tag `2606160012`, deduplicated by transaction hash. Counting runs from the tag's first deployment (30 June 2026) rather than from the Mainnet Gate (15 July 2026), so a small number of pre-gate development transactions are included. Settlement volume is derived from on-chain memo payloads on escrow-lock events.
+
+| Metric | Value |
+| --- | --- |
+| Transactions | 445 |
+| Unique accounts | 8 |
+| Settlement volume | 209.40 units of a project-issued demo USD token |
+| Purchase orders | 27 (10 settled, 8 in flight) |
+| Inventory items | 11, covering 60 units tokenized |
+| Profile links | 9 |
+
+Settlement volume is denominated in a mainnet-issued test stablecoin created by this project, not a market-priced asset. At least one purchase order has been settled end to end in native XRP.
+
+Transaction mix: 144 Payment, 81 DIDSet, 66 AccountSet, 55 MPTokenIssuanceCreate, 26 MPTokenAuthorize, 16 EscrowCreate, 12 CredentialCreate, 11 NFTokenMint, 10 CredentialAccept, 10 EscrowFinish, 7 MPTokenIssuanceDestroy, 3 TrustSet, 2 PermissionedDomainSet, 2 CredentialDelete.
+
+**RLUSD:** Ripple's mainnet RLUSD issuer returns `allowTrustLineLocking: false`, so RLUSD cannot currently be escrowed by any party. Vhay escrows issued tokens and is a small change away when that flag is enabled.
 
 ## Tech stack
 
