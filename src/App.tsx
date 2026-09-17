@@ -5277,7 +5277,7 @@ useEffect(() => {
         const ownerCount = Number(acctInfo.result.account_data.OwnerCount) || 0;
         const spendableXrp = balXrp - 1 - (0.2 * ownerCount);
         const escrowXrp = Number(xrpl.dropsToXrp(escrowAmount));
-        const requiredXrp = escrowXrp + 0.2 + (escrowXrp * 0.0005) + 0.5;
+        const requiredXrp = escrowXrp + 0.2 + (escrowXrp * 0.001) + 0.5;
         if (!Number.isFinite(spendableXrp) || spendableXrp < requiredXrp) {
           await openConfirm({
             kind: 'info',
@@ -5294,8 +5294,8 @@ useEffect(() => {
       const buffer = 60; const finishRipple = currentRippleTime + (days * 86400) + buffer; const cancelRipple = finishRipple + (7 * 86400);
       const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
       console.log(`Escrow linked to PO via condition. IssuanceID: ${po.issuanceId}`);
-      // Escrow lock fee: 0.05% of PO value → Vhay company wallet
-      const escrowLockFeeUsd = totalNum * 0.0005;
+      // Escrow lock fee: 0.10% of PO value → Vhay company wallet
+      const escrowLockFeeUsd = totalNum * 0.001;
       const companyWalletAddr = process.env.REACT_APP_COMPANY_WALLET || '';
       if (companyWalletAddr) {
         const rlusd = getRLUSDCurrency();
