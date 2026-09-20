@@ -4,6 +4,8 @@
 
 🔗 **Live demo:** [vhay.app](https://vhay.app)
 
+🎥 **Video demo:** [youtu.be/vTVqX0YAa2A](https://youtu.be/vTVqX0YAa2A)
+
 ## What it is
 
 Vhay turns the procure-to-pay cycle into native ledger instruments. A buyer issues a purchase order as a token, locks settlement into a conditional escrow, and the vendor claims payment on fulfillment — with both counterparties gated by verifiable credentials inside a permissioned domain. Purchase orders, inventory, identity, credentials, and settlement all live on the XRP Ledger; supporting documents are pinned to IPFS.
