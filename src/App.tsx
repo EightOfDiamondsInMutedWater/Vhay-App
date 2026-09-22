@@ -16185,7 +16185,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     {!customerCredStatus?.valid && (
                       <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(180,140,60,0.06)', border: '1px solid rgba(180,140,60,0.28)' }}>
                         <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.45 0.14 75)', marginBottom: 4 }}>
-                          Not credentialed
+                          {customerCredUnknown ? 'Status unknown' : 'Not credentialed'}
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
                           {customerCredUnknown
@@ -16197,7 +16197,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <button
                           type="button"
                           onClick={() => retryCredential('customer')}
-                          disabled={credRetryBusy || credCooldownLeft > 0}
+                          disabled={credRetryBusy || credCooldownLeft > 0 || customerCredUnknown}
                           style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
                         >
                           {credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
@@ -16647,7 +16647,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     {!vendorCredStatus?.valid && (
                       <div style={{ marginTop: 14, padding: '10px 12px', borderRadius: 10, background: 'rgba(180,140,60,0.06)', border: '1px solid rgba(180,140,60,0.28)' }}>
                         <div className="mono" style={{ fontSize: 12, fontWeight: 600, color: 'oklch(0.45 0.14 75)', marginBottom: 4 }}>
-                          Not credentialed
+                          {vendorCredUnknown ? 'Status unknown' : 'Not credentialed'}
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
                           {vendorCredUnknown
@@ -16659,7 +16659,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <button
                           type="button"
                           onClick={() => retryCredential('vendor')}
-                          disabled={credRetryBusy || credCooldownLeft > 0}
+                          disabled={credRetryBusy || credCooldownLeft > 0 || vendorCredUnknown}
                           style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
                         >
                           {credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
