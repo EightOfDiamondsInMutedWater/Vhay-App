@@ -1229,8 +1229,10 @@ export default function App() {
   const [taxPeriod, setTaxPeriod] = useState<'month' | 'quarter' | 'year' | 'custom'>('year');
   const [taxCustomStart, setTaxCustomStart] = useState('');
   const [taxCustomEnd, setTaxCustomEnd] = useState('');
-  const [customerCredStatus, setCustomerCredStatus] = useState<{ valid: boolean; tier?: string } | null>(null);
-  const [vendorCredStatus, setVendorCredStatus] = useState<{ valid: boolean; tier?: string } | null>(null);
+  const [customerCredStatus, setCustomerCredStatus] = useState<{ valid: boolean; tier?: string; reason?: string } | null>(null);
+  const customerCredUnknown = !!customerCredStatus && !customerCredStatus.valid && (customerCredStatus.reason === 'Could not fetch credentials' || customerCredStatus.reason === 'Domain not found');
+  const [vendorCredStatus, setVendorCredStatus] = useState<{ valid: boolean; tier?: string; reason?: string } | null>(null);
+  const vendorCredUnknown = !!vendorCredStatus && !vendorCredStatus.valid && (vendorCredStatus.reason === 'Could not fetch credentials' || vendorCredStatus.reason === 'Domain not found');
   // Why the last credential attempt failed. SEPARATE from credStatus: that is ledger truth read
   // back by validateCredential, which cannot report a reason for something that never happened.
   // null = no attempt made, or the last attempt succeeded.
@@ -4170,12 +4172,14 @@ useEffect(() => {
     if (customerProfile.classicAddress && process.env.REACT_APP_DOMAIN_ID) {
       try {
         const result = await validateCredential(customerProfile.classicAddress, process.env.REACT_APP_DOMAIN_ID);
+        if (!result.valid && (result.reason === 'Could not fetch credentials' || result.reason === 'Domain not found')) console.warn('CRED_READ_FAILED — customer badge cannot confirm credential state:', result.reason);
         setCustomerCredStatus(result);
       } catch { setCustomerCredStatus(null); }
     }
     if (vendorProfile.classicAddress && process.env.REACT_APP_DOMAIN_ID) {
       try {
         const result = await validateCredential(vendorProfile.classicAddress, process.env.REACT_APP_DOMAIN_ID);
+        if (!result.valid && (result.reason === 'Could not fetch credentials' || result.reason === 'Domain not found')) console.warn('CRED_READ_FAILED — vendor badge cannot confirm credential state:', result.reason);
         setVendorCredStatus(result);
       } catch { setVendorCredStatus(null); }
     }
@@ -16142,11 +16146,11 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       {/* Credentials row */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
                         <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: customerCredStatus?.valid ? 'rgba(76,175,80,0.18)' : 'rgba(180,140,60,0.18)', color: customerCredStatus?.valid ? 'oklch(0.5 0.18 145)' : 'var(--ink-3)', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
-                          {customerCredStatus?.valid ? '✓' : '—'}
+                          {customerCredStatus?.valid ? '✓' : customerCredUnknown ? '?' : '—'}
                         </div>
                         <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Credentials</span>
                         <Chip tone={customerCredStatus?.valid ? 'green' : 'gold'}>
-                          {customerCredStatus?.valid ? 'Approved' : 'Not credentialed'}
+                          {customerCredStatus?.valid ? 'Approved' : customerCredUnknown ? 'Status unknown' : 'Not credentialed'}
                         </Chip>
                       </div>
                       {/* DID row */}
@@ -16184,9 +16188,11 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           Not credentialed
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
-                          {customerCredError
+                          {customerCredUnknown
+                            ? 'Vhay could not read this wallet\u2019s credential status. The network is busy or unreachable, so this is not a statement that you lack a credential \u2014 it means we could not check. Reload the page in a moment.'
+                            : customerCredError
                             ? credErrorCopy(customerCredError)
-                            : 'Vhay could not confirm a credential for this wallet. If the network is busy this can show even when your credential is valid — reload the page first. If it still shows after a fresh load, request one below. It is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
+                            : 'Vhay could not confirm a credential for this wallet. Request one below. It is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
                         </div>
                         <button
                           type="button"
@@ -16602,11 +16608,11 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       {/* Credentials row */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 10, background: 'rgba(255, 248, 222, 0.5)', border: '1px solid rgba(180,140,60,0.15)' }}>
                         <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: vendorCredStatus?.valid ? 'rgba(76,175,80,0.18)' : 'rgba(180,140,60,0.18)', color: vendorCredStatus?.valid ? 'oklch(0.5 0.18 145)' : 'var(--ink-3)', fontSize: 14, fontWeight: 700, flexShrink: 0 }}>
-                          {vendorCredStatus?.valid ? '✓' : '—'}
+                          {vendorCredStatus?.valid ? '✓' : vendorCredUnknown ? '?' : '—'}
                         </div>
                         <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Credentials</span>
                         <Chip tone={vendorCredStatus?.valid ? 'green' : 'gold'}>
-                          {vendorCredStatus?.valid ? 'Approved' : 'Not credentialed'}
+                          {vendorCredStatus?.valid ? 'Approved' : vendorCredUnknown ? 'Status unknown' : 'Not credentialed'}
                         </Chip>
                       </div>
                       {/* DID row */}
@@ -16644,9 +16650,11 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           Not credentialed
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 10 }}>
-                          {vendorCredError
+                          {vendorCredUnknown
+                            ? 'Vhay could not read this wallet\u2019s credential status. The network is busy or unreachable, so this is not a statement that you lack a credential \u2014 it means we could not check. Reload the page in a moment.'
+                            : vendorCredError
                             ? credErrorCopy(vendorCredError)
-                            : 'Vhay could not confirm a credential for this wallet. If the network is busy this can show even when your credential is valid — reload the page first. If it still shows after a fresh load, request one below. Buyers cannot transact with your storefront until it is active. It is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
+                            : 'Vhay could not confirm a credential for this wallet. Request one below. Buyers cannot transact with your storefront until it is active. It is issued automatically. This wallet needs at least 1.2 XRP to hold it.'}
                         </div>
                         <button
                           type="button"
