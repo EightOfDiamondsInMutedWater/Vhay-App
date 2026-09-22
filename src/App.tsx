@@ -3629,11 +3629,11 @@ export default function App() {
   }, [items, poTaxRate, escrowCurrency]);
 
   useEffect(() => {
-    if (process.env.REACT_APP_COMPANY_WALLET) {
-      scanFeeEntries(process.env.REACT_APP_COMPANY_WALLET)
-        .then(fees => setFeeEntries(fees))
-        .catch(err => { console.error('FEE_SCAN_FAILED — mount scan, fee totals may be incomplete:', err); setFeeEntriesError(err && err.message ? err.message : 'Could not read platform fees'); });
-    }
+    // Fee scan removed 9/22/26. It ran on every page load for every user against the
+    // company wallet — the longest-history address in the system — as a full-range
+    // account_tx at limit 400, roughly 600 quota units before the user did anything.
+    // Nothing reads feeEntries outside the admin subtree, and the admin fee effect
+    // already scans on entering the tab. See INF-11.
     // Profile links reconstructed from on-chain LINK_PROFILE memos
     const savedMode = localStorage.getItem('mode');
     if (savedMode) setMode(savedMode as 'customer' | 'vendor');

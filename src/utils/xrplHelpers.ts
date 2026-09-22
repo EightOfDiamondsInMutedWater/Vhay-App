@@ -891,7 +891,8 @@ export const scanFeeEntries = async (companyWallet: string): Promise<FeeEntry[]>
       } catch { continue; }
     }
   } catch (e) {
-    console.error('[FeeScanner] Failed to scan fee entries:', e);
+    console.error('[FeeScanner] FEE_SCAN_UNAVAILABLE — failed to scan fee entries:', e);
+    throw new Error('FEE_SCAN_UNAVAILABLE: could not read fee history from the ledger');
   }
   return entries;
 };
