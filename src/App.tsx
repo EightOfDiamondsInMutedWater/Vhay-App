@@ -1221,6 +1221,7 @@ export default function App() {
   };
   const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
   const [auditLogLoading, setAuditLogLoading] = useState(false);
+  const [auditLogError, setAuditLogError] = useState('');
   const [auditLogFilter, setAuditLogFilter] = useState('');
   const [cfPeriod, setCfPeriod] = useState<'30' | '90' | '180' | '365' | 'all'>('90');
   const [showSuperseded, setShowSuperseded] = useState(false);
@@ -1248,6 +1249,7 @@ export default function App() {
   const [adminPassword, setAdminPassword] = useState('');
   const [feeEntries, setFeeEntries] = useState<FeeEntry[]>([]);
   const [feeEntriesLoading, setFeeEntriesLoading] = useState(false);
+  const [feeEntriesError, setFeeEntriesError] = useState('');
   const [feeSearchTerm, setFeeSearchTerm] = useState('');
   const [openExpanded, setOpenExpanded] = useState(false);
   const [acceptedExpanded, setAcceptedExpanded] = useState(false);
@@ -1309,10 +1311,10 @@ export default function App() {
     if (auditLog.length > 0) return;
     const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
     if (!addr) return;
-    setAuditLogLoading(true);
+    setAuditLogLoading(true); setAuditLogError('');
     scanAuditLog(addr)
       .then(entries => { setAuditLog(entries); setAuditLogLoading(false); })
-      .catch(() => setAuditLogLoading(false));
+      .catch(err => { console.error('AUDIT_LOG_SCAN_FAILED — audit log may be incomplete:', err); setAuditLogError(err && err.message ? err.message : 'Could not read the audit log'); setAuditLogLoading(false); });
   }, [adminLoggedIn, adminSection, adminSubTab]);
 
   // Auto-refresh fee entries when entering the Fee Dashboard sub-tab.
@@ -1323,10 +1325,10 @@ export default function App() {
     if (adminSection !== 'corporate' || adminSubTab !== 'fees') return;
     const companyWallet = process.env.REACT_APP_COMPANY_WALLET;
     if (!companyWallet) return;
-    setFeeEntriesLoading(true);
+    setFeeEntriesLoading(true); setFeeEntriesError('');
     scanFeeEntries(companyWallet)
       .then(fees => { setFeeEntries(fees); setFeeEntriesLoading(false); })
-      .catch(() => setFeeEntriesLoading(false));
+      .catch(err => { console.error('FEE_SCAN_FAILED — fee totals may be incomplete:', err); setFeeEntriesError(err && err.message ? err.message : 'Could not read platform fees'); setFeeEntriesLoading(false); });
   }, [adminLoggedIn, adminSection, adminSubTab]);
 
   // ▼▼▼ COMPETITION_METRICS (Task 5.1) — auto-fetch on entering the tab ▼▼▼
@@ -3628,7 +3630,7 @@ export default function App() {
     if (process.env.REACT_APP_COMPANY_WALLET) {
       scanFeeEntries(process.env.REACT_APP_COMPANY_WALLET)
         .then(fees => setFeeEntries(fees))
-        .catch(() => setFeeEntries([]));
+        .catch(err => { console.error('FEE_SCAN_FAILED — mount scan, fee totals may be incomplete:', err); setFeeEntriesError(err && err.message ? err.message : 'Could not read platform fees'); });
     }
     // Profile links reconstructed from on-chain LINK_PROFILE memos
     const savedMode = localStorage.getItem('mode');
@@ -21166,6 +21168,8 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     >
                       {feeEntriesLoading ? (
                         <Empty msg="Refreshing…"/>
+                      ) : feeEntriesError ? (
+                        <Empty msg={'Could not read fees — ' + feeEntriesError}/>
                       ) : filteredFees.length === 0 ? (
                         <Empty msg="No fees collected yet"/>
                       ) : (() => {
@@ -21316,6 +21320,8 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     >
                       {auditLogLoading ? (
                         <Empty msg="Scanning chain…"/>
+                      ) : auditLogError ? (
+                        <Empty msg={'Could not read the audit log — ' + auditLogError}/>
                       ) : filtered.length === 0 ? (
                         <Empty msg="No audit entries found"/>
                       ) : (
