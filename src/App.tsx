@@ -21317,7 +21317,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                               const addr = customerProfile.classicAddress || vendorProfile.classicAddress;
                               if (addr) {
                                 setAuditLogLoading(true);
-                                scanAuditLog(addr).then(entries => { setAuditLog(entries); setAuditLogLoading(false); }).catch(() => setAuditLogLoading(false));
+                                setAuditLogError(''); scanAuditLog(addr).then(entries => { setAuditLog(entries); setAuditLogLoading(false); }).catch(err => { console.error('AUDIT_LOG_SCAN_FAILED — refresh, audit log may be incomplete:', err); setAuditLogError(err && err.message ? err.message : 'Could not read the audit log'); setAuditLogLoading(false); });
                               }
                             }}
                           >

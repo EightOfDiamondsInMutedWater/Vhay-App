@@ -840,6 +840,14 @@ export const canUseRLUSDEscrow = async (
 
 export interface FeeEntry { date: string; poName: string; amount: string; txHash: string; feeType: string; account: string; v?: string; }
 
+// account_tx under api_version 1 carries the close time only as tx.date, in Ripple-epoch
+// seconds counted from 2000-01-01; close_time_iso exists only in api_version 2. Passing
+// tx.date straight to new Date() reads seconds as milliseconds since 1970, which rendered
+// every fee as January 1970. Same offset as validateCredential and getPOCreationInfo.
+const rippleCloseIso = (tx: any): string | null => {
+  const d = tx?.tx?.date ?? tx?.tx_json?.date;
+  return typeof d === 'number' ? new Date((d + 946684800) * 1000).toISOString() : null;
+};
 export const scanFeeEntries = async (companyWallet: string): Promise<FeeEntry[]> => {
   if (!companyWallet) return [];
   const entries: FeeEntry[] = [];
@@ -872,7 +880,7 @@ export const scanFeeEntries = async (companyWallet: string): Promise<FeeEntry[]>
             const hash = txMeta.hash || (tx as any).hash || '';
             // Convert ledger close time to readable date
             const closeTime = (tx as any).close_time_iso
-              || (tx as any).tx?.date
+              || rippleCloseIso(tx)
               || null;
             const date = closeTime
               ? new Date(closeTime).toLocaleString()
@@ -942,7 +950,7 @@ export const scanLinkedProfiles = async (
             const envelope = JSON.parse(xrpl.convertHexToString(memo.MemoData));
             const p = envelope.p || {};
             const hash = txObj.hash || (tx as any).hash || '';
-            const closeTime = (tx as any).close_time_iso || null;
+            const closeTime = (tx as any).close_time_iso || rippleCloseIso(tx) || null;
             const createdAt = closeTime ? new Date(closeTime).getTime() : Date.now();
 
             // Track UNLINK_PROFILE memos — these cancel out LINK_PROFILE memos
@@ -1019,7 +1027,7 @@ export const scanAuditLog = async (
             if (!envelope?.a) continue;
             if (filterAction && envelope.a !== filterAction) continue;
             const hash = txObj.hash || (tx as any).hash || '';
-            const closeTime = (tx as any).close_time_iso || null;
+            const closeTime = (tx as any).close_time_iso || rippleCloseIso(tx) || null;
             const timestamp = closeTime ? new Date(closeTime).getTime() : Date.now();
             entries.push({
               action: envelope.a,
@@ -1035,7 +1043,8 @@ export const scanAuditLog = async (
       } catch { continue; }
     }
   } catch (e) {
-    console.error('[AuditLog] Failed to scan audit log:', e);
+    console.error('[AuditLog] AUDIT_LOG_UNAVAILABLE — failed to scan audit log:', e);
+    throw new Error('AUDIT_LOG_UNAVAILABLE: could not read audit history from the ledger');
   }
   // Return chronological order, oldest first
   return entries.sort((a, b) => a.timestamp - b.timestamp);
