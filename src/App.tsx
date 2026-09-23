@@ -658,9 +658,11 @@ const buildPOMetadata = (poName: string, description: string, department: string
         }
       } catch (e) { /* skip unparseable tx */ }
     }
-    console.log(`Found ${claimedIds.size} claimed PO receipts for ${address}`);
+    if ((resp.result as any).marker) throw new Error('CLAIM_SCAN_INCOMPLETE: account_tx returned a marker, so receipts past the first page were not read');
+    console.log(`Found ${claimedIds.size} claimed PO receipts for ${address} (ledger_min ${(resp.result as any).ledger_index_min})`);
   } catch (e) {
     console.error('Failed to scan claim receipts:', e);
+    throw e;
   }
 return claimedIds;
 };
@@ -698,9 +700,11 @@ const getRecalledPOIds = async (address: string): Promise<Set<string>> => {
         }
       } catch (e) { /* skip */ }
     }
-    console.log(`Found ${recalledIds.size} recalled PO receipts for ${address}`);
+    if ((resp.result as any).marker) throw new Error('RECALL_SCAN_INCOMPLETE: account_tx returned a marker, so receipts past the first page were not read');
+    console.log(`Found ${recalledIds.size} recalled PO receipts for ${address} (ledger_min ${(resp.result as any).ledger_index_min})`);
   } catch (e) {
     console.error('Failed to scan recall receipts:', e);
+    throw e;
   }
   return recalledIds;
 };
@@ -3762,7 +3766,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                   poStatus = 'funded';
                   customerEscrowSequence = (matchingEscrow as any).Sequence;
                 }
-              } catch (e) { /* no escrows or lookup failed */ }
+              } catch (e: any) { scanFailed = true; console.warn('[loadPOs] ESCROW_LOOKUP_FAILED (buyer) — funded PO may show as accepted:', issuanceId, '-', e?.message); }
               // Check if this PO was claimed (receipt memo is definitive proof)
               if (claimedPOIds.has(issuanceId)) {
                 poStatus = 'claimed';
@@ -3838,7 +3842,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                   }
                 } catch (e) {}
               }
-            } catch (e: any) { console.warn('Could not look up issuance metadata for', issuanceId, '-', e?.message); }
+            } catch (e: any) { scanFailed = true; console.warn('Could not look up issuance metadata for', issuanceId, '-', e?.message); }
           }
           // Match escrow to THIS PO using crypto-condition derived from issuanceId
           let vendorPoStatus: SavedPO['status'] = 'accepted';
@@ -3865,7 +3869,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                 vendorPoStatus = 'funded';
                 vendorEscrowSequence = (matchingEscrow as any).Sequence;
               }
-            } catch (e: any) { console.warn('[loadPOs] ESCROW_LOOKUP_FAILED — funded PO may show as accepted:', issuanceId, '-', e?.message); }
+            } catch (e: any) { scanFailed = true; console.warn('[loadPOs] ESCROW_LOOKUP_FAILED — funded PO may show as accepted:', issuanceId, '-', e?.message); }
           }
           // Check if this PO was recalled by the buyer
           if (issuanceId && posBuyerAddr) {
@@ -3873,7 +3877,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
               let buyerRecalls = recallCache.get(posBuyerAddr);
               if (!buyerRecalls) { buyerRecalls = await getRecalledPOIds(posBuyerAddr); if (buyerRecalls.size > 0) recallCache.set(posBuyerAddr, buyerRecalls); }
               if (buyerRecalls.has(issuanceId)) continue;
-            } catch (e: any) { console.warn('[loadPOs] RECALL_LOOKUP_FAILED — PO may be recalled and is showing as accepted:', issuanceId, '-', e?.message); }
+            } catch (e: any) { scanFailed = true; console.warn('[loadPOs] RECALL_LOOKUP_FAILED — PO may be recalled and is showing as accepted:', issuanceId, '-', e?.message); }
           } else if (issuanceId) {
             console.warn('[loadPOs] RECALL_CHECK_SKIPPED — no buyer address on PO, cannot verify recall status:', issuanceId);
           }
@@ -3977,8 +3981,8 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     });
     // Keep recalled POs in savedPOs for history traversal, but mark them so tables filter them out
     // getLatestActivePOs already filters by status, so recalled POs won't show in active tables
-    if (scanFailed && livePOs.length === 0) {
-      console.log('[loadPOsFromLedger] ABANDONING COMMIT — scans failed and produced no POs');
+    if (scanFailed) {
+      console.warn('[loadPOsFromLedger] PO_LOAD_INCOMPLETE: a scan failed, so nothing is committed and the previous list stays. POs read this load:', livePOs.length);
       isLoadingPOs.current = false;
       return;
     }
