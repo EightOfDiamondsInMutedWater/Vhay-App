@@ -3724,6 +3724,22 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
   try {
     let livePOs: SavedPO[] = [];
     let scanFailed = false;
+    // SCALE-12b: one escrow read per account per load; a failed read is remembered so the load's other POs do not re-request it
+    const escrowCache = new Map<string, Promise<any[]>>();
+    let escrowReads = 0;
+    const getEscrowsOnce = (account: string): Promise<any[]> => {
+      let p = escrowCache.get(account);
+      if (!p) {
+        escrowReads++;
+        p = (async () => {
+          const client = await getXRPLClient();
+          const r = await client.request({ command: 'account_objects', account, type: 'escrow', ledger_index: 'validated' });
+          return r.result.account_objects as any[];
+        })();
+        escrowCache.set(account, p);
+      }
+      return p;
+    };
     if (currentMode === 'customer' && customerProfile.classicAddress) {
       const buyerMPTs = await getBuyerPOs(customerProfile.classicAddress);
       // Scan for claimed PO receipts once for all POs
@@ -3753,13 +3769,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
               // Match escrow to THIS PO using crypto-condition derived from issuanceId
               try {
                 const { condition: expectedCondition } = await generateEscrowCondition(issuanceId);
-                const client = await getXRPLClient();
-                const escrowResp = await client.request({
-                  command: 'account_objects',
-                  account: customerProfile.classicAddress,
-                  type: 'escrow',
-                  ledger_index: 'validated'
-                });
+                const escrowResp = { result: { account_objects: await getEscrowsOnce(customerProfile.classicAddress) } };
                 const matchingEscrow = escrowResp.result.account_objects.find((obj: any) => 
                   obj.Destination === vendorAddr && obj.Condition === expectedCondition
                 );
@@ -3865,13 +3875,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
           } else if (posBuyerAddr && issuanceId) {
             try {
               const { condition: expectedCondition } = await generateEscrowCondition(issuanceId);
-              const client = await getXRPLClient();
-              const escrowResp = await client.request({
-                command: 'account_objects',
-                account: posBuyerAddr,
-                type: 'escrow',
-                ledger_index: 'validated'
-              });
+              const escrowResp = { result: { account_objects: await getEscrowsOnce(posBuyerAddr) } };
               const matchingEscrow = escrowResp.result.account_objects.find((obj: any) => 
                 obj.Destination === vendorProfile.classicAddress && obj.Condition === expectedCondition
               );
@@ -3993,6 +3997,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     });
     // Keep recalled POs in savedPOs for history traversal, but mark them so tables filter them out
     // getLatestActivePOs already filters by status, so recalled POs won't show in active tables
+    console.log(`[loadPOs] ESCROW_READS ${escrowReads}`);
     if (scanFailed) {
       console.warn('[loadPOsFromLedger] PO_LOAD_INCOMPLETE: a scan failed, so nothing is committed and the previous list stays. POs read this load:', livePOs.length);
       setPoSync(s => ({ ...s, [currentMode]: { at: s[currentMode].at, incomplete: true } }));
