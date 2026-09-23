@@ -16169,7 +16169,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: customerCredStatus?.tier ? 'rgba(80,140,220,0.18)' : 'rgba(180,140,60,0.12)', color: customerCredStatus?.tier ? 'oklch(0.55 0.16 240)' : 'var(--ink-3)', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>◆</div>
                         <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Permissioned Domain</span>
                         <Chip tone={customerCredStatus?.tier ? 'blue' : 'neutral'}>
-                          {customerCredStatus?.tier ? `${customerCredStatus.tier.charAt(0).toUpperCase()}${customerCredStatus.tier.slice(1)}` : '—'}
+                          {customerCredStatus?.tier ? `${customerCredStatus.tier.charAt(0).toUpperCase()}${customerCredStatus.tier.slice(1)}` : customerCredUnknown ? 'Unknown' : '—'}
                         </Chip>
                       </div>
                     </div>
@@ -16199,9 +16199,9 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           type="button"
                           onClick={() => retryCredential('customer')}
                           disabled={credRetryBusy || credCooldownLeft > 0 || customerCredUnknown}
-                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
+                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0 || customerCredUnknown) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0 || customerCredUnknown) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
                         >
-                          {credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
+                          {customerCredUnknown ? 'Reload to check' : credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
                         </button>
                       </div>
                     )}
@@ -16631,7 +16631,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                         <div style={{ width: 28, height: 28, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: vendorCredStatus?.tier ? 'rgba(80,140,220,0.18)' : 'rgba(180,140,60,0.12)', color: vendorCredStatus?.tier ? 'oklch(0.55 0.16 240)' : 'var(--ink-3)', fontSize: 12, fontWeight: 700, flexShrink: 0 }}>◆</div>
                         <span style={{ flex: 1, fontSize: 13, fontWeight: 500 }}>Permissioned Domain</span>
                         <Chip tone={vendorCredStatus?.tier ? 'blue' : 'neutral'}>
-                          {vendorCredStatus?.tier ? `${vendorCredStatus.tier.charAt(0).toUpperCase()}${vendorCredStatus.tier.slice(1)}` : '—'}
+                          {vendorCredStatus?.tier ? `${vendorCredStatus.tier.charAt(0).toUpperCase()}${vendorCredStatus.tier.slice(1)}` : vendorCredUnknown ? 'Unknown' : '—'}
                         </Chip>
                       </div>
                     </div>
@@ -16661,9 +16661,9 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                           type="button"
                           onClick={() => retryCredential('vendor')}
                           disabled={credRetryBusy || credCooldownLeft > 0 || vendorCredUnknown}
-                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
+                          style={{ fontSize: 12, fontWeight: 600, padding: '7px 14px', borderRadius: 8, cursor: (credRetryBusy || credCooldownLeft > 0 || vendorCredUnknown) ? 'default' : 'pointer', opacity: (credRetryBusy || credCooldownLeft > 0 || vendorCredUnknown) ? 0.6 : 1, background: 'rgba(180,140,60,0.16)', color: 'var(--ink-2)', border: '1px solid rgba(180,140,60,0.35)' }}
                         >
-                          {credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
+                          {vendorCredUnknown ? 'Reload to check' : credRetryBusy ? 'Requesting…' : credCooldownLeft > 0 ? `Try again in ${credCooldownLeft}s` : 'Get credentialed'}
                         </button>
                       </div>
                     )}
