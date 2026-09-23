@@ -3810,6 +3810,9 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       
       try {
         const authorizedMPTs = await getVendorAuthorizedPOs(vendorProfile.classicAddress);
+        let metaCache: Record<string, { m: any; h: string }> = {};
+        try { metaCache = JSON.parse(localStorage.getItem('vhay_po_meta_v1') || '{}') || {}; } catch (e) { metaCache = {}; }
+        let metaHits = 0, metaMisses = 0, metaStored = 0;
         for (const mpt of authorizedMPTs as any[]) {
         let meta: any = {};
         try {
@@ -3824,7 +3827,12 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
           const issuanceId = mpt.MPTokenIssuanceID || mpt.mpt_issuance_id || '';
           // If no metadata on the MPToken, look up the issuance object
           let poTxHashFromNode = '';
-            if (!meta.n && issuanceId) {
+            if (!meta.n && issuanceId && metaCache[issuanceId]?.m?.n) {
+                meta = metaCache[issuanceId].m;
+                poTxHashFromNode = metaCache[issuanceId].h || '';
+                metaHits++;
+              } else if (!meta.n && issuanceId) {
+                metaMisses++;
             try {
               const client = await getXRPLClient();
               const issuanceResp = await client.request({
@@ -3843,6 +3851,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                   }
                 } catch (e) {}
               }
+              if (meta && meta.n) { metaCache[issuanceId] = { m: meta, h: poTxHashFromNode }; metaStored++; }
             } catch (e: any) { scanFailed = true; console.warn('Could not look up issuance metadata for', issuanceId, '-', e?.message); }
           }
           // Match escrow to THIS PO using crypto-condition derived from issuanceId
@@ -3903,6 +3912,8 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
             metadata: meta
           });
         }
+        if (metaStored > 0) { try { localStorage.setItem('vhay_po_meta_v1', JSON.stringify(metaCache)); } catch (e) {} }
+        console.log(`[loadPOs] METADATA_CACHE hits ${metaHits}, misses ${metaMisses}, stored ${metaStored}`);
       } catch (e) { scanFailed = true; console.log('No authorized MPTs found'); }
       // Scan linked customers' issuances addressed to this vendor
       // Use pending data if available (passed directly from LinkScanner before React syncs state)
