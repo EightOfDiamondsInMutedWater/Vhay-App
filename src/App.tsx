@@ -5303,7 +5303,8 @@ useEffect(() => {
       const { condition, fulfillment } = await generateEscrowCondition(po.issuanceId);
       console.log(`Escrow linked to PO via condition. IssuanceID: ${po.issuanceId}`);
       // Escrow lock fee: 0.10% of PO value → Vhay company wallet
-      const escrowLockFeeUsd = totalNum * 0.001;
+      const escrowLockRate = 0.001; // 0.10% of PO value. The memo label below is computed from this, so the charge and its label cannot drift apart again.
+      const escrowLockFeeUsd = totalNum * escrowLockRate;
       const companyWalletAddr = process.env.REACT_APP_COMPANY_WALLET || '';
       if (companyWalletAddr) {
         const rlusd = getRLUSDCurrency();
@@ -5318,7 +5319,7 @@ useEffect(() => {
           Memos: [buildMemo(SCPO_ACTIONS.FEE_PAYMENT, wallet.classicAddress, {
             poName: po.poName,
             feeType: 'ESCROW_LOCK',
-            amount: `$${escrowLockFeeUsd.toFixed(4)} (0.05% of $${totalNum})`,
+            amount: `$${escrowLockFeeUsd.toFixed(4)} (${(escrowLockRate * 100).toFixed(2)}% of $${totalNum})`,
             v: po.vendorAddress,
           } as any)],
         };
@@ -20502,7 +20503,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     return { category: 'Financing', side: 'buyer' }; // YIELD_PLATFORM and future buyer-side fees
                   };
 
-                  // ── Parse fee amount string ($1.00, $0.45 (0.05% of $X), 1.00 RLUSD) ──
+                  // ── Parse fee amount string ($1.00, $0.45 (0.10% of $X), 1.00 RLUSD) ──
                   const parseFeeAmount = (raw: string): number => {
                     if (!raw) return 0;
                     const m = raw.match(/\$?([0-9]+(?:\.[0-9]+)?)/);
@@ -20588,7 +20589,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                     <>
                       <SummaryTiles tiles={[
                         { label: 'PO Creation Fees',        value: `$${formatNumber(poCreationSum, { decimals: 2 })}`, sub: 'Buyer · $1 flat',                                            chip: 'Buyer',  chipTone: activeSide === 'buyer'  ? 'gold' : 'neutral' },
-                        { label: 'Escrow Lock Fees',        value: `$${formatNumber(escrowLockSum, { decimals: 2 })}`, sub: 'Buyer · 0.05% of PO',                                        chip: 'Buyer',  chipTone: activeSide === 'buyer'  ? 'gold' : 'neutral' },
+                        { label: 'Escrow Lock Fees',        value: `$${formatNumber(escrowLockSum, { decimals: 2 })}`, sub: 'Buyer · 0.10% of PO',                                        chip: 'Buyer',  chipTone: activeSide === 'buyer'  ? 'gold' : 'neutral' },
                         { label: 'Inventory Fees',          value: `$${formatNumber(inventorySum, { decimals: 2 })}`,  sub: 'Seller · $1/SKU + $0.01/unit',                               chip: 'Seller', chipTone: activeSide === 'seller' ? 'gold' : 'neutral' },
                         { label: 'Financing Platform Fees', value: `$${formatNumber(financingSum, { decimals: 2 })}`,  sub: activeSide === 'buyer' ? 'Buyer · yield platform fee' : 'Seller · 0.75% advance fees', chip: activeSide === 'buyer' ? 'Buyer' : 'Seller', chipTone: 'neutral' },
                         { label: 'Total Platform Fees',     value: `$${formatNumber(totalSum, { decimals: 2 })}`,      sub: `${activeSide === 'buyer' ? 'Buyer' : 'Seller'} lifetime`,    chip: 'All-time', chipTone: 'blue' },
