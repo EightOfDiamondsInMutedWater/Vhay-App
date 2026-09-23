@@ -30,9 +30,11 @@ type Props = {
   mode: Mode;
   activeTab: InternalTab;
   setActiveTab: (tab: InternalTab) => void;
+  lastSyncAt?: number | null;
+  syncIncomplete?: boolean;
 };
 
-export const Sidebar: React.FC<Props> = ({ mode, activeTab, setActiveTab }) => {
+export const Sidebar: React.FC<Props> = ({ mode, activeTab, setActiveTab, lastSyncAt = null, syncIncomplete = false }) => {
   const items: NavItem[] = mode === 'customer'
     ? [
         { k: 'create',     label: 'Create',     icon: IconPlus,   hint: 'New PO' },
@@ -130,6 +132,30 @@ export const Sidebar: React.FC<Props> = ({ mode, activeTab, setActiveTab }) => {
       })}
 
       <div style={{ flex: 1 }} />
+      {(syncIncomplete || lastSyncAt !== null) && (
+        <div
+          className="mono"
+          style={{
+            fontSize: 10,
+            lineHeight: 1.5,
+            padding: '10px 12px 4px',
+            color: syncIncomplete ? 'oklch(0.45 0.14 75)' : 'var(--ink-3)',
+          }}
+        >
+          <div style={{ fontWeight: 600 }}>
+            {syncIncomplete
+              ? (lastSyncAt !== null ? "Couldn't refresh" : "Couldn't load POs yet")
+              : `Synced ${new Date(lastSyncAt as number).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`}
+          </div>
+          {syncIncomplete && (
+            <div>
+              {lastSyncAt !== null
+                ? `Showing POs from ${new Date(lastSyncAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`
+                : 'A ledger read did not complete.'}
+            </div>
+          )}
+        </div>
+      )}
       
     </nav>
 

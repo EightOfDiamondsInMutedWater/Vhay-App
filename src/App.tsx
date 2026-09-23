@@ -2038,6 +2038,7 @@ export default function App() {
   const isLoadingPOs = useRef(false);
   const lastPOLoadAt = useRef(0);
   const loadPOsVersion = useRef(0);
+  const [poSync, setPoSync] = useState<Record<'customer' | 'vendor', { at: number | null; incomplete: boolean }>>({ customer: { at: null, incomplete: false }, vendor: { at: null, incomplete: false } });
   const loadPOsFromLedgerRef = useRef<() => Promise<void>>(async () => {});
   const [hydrated, setHydrated] = useState(false);
   const [customerScpoActionViewedPO, setCustomerScpoActionViewedPO] = useState<POData | null>(null);
@@ -3983,6 +3984,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     // getLatestActivePOs already filters by status, so recalled POs won't show in active tables
     if (scanFailed) {
       console.warn('[loadPOsFromLedger] PO_LOAD_INCOMPLETE: a scan failed, so nothing is committed and the previous list stays. POs read this load:', livePOs.length);
+      setPoSync(s => ({ ...s, [currentMode]: { at: s[currentMode].at, incomplete: true } }));
       isLoadingPOs.current = false;
       return;
     }
@@ -4090,11 +4092,13 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         .sort((a, b) => new Date(b.dateIssued).getTime() - new Date(a.dateIssued).getTime());
     });
     console.log(`✅ [loadPOsFromLedger] COMMITTING ${livePOs.length} POs. Version: ${thisVersion}/${loadPOsVersion.current}. Mode: ${currentMode}`);
+    setPoSync(s => ({ ...s, [currentMode]: { at: Date.now(), incomplete: false } }));
     diffPOsForNotifications(livePOs);    
     diffPOsForNotifications(livePOs);
     lastPOLoadAt.current = Date.now();
   } catch (err: any) {
     console.error('Failed to load POs from XRPL:', err.message);
+    setPoSync(s => ({ ...s, [currentMode]: { at: s[currentMode].at, incomplete: true } }));
   } finally {
     isLoadingPOs.current = false;
   }
@@ -9638,7 +9642,7 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
 
       <div style={{ maxWidth: 1440, margin: '0 auto', padding: '0 8px 40px', position: 'relative', zIndex: 1 }}>
         <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 20, padding: '12px 20px 40px', alignItems: 'flex-start' }}>
-          <Sidebar mode={mode} activeTab={activeTab} setActiveTab={setActiveTab}/>
+          <Sidebar mode={mode} activeTab={activeTab} setActiveTab={setActiveTab} lastSyncAt={poSync[mode].at} syncIncomplete={poSync[mode].incomplete}/>
           <main key={mode + '-' + activeTab} className="rise">
         {/* ▼▼▼ MARKETPLACE ▼▼▼ Task 5.2 Tier 3 — buyer marketplace tab */}
         {activeTab === 'marketplace' && mode === 'customer' && (
