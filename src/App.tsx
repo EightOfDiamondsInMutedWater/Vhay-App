@@ -2004,6 +2004,7 @@ export default function App() {
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isLoadingPOs = useRef(false);
   const lastPOLoadAt = useRef(0);
+  const poLoadKeyRef = useRef(''); // SCALE-12e1: mode and address of the latest render; a load commits only if its own key still matches
   const loadPOsVersion = useRef(0);
   const [poSync, setPoSync] = useState<Record<'customer' | 'vendor', { at: number | null; incomplete: boolean }>>({ customer: { at: null, incomplete: false }, vendor: { at: null, incomplete: false } });
   const loadPOsFromLedgerRef = useRef<() => Promise<void>>(async () => {});
@@ -3680,6 +3681,7 @@ const loadPOsFromLedger = async () => {
     return;
   }
   const currentMode = mode;
+  const loadKey = currentMode + ':' + (currentMode === 'customer' ? customerProfile.classicAddress : vendorProfile.classicAddress);
 if (currentMode === 'customer' && !customerProfile.classicAddress) {
   isLoadingPOs.current = false;
   return;
@@ -3977,6 +3979,10 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       isLoadingPOs.current = false;
       return;
     }
+    if (poLoadKeyRef.current !== loadKey) {
+      console.warn('[loadPOsFromLedger] LOAD_KEY_CHANGED: mode or profile changed during the load, so nothing is committed and the load reruns. Load mode:', currentMode);
+      return;
+    }
     if (thisVersion !== loadPOsVersion.current) {
       
       isLoadingPOs.current = false;
@@ -4090,11 +4096,14 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     setPoSync(s => ({ ...s, [currentMode]: { at: s[currentMode].at, incomplete: true } }));
   } finally {
     isLoadingPOs.current = false;
+    // SCALE-12e1: the in-flight guard dropped any switch made during this load, so run it now through the ref, which holds the latest closure
+    if (poLoadKeyRef.current !== loadKey) loadPOsFromLedgerRef.current();
   }
 };
 // Always keep the ref pointing to the latest version of loadPOsFromLedger
 // so interval callbacks call the current closure, not a stale one
 loadPOsFromLedgerRef.current = loadPOsFromLedger;
+poLoadKeyRef.current = mode + ':' + (mode === 'customer' ? customerProfile.classicAddress : vendorProfile.classicAddress);
 
 // Auto-refresh POs every 45 seconds (ledger is the source of truth)
 // Dep array is intentionally minimal — addresses/mode are read via closure inside the callback,
