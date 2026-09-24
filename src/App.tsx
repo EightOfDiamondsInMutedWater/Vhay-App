@@ -622,10 +622,12 @@ const buildPOMetadata = (poName: string, description: string, department: string
 // This links each escrow to its specific PO on-chain without localStorage
 // TODO: When integrating RLUSD stablecoin escrows via the Token Escrow Amendment,
 // this same Condition/Fulfillment mechanism works identically — only the Amount field changes.
-// Scan account transactions for SCPO_CLAIM memo receipts
-// Returns a Set of issuanceIds that have been claimed
-  const getClaimedPOIds = async (address: string): Promise<Set<string>> => {
-  const claimedIds = new Set<string>();
+// SCALE-12c, CR-39: one account_tx read yields both receipt sets. A memo counts only as its own action:
+// v1 CLAIM_PO or legacy SCPO_CLAIM is a claim, v1 RECALL_PO or legacy SCPO_RECALL is a recall, anything else is neither.
+// Throws on any failed read and on a marker, so an empty set always means a completed scan.
+const scanReceipts = async (address: string): Promise<{ claimed: Set<string>; recalled: Set<string> }> => {
+  const claimed = new Set<string>();
+  const recalled = new Set<string>();
   try {
     const client = await getXRPLClient();
     const resp = await client.request({
@@ -645,69 +647,33 @@ const buildPOMetadata = (poName: string, description: string, department: string
           const memoData = m.Memo?.MemoData || '';
           if (!memoType || !memoData) continue;
           try {
-            // Try v1 standard envelope first
             const envelope = parseMemo({ MemoType: memoType, MemoData: memoData });
-            if (envelope?.a === SCPO_ACTIONS.CLAIM_PO) {
-              claimedIds.add(envelope.r);
+            if (envelope) {
+              if (envelope.a === SCPO_ACTIONS.CLAIM_PO) claimed.add(envelope.r);
+              else if (envelope.a === SCPO_ACTIONS.RECALL_PO) recalled.add(envelope.r);
             } else {
-              // Legacy fallback — pre-standardization SCPO_CLAIM memos
+              // Legacy fallback: pre-standardization memos, classified by their own memo type
               const legacyRef = parseLegacyRefMemo(memoType, memoData);
-              if (legacyRef) claimedIds.add(legacyRef);
+              if (legacyRef) {
+                const legacyType = xrpl.convertHexToString(memoType);
+                if (legacyType === 'SCPO_CLAIM') claimed.add(legacyRef);
+                else if (legacyType === 'SCPO_RECALL') recalled.add(legacyRef);
+              }
             }
           } catch (e) { /* skip */ }
         }
       } catch (e) { /* skip unparseable tx */ }
     }
-    if ((resp.result as any).marker) throw new Error('CLAIM_SCAN_INCOMPLETE: account_tx returned a marker, so receipts past the first page were not read');
-    console.log(`Found ${claimedIds.size} claimed PO receipts for ${address} (ledger_min ${(resp.result as any).ledger_index_min})`);
+    if ((resp.result as any).marker) throw new Error('RECEIPT_SCAN_INCOMPLETE: account_tx returned a marker, so receipts past the first page were not read');
+    console.log(`[receipts] RECEIPT_SCAN ${address}: ${claimed.size} claimed, ${recalled.size} recalled (ledger_min ${(resp.result as any).ledger_index_min})`);
   } catch (e) {
-    console.error('Failed to scan claim receipts:', e);
+    console.error('Failed to scan PO receipts:', e);
     throw e;
   }
-return claimedIds;
+  return { claimed, recalled };
 };
-const getRecalledPOIds = async (address: string): Promise<Set<string>> => {
-  const recalledIds = new Set<string>();
-  try {
-    const client = await getXRPLClient();
-    const resp = await client.request({
-      command: 'account_tx',
-      account: address,
-      api_version: 1, // PILOT 9/8/26 - deprecated compat pin, not a resolution
-      ledger_index_min: -1,
-      ledger_index_max: -1,
-      limit: 400
-    });
-    for (const tx of resp.result.transactions || []) {
-      try {
-        const txObj = (tx as any).tx_json || (tx as any).tx || {};
-        const memos = txObj.Memos || [];
-        for (const m of memos) {
-          const memoType = m.Memo?.MemoType || '';
-          const memoData = m.Memo?.MemoData || '';
-          if (!memoType || !memoData) continue;
-          try {
-            // Try v1 standard envelope first
-            const envelope = parseMemo({ MemoType: memoType, MemoData: memoData });
-            if (envelope?.a === SCPO_ACTIONS.RECALL_PO) {
-              recalledIds.add(envelope.r);
-            } else {
-              // Legacy fallback — pre-standardization SCPO_RECALL memos
-              const legacyRef = parseLegacyRefMemo(memoType, memoData);
-              if (legacyRef) recalledIds.add(legacyRef);
-            }
-          } catch (e) { /* skip */ }
-        }
-      } catch (e) { /* skip */ }
-    }
-    if ((resp.result as any).marker) throw new Error('RECALL_SCAN_INCOMPLETE: account_tx returned a marker, so receipts past the first page were not read');
-    console.log(`Found ${recalledIds.size} recalled PO receipts for ${address} (ledger_min ${(resp.result as any).ledger_index_min})`);
-  } catch (e) {
-    console.error('Failed to scan recall receipts:', e);
-    throw e;
-  }
-  return recalledIds;
-};
+const getClaimedPOIds = async (address: string): Promise<Set<string>> => (await scanReceipts(address)).claimed;
+const getRecalledPOIds = async (address: string): Promise<Set<string>> => (await scanReceipts(address)).recalled;
 
 // PREIMAGE-SHA-256 crypto-condition using MPTokenIssuanceID as preimage.
 // Uses five-bells-condition for spec-compliant encoding (rippled validates strictly).
@@ -3743,8 +3709,8 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     if (currentMode === 'customer' && customerProfile.classicAddress) {
       const buyerMPTs = await getBuyerPOs(customerProfile.classicAddress);
       // Scan for claimed PO receipts once for all POs
-      const claimedPOIds = await getClaimedPOIds(customerProfile.classicAddress);
-      const recalledPOIds = await getRecalledPOIds(customerProfile.classicAddress);
+      const { claimed: claimedPOIds, recalled: recalledPOIds } = await scanReceipts(customerProfile.classicAddress);
+      // recalledPOIds comes from the same scanReceipts read above (SCALE-12c)
       for (const mpt of buyerMPTs as any[]) {
         let meta: any = {};
         try {
