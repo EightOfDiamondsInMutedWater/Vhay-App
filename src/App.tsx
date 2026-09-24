@@ -4105,6 +4105,7 @@ useEffect(() => {
   const interval = setInterval(() => {
     if (cancelled) return;
     if (document.visibilityState !== 'visible') return;
+    if (Date.now() - lastPOLoadAt.current < 30000) { console.log('[loadPOs] TICK_SKIPPED_RECENT_LOAD'); return; } // SCALE-12e: a load committed under 30 s ago, same guard as the visibility reload
     loadPOsFromLedgerRef.current();
   }, 45000);
   const onVisible = () => {
@@ -4121,8 +4122,8 @@ useEffect(() => {
   };
 }, [autoRefreshEnabled]);
 // Auto-refresh linked profiles every 60 seconds via DID resolution
-// IMPORTANT: dep array is ONLY [autoRefreshEnabled] — mode and UUID arrays are read via
-// refs so that re-renders caused by setPublicProfiles do not teardown/recreate this interval.
+// Dep array is [autoRefreshEnabled, mode]: the callback reads mode from its closure, so mode must stay a dep (BUG-02).
+// UUID arrays are read via refs so that re-renders caused by setPublicProfiles do not teardown/recreate this interval.
 useEffect(() => {
   if (!autoRefreshEnabled) return;
   const interval = setInterval(async () => {
