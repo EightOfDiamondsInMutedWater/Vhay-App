@@ -3812,7 +3812,14 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       }
      } else if (currentMode === 'vendor' && vendorProfile.classicAddress) {
       const vendorPOList: SavedPO[] = [];
-      const recallCache = new Map<string, Set<string>>();
+      const recallCache = new Map<string, Promise<Set<string>>>();
+      // SCALE-12c: one recall scan per buyer per load. Empty and failed results are shared too, because getRecalledPOIds throws on failure
+      let recallReads = 0;
+      const getRecallsOnce = (account: string): Promise<Set<string>> => {
+        let p = recallCache.get(account);
+        if (!p) { recallReads++; p = getRecalledPOIds(account); recallCache.set(account, p); }
+        return p;
+      };
       
       // Check authorized MPTs the vendor already holds
       // Scan for claimed PO receipts once for all POs
@@ -3888,8 +3895,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
           // Check if this PO was recalled by the buyer
           if (issuanceId && posBuyerAddr) {
             try {
-              let buyerRecalls = recallCache.get(posBuyerAddr);
-              if (!buyerRecalls) { buyerRecalls = await getRecalledPOIds(posBuyerAddr); if (buyerRecalls.size > 0) recallCache.set(posBuyerAddr, buyerRecalls); }
+              const buyerRecalls = await getRecallsOnce(posBuyerAddr);
               if (buyerRecalls.has(issuanceId)) continue;
             } catch (e: any) { scanFailed = true; console.warn('[loadPOs] RECALL_LOOKUP_FAILED — PO may be recalled and is showing as accepted:', issuanceId, '-', e?.message); }
           } else if (issuanceId) {
@@ -3939,8 +3945,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         const customerAddr = profilesToScan[uuid]?.classicAddress;
         if (!customerAddr) continue;
         try {
-          let buyerRecalledIds = recallCache.get(customerAddr);
-          if (!buyerRecalledIds) { buyerRecalledIds = await getRecalledPOIds(customerAddr); if (buyerRecalledIds.size > 0) recallCache.set(customerAddr, buyerRecalledIds); }
+          const buyerRecalledIds = await getRecallsOnce(customerAddr);
           const buyerMPTs = await getBuyerPOs(customerAddr);
           for (const mpt of buyerMPTs as any[]) {
         let meta: any = {};
@@ -3980,6 +3985,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         } catch (e) { scanFailed = true; console.log(`Failed to scan buyer ${customerAddr}:`, e); }
       }
       
+      console.log(`[loadPOs] RECALL_READS ${recallReads}`);
       livePOs = vendorPOList;
     }
     // Mark superseded POs: if any PO has a parentIssuanceId, the parent is superseded
