@@ -1998,7 +1998,8 @@ export default function App() {
   }, [publicProfiles, selectedLinkedCustomer]);
   const [vendorsExpanded, setVendorsExpanded] = useState(false);
   const [customersExpanded, setCustomersExpanded] = useState(false);
-  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  // SCALE-12e: auto-refresh is always on for users. Diagnostic override for testing only: set localStorage vhay_auto_refresh_off to '1' and reload to disable both refresh timers.
+  const [autoRefreshEnabled] = useState<boolean>(() => { try { const off = localStorage.getItem('vhay_auto_refresh_off') === '1'; if (off) console.warn('[autoRefresh] AUTO_REFRESH_OFF: diagnostic override vhay_auto_refresh_off is set'); return !off; } catch (e) { return true; } });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isLoadingPOs = useRef(false);
@@ -16123,11 +16124,6 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       Never share this seed phrase. Vhay will never ask for it.
                     </span>
                   </div>
-
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--ink-2)', paddingTop: 4 }}>
-                    <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
-                    Enable auto-refresh
-                  </label>
                 </div>
               </Card>
 
@@ -16585,11 +16581,6 @@ const addLinkedVendorByDID = async (overrideAddr?: string, silent?: boolean): Pr
                       Never share this seed phrase. Vhay will never ask for it.
                     </span>
                   </div>
-
-                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--ink-2)', paddingTop: 4 }}>
-                    <input type="checkbox" checked={autoRefreshEnabled} onChange={(e) => setAutoRefreshEnabled(e.target.checked)} />
-                    Enable auto-refresh
-                  </label>
                 </div>
               </Card>
 
