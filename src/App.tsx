@@ -630,15 +630,28 @@ const scanReceipts = async (address: string): Promise<{ claimed: Set<string>; re
   const recalled = new Set<string>();
   try {
     const client = await getXRPLClient();
-    const resp = await client.request({
-      command: 'account_tx',
-      account: address,
-      ledger_index_min: -1,
-      ledger_index_max: -1,
-      limit: 400,
-      api_version: 1, // v1 compat pin - see Tier 6 removal condition
-    });
-    for (const tx of resp.result.transactions || []) {
+    // CR-36: a node may return fewer rows than limit with a marker (measured 9/24: 200 rows of rPm6K1fr with a marker at limit 400), so follow it, up to 10 pages
+    const txs: any[] = [];
+    let marker: any = undefined;
+    let pages = 0;
+    let ledgerMin: any = undefined;
+    do {
+      const req: any = {
+        command: 'account_tx',
+        account: address,
+        ledger_index_min: -1,
+        ledger_index_max: -1,
+        limit: 400,
+        api_version: 1, // v1 compat pin - see Tier 6 removal condition
+      };
+      if (marker) req.marker = marker;
+      const resp: any = await client.request(req);
+      pages++;
+      for (const t of resp.result.transactions || []) txs.push(t);
+      if (ledgerMin === undefined) ledgerMin = resp.result.ledger_index_min;
+      marker = resp.result.marker;
+    } while (marker && pages < 10);
+    for (const tx of txs) {
       try {
         const txObj = (tx as any).tx_json || (tx as any).tx || {};
         const memos = txObj.Memos || [];
@@ -664,8 +677,8 @@ const scanReceipts = async (address: string): Promise<{ claimed: Set<string>; re
         }
       } catch (e) { /* skip unparseable tx */ }
     }
-    if ((resp.result as any).marker) throw new Error('RECEIPT_SCAN_INCOMPLETE: account_tx returned a marker, so receipts past the first page were not read');
-    console.log(`[receipts] RECEIPT_SCAN ${address}: ${claimed.size} claimed, ${recalled.size} recalled (ledger_min ${(resp.result as any).ledger_index_min})`);
+    if (marker) throw new Error('RECEIPT_SCAN_INCOMPLETE: account_tx still had a marker after ' + pages + ' pages, so older receipts were not read');
+    console.log(`[receipts] RECEIPT_SCAN ${address}: ${claimed.size} claimed, ${recalled.size} recalled (ledger_min ${ledgerMin}, pages ${pages})`);
   } catch (e) {
     console.error('Failed to scan PO receipts:', e);
     throw e;
