@@ -674,6 +674,28 @@ const scanReceipts = async (address: string): Promise<{ claimed: Set<string>; re
 };
 const getClaimedPOIds = async (address: string): Promise<Set<string>> => (await scanReceipts(address)).claimed;
 const getRecalledPOIds = async (address: string): Promise<Set<string>> => (await scanReceipts(address)).recalled;
+// SCALE-12e1: retry a rate-limited read after the node's own retry-in, the competitionMetrics pattern. One budget per load bounds
+// the total wait so a load ends before the next 45 s tick; current() stops waiting once a mode or profile switch makes the load stale.
+type RetryBudget = { ms: number; retries: number; waited: number; current: () => boolean };
+const withRetryIn = async <T,>(label: string, fn: () => Promise<T>, budget: RetryBudget): Promise<T> => {
+  for (;;) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      const m = /retry in ~(\d+)ms/.exec(String((e && e.message) || ''));
+      if (!m) throw e;
+      const wait = parseInt(m[1], 10) + 750;
+      if (wait > budget.ms || !budget.current()) {
+        console.warn('[loadPOs] RETRY_GAVE_UP ' + label + ': wait ' + wait + ' ms, budget left ' + budget.ms + ' ms, load current ' + budget.current());
+        throw e;
+      }
+      budget.ms -= wait; budget.retries++; budget.waited += wait;
+      console.warn('[loadPOs] RETRY_IN ' + label + ': waiting ' + wait + ' ms');
+      for (let left = wait; left > 0 && budget.current(); left -= 500) { const ms = Math.min(500, left); await new Promise(resolve => setTimeout(resolve, ms)); }
+      if (!budget.current()) throw e;
+    }
+  }
+};
 
 // PREIMAGE-SHA-256 crypto-condition using MPTokenIssuanceID as preimage.
 // Uses five-bells-condition for spec-compliant encoding (rippled validates strictly).
@@ -3693,6 +3715,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
   try {
     let livePOs: SavedPO[] = [];
     let scanFailed = false;
+    const retryBudget: RetryBudget = { ms: 40000, retries: 0, waited: 0, current: () => poLoadKeyRef.current === loadKey };
     // SCALE-12b: one escrow read per account per load; a failed read is remembered so the load's other POs do not re-request it
     const escrowCache = new Map<string, Promise<any[]>>();
     let escrowReads = 0;
@@ -3702,7 +3725,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         escrowReads++;
         p = (async () => {
           const client = await getXRPLClient();
-          const r = await client.request({ command: 'account_objects', account, type: 'escrow', ledger_index: 'validated' });
+          const r = await withRetryIn('escrow ' + account, () => client.request({ command: 'account_objects', account, type: 'escrow', ledger_index: 'validated' }), retryBudget);
           return r.result.account_objects as any[];
         })();
         escrowCache.set(account, p);
@@ -3710,9 +3733,9 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       return p;
     };
     if (currentMode === 'customer' && customerProfile.classicAddress) {
-      const buyerMPTs = await getBuyerPOs(customerProfile.classicAddress);
+      const buyerMPTs = await withRetryIn('buyer POs', () => getBuyerPOs(customerProfile.classicAddress), retryBudget);
       // Scan for claimed PO receipts once for all POs
-      const { claimed: claimedPOIds, recalled: recalledPOIds } = await scanReceipts(customerProfile.classicAddress);
+      const { claimed: claimedPOIds, recalled: recalledPOIds } = await withRetryIn('receipts ' + customerProfile.classicAddress, () => scanReceipts(customerProfile.classicAddress), retryBudget);
       // recalledPOIds comes from the same scanReceipts read above (SCALE-12c)
       for (const mpt of buyerMPTs as any[]) {
         let meta: any = {};
@@ -3786,16 +3809,16 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       let recallReads = 0;
       const getRecallsOnce = (account: string): Promise<Set<string>> => {
         let p = recallCache.get(account);
-        if (!p) { recallReads++; p = getRecalledPOIds(account); recallCache.set(account, p); }
+        if (!p) { recallReads++; p = withRetryIn('recalls ' + account, () => getRecalledPOIds(account), retryBudget); recallCache.set(account, p); }
         return p;
       };
       
       // Check authorized MPTs the vendor already holds
       // Scan for claimed PO receipts once for all POs
-      const vendorClaimedPOIds = await getClaimedPOIds(vendorProfile.classicAddress);
+      const vendorClaimedPOIds = await withRetryIn('receipts ' + vendorProfile.classicAddress, () => getClaimedPOIds(vendorProfile.classicAddress), retryBudget);
       
       try {
-        const authorizedMPTs = await getVendorAuthorizedPOs(vendorProfile.classicAddress);
+        const authorizedMPTs = await withRetryIn('authorized MPTs', () => getVendorAuthorizedPOs(vendorProfile.classicAddress), retryBudget);
         let metaCache: Record<string, { m: any; h: string }> = {};
         try { metaCache = JSON.parse(localStorage.getItem('vhay_po_meta_v1') || '{}') || {}; } catch (e) { metaCache = {}; }
         let metaHits = 0, metaMisses = 0, metaStored = 0;
@@ -3821,12 +3844,12 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                 metaMisses++;
             try {
               const client = await getXRPLClient();
-              const issuanceResp = await client.request({
+              const issuanceResp = await withRetryIn('metadata ' + issuanceId, () => client.request({
                 command: 'ledger_entry',
                 api_version: 1, // PILOT 9/8/26 - v1 pin, deprecated compat
                 mpt_issuance: issuanceId,
                 ledger_index: 'validated'
-              });
+              }), retryBudget);
               const issuanceNode = issuanceResp.result.node as any;
               poTxHashFromNode = issuanceNode?.PreviousTxnID || '';
               if (issuanceNode?.MPTokenMetadata) {
@@ -3915,7 +3938,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         if (!customerAddr) continue;
         try {
           const buyerRecalledIds = await getRecallsOnce(customerAddr);
-          const buyerMPTs = await getBuyerPOs(customerAddr);
+          const buyerMPTs = await withRetryIn('buyer POs ' + customerAddr, () => getBuyerPOs(customerAddr), retryBudget);
           for (const mpt of buyerMPTs as any[]) {
         let meta: any = {};
         try {
@@ -3973,6 +3996,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     // Keep recalled POs in savedPOs for history traversal, but mark them so tables filter them out
     // getLatestActivePOs already filters by status, so recalled POs won't show in active tables
     console.log(`[loadPOs] ESCROW_READS ${escrowReads}`);
+    console.log(`[loadPOs] RETRY_WAITS ${retryBudget.retries}, waited ${retryBudget.waited} ms`);
     if (scanFailed) {
       console.warn('[loadPOsFromLedger] PO_LOAD_INCOMPLETE: a scan failed, so nothing is committed and the previous list stays. POs read this load:', livePOs.length);
       setPoSync(s => ({ ...s, [currentMode]: { at: s[currentMode].at, incomplete: true } }));
