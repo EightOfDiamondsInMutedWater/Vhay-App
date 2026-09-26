@@ -4241,7 +4241,7 @@ useEffect(() => {
       const result = await withRetryIn('credential ' + side, async () => {
         const r = await validateCredential(addr, domainId as string);
         last = r;
-        if (!r.valid && (r.reason === 'Could not fetch credentials' || r.reason === 'Domain not found') && r.error) throw new Error(r.error);
+        if (!r.valid && (r.reason === 'Could not fetch credentials' || r.reason === 'Domain not found') && r.error) { if (active) set(r); throw new Error(r.error); }
         return r;
       }, credBudget);
       if (!active) return;
