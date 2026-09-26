@@ -546,13 +546,29 @@ export const getBuyerPOs = async (buyerAddress: string) => {
 
 export const getVendorAuthorizedPOs = async (vendorAddress: string) => {
   const client = await getXRPLClient();
-  const response = await client.request({
-    command: 'account_objects',
-    account: vendorAddress,
-    type: 'mptoken',
-    ledger_index: 'validated'
-  });
-  return response.result.account_objects;
+  // SCALE-02: a node may return a short page with a marker, so follow it up to 10 pages, pinned to the first page's ledger
+  const objects: any[] = [];
+  let marker: any = undefined;
+  let ledgerIndex: any = 'validated';
+  let pages = 0;
+  do {
+    const req: any = {
+      command: 'account_objects',
+      account: vendorAddress,
+      type: 'mptoken',
+      ledger_index: ledgerIndex,
+      limit: 400,
+    };
+    if (marker) req.marker = marker;
+    const response: any = await client.request(req);
+    if (pages === 0 && response.result.ledger_index) ledgerIndex = response.result.ledger_index;
+    pages++;
+    for (const o of response.result.account_objects || []) objects.push(o);
+    marker = response.result.marker;
+  } while (marker && pages < 10);
+  if (marker) throw new Error('MPTOKEN_READ_INCOMPLETE: account_objects marker remained after ' + pages + ' pages, so some authorized MPTs were not read');
+  console.log('[mptoken] AUTHORIZED_MPTS ' + vendorAddress + ': ' + objects.length + ' objects, pages ' + pages);
+  return objects;
 };
 // ─────────────────────────────────────────────────────────────────────────────
 // PO Creation Date Lookup
