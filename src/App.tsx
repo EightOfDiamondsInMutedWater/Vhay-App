@@ -4052,8 +4052,8 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     // open → accepted → funded → claimed, with terminal off-ramps to recalled /
     // superseded / updated. When a fresh ledger scan produces a lower-ranked
     // status than what's already in prev for the same PO, the scan probably hit
-    // a transient validator inconsistency (e.g. isMPTHeldByVendor's silent catch
-    // returning false on a partial response, account_objects against the vendor
+    // a transient validator inconsistency (e.g. a held read served short or stale
+    // by the node, account_objects against the vendor
     // address missing the MPToken because the authorize-tx hasn't fully
     // validated yet) and the existing status should be preserved. This fixes
     // both terminal regressions (recall / claim flicker — what the previous
@@ -5228,12 +5228,10 @@ useEffect(() => {
     }
   };
 
+  // CR-38: throws on a failed read so a caller can tell could-not-check from not-accepted; paginated through getVendorAuthorizedPOs (SCALE-02)
   const isMPTHeldByVendor = async (issuanceId: string, vendorAddress: string): Promise<boolean> => {
-    try {
-      const client = await getXRPLClient();
-      const response = await client.request({ command: 'account_objects', account: vendorAddress, type: 'mptoken', ledger_index: 'validated' });
-      return response.result.account_objects.some((obj: any) => obj.MPTokenIssuanceID === issuanceId);
-    } catch { return false; }
+    const objs: any[] = await getVendorAuthorizedPOs(vendorAddress);
+    return objs.some((obj: any) => obj.MPTokenIssuanceID === issuanceId);
   };
 
 // ── Task 2.3: Fund Escrow with RLUSD or XRP ──────────────────
@@ -5247,7 +5245,19 @@ useEffect(() => {
       });
       return;
     }
-    const isHeld = await isMPTHeldByVendor(po.issuanceId, po.vendorAddress);
+    let isHeld = false;
+    try {
+      isHeld = await isMPTHeldByVendor(po.issuanceId, po.vendorAddress);
+    } catch (e: any) {
+      console.warn('[fundEscrow] HELD_CHECK_FAILED - vendor acceptance could not be read, nothing was sent:', po.issuanceId, '-', e?.message);
+      await openConfirm({
+        kind: 'info',
+        title: 'Acceptance Check Unavailable',
+        message: 'The ledger could not be read to confirm that the vendor has accepted this PO, so nothing was sent. Please try again in a moment.',
+        confirmLabel: 'OK',
+      });
+      return;
+    }
     if (!isHeld) {
       await openConfirm({
         kind: 'info',
