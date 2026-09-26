@@ -13,7 +13,7 @@ import { bytesToHex } from '@noble/curves/abstract/utils';
 import { v4 as uuidv4 } from 'uuid';
 import * as cc from 'five-bells-condition';
 import { 
-  getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO,
+  getXRPLClient, getBuyerPOs, getVendorAuthorizedPOs, getEscrowsForPO, getAllAccountObjects,
   deployPermissionedDomain, issueCredential, acceptCredential,
   validateCredential, canCreatePO, revokeCredential, isRLUSDConfigured, canUseRLUSDEscrow, setupRLUSDTrustLine, getRLUSDBalance, getRLUSDCurrency,
  scanFeeEntries,
@@ -3736,11 +3736,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       let p = escrowCache.get(account);
       if (!p) {
         escrowReads++;
-        p = (async () => {
-          const client = await getXRPLClient();
-          const r = await withRetryIn('escrow ' + account, () => client.request({ command: 'account_objects', account, type: 'escrow', ledger_index: 'validated' }), retryBudget);
-          return r.result.account_objects as any[];
-        })();
+        p = withRetryIn('escrow ' + account, () => getAllAccountObjects(account, 'escrow'), retryBudget);
         escrowCache.set(account, p);
       }
       return p;
