@@ -193,7 +193,7 @@ export const checkAndRenewCredential = async (
 export const validateCredential = async (
   walletAddress: string,
   domainID: string
-): Promise<{ valid: boolean; tier?: string; expiration?: number; issuer?: string; reason?: string }> => {
+): Promise<{ valid: boolean; tier?: string; expiration?: number; issuer?: string; reason?: string; error?: string }> => {
   const client = await getXRPLClient();
 
   // 1. Get the domain's accepted credentials
@@ -205,8 +205,8 @@ export const validateCredential = async (
       ledger_index: 'validated'
     } as any);
     domain = (domainResp.result as any).node;
-  } catch {
-    return { valid: false, reason: 'Domain not found' };
+  } catch (e: any) {
+    return { valid: false, reason: 'Domain not found', error: String((e && e.message) || e) };
   }
 
   if (!domain || domain.LedgerEntryType !== 'PermissionedDomain') {
@@ -223,8 +223,8 @@ export const validateCredential = async (
       ledger_index: 'validated'
     } as any);
     credentials = (credsResp.result as any).account_objects || [];
-  } catch {
-    return { valid: false, reason: 'Could not fetch credentials' };
+  } catch (e: any) {
+    return { valid: false, reason: 'Could not fetch credentials', error: String((e && e.message) || e) };
   }
 
   // 3. Check if any credential matches the domain's accepted list
