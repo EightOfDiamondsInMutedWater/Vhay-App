@@ -480,17 +480,36 @@ export const submitBlobQueued = async (
 };
 
 
-// Helper 1: Get all MPTs you created (your purchase orders)
-export const getMyMPTs = async (address: string) => {
+// SCALE-02: every live account_objects reader goes through here. A node may return a short page with a marker,
+// so follow it up to 10 pages, pinned to the first page's ledger. Throws on any failed read or a leftover marker.
+export const getAllAccountObjects = async (account: string, type: string): Promise<any[]> => {
   const client = await getXRPLClient();
-  const response = await client.request({
-    command: 'account_objects',
-    account: address,
-    type: 'mpt_issuance',
-    ledger_index: 'validated'
-  });
-  return response.result.account_objects;
+  const objects: any[] = [];
+  let marker: any = undefined;
+  let ledgerIndex: any = 'validated';
+  let pages = 0;
+  do {
+    const req: any = {
+      command: 'account_objects',
+      account,
+      type,
+      ledger_index: ledgerIndex,
+      limit: 400,
+    };
+    if (marker) req.marker = marker;
+    const response: any = await client.request(req);
+    if (pages === 0 && response.result.ledger_index) ledgerIndex = response.result.ledger_index;
+    pages++;
+    for (const o of response.result.account_objects || []) objects.push(o);
+    marker = response.result.marker;
+  } while (marker && pages < 10);
+  if (marker) throw new Error('ACCOUNT_OBJECTS_INCOMPLETE: ' + type + ' objects for ' + account + ': marker remained after ' + pages + ' pages, so some objects were not read');
+  if (pages > 1) console.log('[account_objects] ACCOUNT_OBJECTS_PAGED ' + type + ' ' + account + ': ' + objects.length + ' objects, pages ' + pages);
+  return objects;
 };
+
+// Helper 1: Get all MPTs you created (your purchase orders)
+export const getMyMPTs = async (address: string) => getAllAccountObjects(address, 'mpt_issuance');
 
 // Helper 2: Get all escrows for your address
 export const getMyEscrows = async (address: string) => {
@@ -545,29 +564,8 @@ export const getBuyerPOs = async (buyerAddress: string) => {
 };
 
 export const getVendorAuthorizedPOs = async (vendorAddress: string) => {
-  const client = await getXRPLClient();
-  // SCALE-02: a node may return a short page with a marker, so follow it up to 10 pages, pinned to the first page's ledger
-  const objects: any[] = [];
-  let marker: any = undefined;
-  let ledgerIndex: any = 'validated';
-  let pages = 0;
-  do {
-    const req: any = {
-      command: 'account_objects',
-      account: vendorAddress,
-      type: 'mptoken',
-      ledger_index: ledgerIndex,
-      limit: 400,
-    };
-    if (marker) req.marker = marker;
-    const response: any = await client.request(req);
-    if (pages === 0 && response.result.ledger_index) ledgerIndex = response.result.ledger_index;
-    pages++;
-    for (const o of response.result.account_objects || []) objects.push(o);
-    marker = response.result.marker;
-  } while (marker && pages < 10);
-  if (marker) throw new Error('MPTOKEN_READ_INCOMPLETE: account_objects marker remained after ' + pages + ' pages, so some authorized MPTs were not read');
-  console.log('[mptoken] AUTHORIZED_MPTS ' + vendorAddress + ': ' + objects.length + ' objects, pages ' + pages);
+  const objects = await getAllAccountObjects(vendorAddress, 'mptoken');
+  console.log('[mptoken] AUTHORIZED_MPTS ' + vendorAddress + ': ' + objects.length + ' objects');
   return objects;
 };
 // ─────────────────────────────────────────────────────────────────────────────
