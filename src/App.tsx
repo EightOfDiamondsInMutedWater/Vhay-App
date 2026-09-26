@@ -4230,23 +4230,33 @@ useEffect(() => {
 }, [mode, customerProfile.classicAddress, vendorProfile.classicAddress]);
 
 useEffect(() => {
-  const checkCred = async () => {
-    if (customerProfile.classicAddress && process.env.REACT_APP_DOMAIN_ID) {
-      try {
-        const result = await validateCredential(customerProfile.classicAddress, process.env.REACT_APP_DOMAIN_ID);
-        if (!result.valid && (result.reason === 'Could not fetch credentials' || result.reason === 'Domain not found')) console.warn('CRED_READ_FAILED — customer badge cannot confirm credential state:', result.reason);
-        setCustomerCredStatus(result);
-      } catch { setCustomerCredStatus(null); }
-    }
-    if (vendorProfile.classicAddress && process.env.REACT_APP_DOMAIN_ID) {
-      try {
-        const result = await validateCredential(vendorProfile.classicAddress, process.env.REACT_APP_DOMAIN_ID);
-        if (!result.valid && (result.reason === 'Could not fetch credentials' || result.reason === 'Domain not found')) console.warn('CRED_READ_FAILED — vendor badge cannot confirm credential state:', result.reason);
-        setVendorCredStatus(result);
-      } catch { setVendorCredStatus(null); }
+  // BUG-39: a failed credential read retries after the node's retry-in, one 60 s budget per card, stopped when either address changes.
+  // On give-up the card keeps the failed result, so it reads Status unknown rather than Not credentialed.
+  let active = true;
+  const domainId = process.env.REACT_APP_DOMAIN_ID;
+  const readCredOnce = async (side: string, addr: string, set: (s: any) => void) => {
+    const credBudget: RetryBudget = { ms: 60000, retries: 0, waited: 0, current: () => active };
+    let last: any = null;
+    try {
+      const result = await withRetryIn('credential ' + side, async () => {
+        const r = await validateCredential(addr, domainId as string);
+        last = r;
+        if (!r.valid && (r.reason === 'Could not fetch credentials' || r.reason === 'Domain not found') && r.error) throw new Error(r.error);
+        return r;
+      }, credBudget);
+      if (!active) return;
+      if (!result.valid && (result.reason === 'Could not fetch credentials' || result.reason === 'Domain not found')) console.warn('CRED_READ_FAILED - ' + side + ' badge cannot confirm credential state:', result.reason);
+      else if (credBudget.retries > 0) console.log('[cred] CRED_RETRY_OK ' + side + ' after ' + credBudget.retries + ' retries, waited ' + credBudget.waited + ' ms');
+      set(result);
+    } catch {
+      if (!active) return;
+      console.warn('CRED_READ_FAILED - ' + side + ' badge gave up retrying:', last?.reason, '-', last?.error);
+      set(last || { valid: false, reason: 'Could not fetch credentials' });
     }
   };
-  checkCred();
+  if (customerProfile.classicAddress && domainId) readCredOnce('customer', customerProfile.classicAddress, setCustomerCredStatus);
+  if (vendorProfile.classicAddress && domainId) readCredOnce('vendor', vendorProfile.classicAddress, setVendorCredStatus);
+  return () => { active = false; };
 }, [customerProfile.classicAddress, vendorProfile.classicAddress]);
 
     const saveNewPO = (po: SavedPO) => {
