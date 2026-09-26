@@ -3745,6 +3745,22 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
       }
       return p;
     };
+    // SCALE-12d: one mptoken read per vendor per load on the buyer path instead of one per PO; a failed read is shared and fails the load
+    const heldCache = new Map<string, Promise<Set<string>>>();
+    let heldReads = 0;
+    const getHeldOnce = (vendor: string): Promise<Set<string>> => {
+      let p = heldCache.get(vendor);
+      if (!p) {
+        heldReads++;
+        p = withRetryIn('held ' + vendor, () => getVendorAuthorizedPOs(vendor), retryBudget).then(objs => {
+          const ids = new Set<string>();
+          for (const o of objs as any[]) ids.add(o.MPTokenIssuanceID);
+          return ids;
+        });
+        heldCache.set(vendor, p);
+      }
+      return p;
+    };
     if (currentMode === 'customer' && customerProfile.classicAddress) {
       const buyerMPTs = await withRetryIn('buyer POs', () => getBuyerPOs(customerProfile.classicAddress), retryBudget);
       // Scan for claimed PO receipts once for all POs
@@ -3768,7 +3784,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
         // Check if vendor has accepted (authorized the MPT)
         if (vendorAddr && issuanceId) {
           try {
-            const isHeld = await isMPTHeldByVendor(issuanceId, vendorAddr);
+            const isHeld = (await getHeldOnce(vendorAddr)).has(issuanceId);
             if (isHeld) {
               poStatus = 'accepted';
               // Match escrow to THIS PO using crypto-condition derived from issuanceId
@@ -3789,7 +3805,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
                 // Keep escrowSequence — it's valid historical data needed for proof of payment
               }
             }
-          } catch (e) {}
+          } catch (e: any) { scanFailed = true; console.warn('[loadPOs] HELD_LOOKUP_FAILED (buyer) - vendor acceptance unknown, so this load commits nothing:', issuanceId, '-', e?.message); }
         }
 
         // Skip recalled POs
@@ -4009,6 +4025,7 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
     // Keep recalled POs in savedPOs for history traversal, but mark them so tables filter them out
     // getLatestActivePOs already filters by status, so recalled POs won't show in active tables
     console.log(`[loadPOs] ESCROW_READS ${escrowReads}`);
+    console.log(`[loadPOs] HELD_READS ${heldReads}`);
     console.log(`[loadPOs] RETRY_WAITS ${retryBudget.retries}, waited ${retryBudget.waited} ms`);
     if (scanFailed) {
       console.warn('[loadPOsFromLedger] PO_LOAD_INCOMPLETE: a scan failed, so nothing is committed and the previous list stays. POs read this load:', livePOs.length);
