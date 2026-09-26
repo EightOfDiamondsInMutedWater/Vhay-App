@@ -3808,6 +3808,11 @@ if (currentMode === 'vendor' && !vendorProfile.classicAddress) {
           } catch (e: any) { scanFailed = true; console.warn('[loadPOs] HELD_LOOKUP_FAILED (buyer) - vendor acceptance unknown, so this load commits nothing:', issuanceId, '-', e?.message); }
         }
 
+        // CR-40: a claim receipt is definitive, so a claimed PO the held check did not confirm is still claimed
+        if (poStatus === 'open' && claimedPOIds.has(issuanceId)) {
+          console.warn('[loadPOs] CLAIMED_NOT_HELD (buyer) - claim receipt found but the held check did not confirm vendor acceptance:', issuanceId);
+          poStatus = 'claimed';
+        }
         // Skip recalled POs
         if (recalledPOIds.has(issuanceId)) continue;
         
